@@ -1,0 +1,3 @@
+All rights reserved.
+
+This repository is used only for CGPlay public release downloads.
