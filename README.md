@@ -4,9 +4,9 @@
 
 ## 下载
 
-- 完整安装包: [CGPlay_Setup_1.0.1_full.exe](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.1/CGPlay_Setup_1.0.1_full.exe)
-- 精简安装包: [CGPlay_Setup_1.0.1_lite.exe](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.1/CGPlay_Setup_1.0.1_lite.exe)
-- 发布页: [CGPlay Releases](https://github.com/xty-luoye/CGPlay/releases/tag/v1.0.1)
+- 完整安装包: [CGPlay_Setup_1.0.0_full.exe](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.0/CGPlay_Setup_1.0.0_full.exe)
+- 精简安装包: [CGPlay_Setup_1.0.0_lite.exe](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.0/CGPlay_Setup_1.0.0_lite.exe)
+- 发布页: [CGPlay Releases](https://github.com/xty-luoye/CGPlay/releases/tag/v1.0.0)
 
 ## 安装包选择
 
