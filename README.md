@@ -70,3 +70,8 @@ CGPlay 支持通过公开 Release 自动补齐缺失组件：
 ## 致谢
 
 CGPlay 的播放架构基于 tlRender 相关技术生态构建。感谢开源图形、色彩管理、媒体处理工具链为专业审片流程提供的基础能力。
+## Latest Update
+
+- Fixed the timeline `Frame / Total` display bug.
+- Optimized the main window default launch size so it no longer opens overly large.
+- Restored manual resize support on the frameless main window edges and corners.
