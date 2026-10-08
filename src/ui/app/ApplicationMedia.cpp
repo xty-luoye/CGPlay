@@ -15,6 +15,34 @@ namespace {
 
 constexpr auto kFullscreenDockVisibility = "cgplay.fullscreenWasVisible";
 
+void keepFullscreenComposition(QWidget* window)
+{
+#ifdef Q_OS_WIN
+    // Qt documents WS_BORDER as the workaround for Windows fullscreen
+    // OpenGL composition. Without it, frames can swap while the desktop
+    // keeps presenting the same image. Apply before painting resumes;
+    // showNormal() restores the style Qt saved on fullscreen entry.
+    // https://doc.qt.io/qt-6.5/windows-issues.html#fullscreen-opengl-based-windows
+    const auto hwnd = reinterpret_cast<HWND>(window->winId());
+    const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+    if (!(style & WS_BORDER)) {
+        SetLastError(ERROR_SUCCESS);
+        if (!SetWindowLongPtr(hwnd, GWL_STYLE, style | WS_BORDER) &&
+            GetLastError() != ERROR_SUCCESS) {
+            qWarning() << "Cannot enable fullscreen OpenGL composition:" << GetLastError();
+            return;
+        }
+        if (!SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                          SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE |
+                          SWP_NOZORDER | SWP_NOACTIVATE)) {
+            qWarning() << "Cannot refresh fullscreen OpenGL composition:" << GetLastError();
+        }
+    }
+#else
+    Q_UNUSED(window);
+#endif
+}
+
 void setContentHostMargins(QSplitter* splitter, bool fullscreen)
 {
     QWidget* contentHost = splitter ? splitter->parentWidget() : nullptr;
@@ -572,6 +600,9 @@ void MainWindow::_toggleFullScreen()
             if (_p->fullscreenTransitionGeneration != transitionGeneration) return;
             const bool entered = _p->fullscreenActive && isFullScreen();
             if (entered) {
+                // Native frame refresh emits resize events. A cancelled
+                // entry must not queue those events after a newer exit.
+                keepFullscreenComposition(this);
                 if (layout()) layout()->activate();
                 if (_p->viewer->layout()) _p->viewer->layout()->activate();
                 if (auto* vp = _p->viewer->viewport()) vp->setFrameView(true);

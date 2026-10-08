@@ -89,6 +89,11 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     showNormal();
     settleFullscreen();
     const QRect originalGeometry = geometry();
+#ifdef Q_OS_WIN
+    const auto originalNativeWindow = reinterpret_cast<HWND>(winId());
+    const bool originalNativeWindowValid = IsWindow(originalNativeWindow);
+    const LONG_PTR originalNativeStyle = GetWindowLongPtr(originalNativeWindow, GWL_STYLE);
+#endif
     const auto normalSizes = _p->centerSplitter->sizes();
     const bool originalTopBar = _p->topBar->isVisible();
     const int originalTimelineHeight = _p->timeline->height();
@@ -125,9 +130,71 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     fullscreenKey(target, Qt::Key_F11);
     settleFullscreen();
     const bool entered = isFullScreen();
+#ifdef Q_OS_WIN
+    const auto fullscreenNativeWindow = reinterpret_cast<HWND>(winId());
+    const LONG_PTR fullscreenNativeStyle = GetWindowLongPtr(fullscreenNativeWindow, GWL_STYLE);
+    add(QStringLiteral("Windows fullscreen composition style"),
+        entered && _p->fullscreenActive && IsWindow(fullscreenNativeWindow) &&
+            (fullscreenNativeStyle & WS_BORDER) != 0,
+        {{"nativeStyle", QString::number(static_cast<qulonglong>(fullscreenNativeStyle), 16)},
+         {"nativeBorder", (fullscreenNativeStyle & WS_BORDER) != 0}});
+#endif
     fullscreenKey(target, Qt::Key_Escape);
     settleFullscreen();
     add(QStringLiteral("Esc exits fullscreen"), entered && normal(), {{"receiver", "TlViewport"}});
+#ifdef Q_OS_WIN
+    const auto restoredNativeWindow = reinterpret_cast<HWND>(winId());
+    const LONG_PTR restoredNativeStyle = GetWindowLongPtr(restoredNativeWindow, GWL_STYLE);
+    // Compare the border bit to the actual normal-window baseline. Other
+    // native style bits describe visibility and window state, not the fix.
+    add(QStringLiteral("Windows fullscreen restores native border style"),
+        entered && normal() && originalNativeWindowValid && IsWindow(restoredNativeWindow) &&
+            (restoredNativeStyle & WS_BORDER) == (originalNativeStyle & WS_BORDER),
+        {{"originalNativeStyle", QString::number(static_cast<qulonglong>(originalNativeStyle), 16)},
+         {"restoredNativeStyle", QString::number(static_cast<qulonglong>(restoredNativeStyle), 16)},
+         {"originalNativeBorder", (originalNativeStyle & WS_BORDER) != 0},
+         {"restoredNativeBorder", (restoredNativeStyle & WS_BORDER) != 0}});
+#endif
+
+    {
+        QObject exitAfterCommitContext;
+        bool entryCommitted = false;
+        bool exitDispatched = false;
+        bool nativeStyleRestored = true;
+        const bool startedNormal = normal();
+        QJsonObject detail{{"settleMs", 220}};
+        fullscreenKey(target, Qt::Key_F11);
+        // Entry queued its commit first. Exit on the very next queued turn,
+        // after native composition refreshed but before a settling delay.
+        QTimer::singleShot(0, &exitAfterCommitContext, [&] {
+            entryCommitted = _p->fullscreenActive && isFullScreen() &&
+                !_p->fullscreenEntryPending && !_p->fullscreenEntryUpdatesSuspended &&
+                updatesEnabled() && target->updatesEnabled();
+#ifdef Q_OS_WIN
+            const auto committedWindow = reinterpret_cast<HWND>(winId());
+            const LONG_PTR committedStyle = GetWindowLongPtr(committedWindow, GWL_STYLE);
+            entryCommitted = entryCommitted && IsWindow(committedWindow) && (committedStyle & WS_BORDER) != 0;
+            detail.insert("committedNativeStyle", QString::number(static_cast<qulonglong>(committedStyle), 16));
+#endif
+            exitDispatched = true;
+            fullscreenKey(target, Qt::Key_Escape);
+        });
+        settleFullscreen();
+#ifdef Q_OS_WIN
+        const auto exitedWindow = reinterpret_cast<HWND>(winId());
+        const LONG_PTR exitedStyle = GetWindowLongPtr(exitedWindow, GWL_STYLE);
+        nativeStyleRestored = originalNativeWindowValid && IsWindow(exitedWindow) &&
+            (exitedStyle & WS_BORDER) == (originalNativeStyle & WS_BORDER);
+        detail.insert("originalNativeStyle", QString::number(static_cast<qulonglong>(originalNativeStyle), 16));
+        detail.insert("restoredNativeStyle", QString::number(static_cast<qulonglong>(exitedStyle), 16));
+#endif
+        detail.insert("startedNormal", startedNormal);
+        detail.insert("entryCommittedBeforeExit", entryCommitted);
+        detail.insert("exitDispatched", exitDispatched);
+        detail.insert("nativeStyleRestored", nativeStyleRestored);
+        add(QStringLiteral("Fullscreen exit after native composition commit"),
+            startedNormal && entryCommitted && exitDispatched && normal() && nativeStyleRestored, detail);
+    }
 
     {
         // Ignore physical cursor movement without changing production timers.

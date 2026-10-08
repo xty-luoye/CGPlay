@@ -2,15 +2,15 @@
 
 CGPlay 是面向 VFX、动画和合成审片流程的 Windows 播放器，使用 C++17、Qt 6、tlRender 和 Python 构建。项目开发目录曾使用 RVLite 名称，代码中仍保留部分命名。
 
-当前源码版本：**1.0.7.13**。
+当前源码版本：**1.0.7.14**。
 
-- [下载 1.0.7.13 Windows 完整安装包](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.7.13/CGPlay_Setup_1.0.7.13_full.exe)
-- [版本发布页](https://github.com/xty-luoye/CGPlay/releases/tag/v1.0.7.13)
+- [下载 1.0.7.14 Windows 完整安装包](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.7.14/CGPlay_Setup_1.0.7.14_full.exe)
+- [版本发布页](https://github.com/xty-luoye/CGPlay/releases/tag/v1.0.7.14)
 - [使用说明](docs/CGPlay_使用说明_1.0.7.md)
 - [构建说明与当前限制](docs/OFFICIAL_BUILD.md)
 - [贡献指南](CONTRIBUTING.md)
 
-1.0.7.13 默认在后台检查 GitHub 最新正式版，支持下载、校验和安装。1.0.7.11 及更早版本请先手动安装一次本版，再使用新的自动更新通道。
+1.0.7.14 默认在后台检查 GitHub 最新正式版，支持下载、校验和安装。1.0.7.11 及更早版本请先手动安装一次本版，再使用新的自动更新通道。
 
 ## 主要功能
 
@@ -25,14 +25,15 @@ CGPlay 是面向 VFX、动画和合成审片流程的 Windows 播放器，使用
 
 实际支持的媒体格式取决于 tlRender、FFmpeg、OpenImageIO 和编码器的构建配置。
 
-## 1.0.7.13 更新
+## 1.0.7.14 更新
 
-- 全屏进度条和播放按钮改为浮层，约 140 毫秒滑入/滑出，显示和隐藏时不再挤小视频画面。
-- 合并进入、退出全屏的布局与重绘，减少重复调整视频尺寸带来的停顿；保持原有播放状态。
-- 修复全屏空格键被控件焦点影响的问题，按住按键不再反复切换播放/暂停，并遵循自定义快捷键设置。
-- 修复快速连续进出全屏后的布局恢复；拖动进度或使用弹出菜单时保持控制条显示。
+- 修复部分 Windows 设备按 F11 进入全屏后，视频画面停在旧帧的问题。
+- 修复上述情况下按空格恢复播放后，画面仍不更新的表现。
+- 统一程序内版本标识，让关于页面与更新检查正确识别当前版本。
 
-详见[完整更新说明](docs/RELEASE_NOTES_1.0.7.13.md)。
+继续保留全屏浮层控制条：移动鼠标时滑出，隐藏和显示时不改变视频大小；AI 工作台启动时默认关闭，需要时按需打开；支持 GitHub 自动更新。
+
+详见[完整更新说明](docs/RELEASE_NOTES_1.0.7.14.md)。
 
 ## 构建状态
 

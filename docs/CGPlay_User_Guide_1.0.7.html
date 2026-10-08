@@ -1,14 +1,14 @@
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CGPlay 使用说明 1.0.7.13</title>
+<title>CGPlay 使用说明 1.0.7.14</title>
 <style>body{font:16px/1.7 system-ui,"Microsoft YaHei",sans-serif;color:#18212f;background:#f7f9fb;margin:0}
 main{max-width:1020px;margin:36px auto;padding:32px;background:white;border-radius:12px}
 h1,h2,h3{line-height:1.4}h2{border-bottom:1px solid #d9e2ec;padding-bottom:8px;margin-top:36px}
 a{color:#2364aa}table{border-collapse:collapse;width:100%;margin:16px 0}td,th{border:1px solid #d9e2ec;padding:9px 12px;text-align:left}
 th{background:#eff4f8}code{background:#f1f4f6;padding:2px 5px}pre{overflow:auto;padding:16px;background:#f1f4f6}
-@media(max-width:700px){main{margin:0;padding:18px}table{display:block;overflow:auto}}</style></head><body><main><h1>CGPlay 使用说明（v1.0.7.13）</h1>
+@media(max-width:700px){main{margin:0;padding:18px}table{display:block;overflow:auto}}</style></head><body><main><h1>CGPlay 使用说明（v1.0.7.14）</h1>
 <p>更新日期：2026-10-08</p>
-<p>本文面向 Windows 完整版 1.0.7.13 用户。为保留已有链接，文档文件名仍沿用 1.0.7。</p>
+<p>本文面向 Windows 完整版 1.0.7.14 用户。为保留已有链接，文档文件名仍沿用 1.0.7。</p>
 <h2>0. 新用户快速上手</h2>
 <table>
 <thead>
@@ -49,30 +49,22 @@ th{background:#eff4f8}code{background:#f1f4f6;padding:2px 5px}pre{overflow:auto;
 </tbody>
 </table>
 <h2>1. 版本与安装包</h2>
-<p>本次发布 <strong>CGPlay_Setup_1.0.7.13_full.exe</strong>：</p>
+<p>本次发布 <strong>CGPlay_Setup_1.0.7.14_full.exe</strong>：</p>
 <ul>
-<li><a href="https://github.com/xty-luoye/CGPlay/releases/download/v1.0.7.13/CGPlay_Setup_1.0.7.13_full.exe">下载 1.0.7.13 完整版</a></li>
+<li><a href="https://github.com/xty-luoye/CGPlay/releases/download/v1.0.7.14/CGPlay_Setup_1.0.7.14_full.exe">下载 1.0.7.14 完整版</a></li>
 <li><a href="https://github.com/xty-luoye/CGPlay/releases">查看发布说明与其他版本</a></li>
 </ul>
 <p>Full 包含播放器、QuickLook、视频缩略图组件，以及随包提供的 FFmpeg、Python、Qt WebEngine 和 Codex CLI 运行环境。本次仅发布 Full 完整安装包。安装后从“帮助 → 关于 CGPlay”确认版本。</p>
 <p>基础播放可使用本地素材。包含运行组件不等于包含云端模型、账户、API 额度或所有 OCR 模型；在线 AI、翻译和语音识别仍需相应配置。</p>
 <h3>本版重点更新</h3>
 <ul>
-<li>
-<p>全屏进度条和播放按钮改为浮层，约 140 毫秒滑入/滑出，显示和隐藏时不再挤小视频画面。</p>
-</li>
-<li>
-<p>合并进入、退出全屏的布局与重绘，减少重复调整视频尺寸带来的停顿；保持原有播放状态。</p>
-</li>
-<li>
-<p>修复全屏空格键被控件焦点影响的问题，按住按键不再反复切换播放/暂停，并遵循自定义快捷键设置。</p>
-</li>
-<li>
-<p>修复快速连续进出全屏后的布局恢复；拖动进度或使用弹出菜单时保持控制条显示。</p>
-</li>
-<li>
-<p><a href="RELEASE_NOTES_1.0.7.13.md">完整更新说明</a>。</p>
-</li>
+<li>修复部分 Windows 设备按 F11 进入全屏后，视频画面停在旧帧的问题。</li>
+<li>修复上述情况下按空格恢复播放后，画面仍不更新的表现。</li>
+<li>统一程序内版本标识，让关于页面与更新检查正确识别当前版本。</li>
+</ul>
+<p>继续保留全屏浮层控制条：移动鼠标时滑出，隐藏和显示时不改变视频大小；AI 工作台启动时默认关闭，需要时按需打开；支持 GitHub 自动更新。</p>
+<ul>
+<li><a href="RELEASE_NOTES_1.0.7.14.md">完整更新说明</a>。</li>
 </ul>
 <h2>2. 核心定位</h2>
 <p>CGPlay 面向动画、影视、VFX、合成及字幕审看，提供播放、逐帧检查、A/B 对比、批注、播放列表、OTIO、OCIO、视频导出和 AI 工作台。</p>
@@ -265,7 +257,7 @@ th{background:#eff4f8}code{background:#f1f4f6;padding:2px 5px}pre{overflow:auto;
 <li>下载窗口显示进度并支持取消。大小和 SHA-256 校验通过后，选择“关闭并安装”；安装程序会等播放器退出后启动。</li>
 <li>设置的“软件维护”区域可以关闭“启动时自动检查更新”。</li>
 <li>“帮助 → 检查缺失组件”查看组件状态，并按提示处理。</li>
-<li>1.0.7.11 及更早版本仍可能读取旧更新镜像，请使用第 1 节直链先手动安装一次 1.0.7.13，之后即可使用新的自动更新通道。</li>
+<li>1.0.7.11 及更早版本仍可能读取旧更新镜像，请使用第 1 节直链先手动安装一次 1.0.7.14，之后即可使用新的自动更新通道。</li>
 <li>更新或修复安装前关闭播放器及 QuickLook，安装后从“帮助 → 关于 CGPlay”核对版本。</li>
 <li>组件下载需要网络，可下载内容取决于更新源；下载某个组件成功不代表所有 AI 环境均已配齐。</li>
 </ul>
