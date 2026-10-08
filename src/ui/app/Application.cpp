@@ -226,6 +226,8 @@ MainWindow::MainWindow(std::shared_ptr<AnnotationManager> annoMgr,
 
 MainWindow::~MainWindow()
 {
+    if (_p->updateCheckState) _p->updateCheckState->cancelled.store(true);
+    if (_p->updateDownloadState) _p->updateDownloadState->cancelled.store(true);
     ++_p->mediaProbeGeneration;
     if (_p->mediaProbeJob) {
         _p->mediaProbeJob->cancel();
@@ -676,18 +678,15 @@ void MainWindow::_setupAIAgentWorkspace()
         _p->aiDock->setWidget(_p->aiWorkspace);
     };
 
-    auto* pluginManager = ServiceLocator::getService<PluginManager>();
-    const bool codexUnavailable = !pluginManager || !pluginManager->hasPlugin(QStringLiteral("codex"));
-    const bool eagerLegacyWorkspace = codexUnavailable ||
-        (qApp && qApp->property("cgplay.qwenAsrProviderSmokeMode").toBool());
+    const bool eagerLegacyWorkspace =
+        qApp && qApp->property("cgplay.qwenAsrProviderSmokeMode").toBool();
     if (eagerLegacyWorkspace) {
         ensureWorkspace();
     }
     addDockWidget(Qt::RightDockWidgetArea, _p->aiDock);
     resizeDocks({_p->aiDock}, {460}, Qt::Horizontal);
-    if (!eagerLegacyWorkspace) {
-        _p->aiDock->hide();
-    }
+    // AI tools are opt-in for each session, including builds without Codex.
+    _p->aiDock->hide();
 
     connect(_p->aiDock, &QDockWidget::visibilityChanged, this, [this, ensureWorkspace](bool visible) {
         if (_p->windowSettings) {
@@ -2168,6 +2167,9 @@ void MainWindow::_setupStatusBar()
     _p->lblUpdate  = mk(QStringLiteral("发现新版本"), kAccent);
     _p->lblUpdate->setVisible(false);
     _p->lblUpdate->setCursor(Qt::PointingHandCursor);
+    _p->lblUpdate->setTextFormat(Qt::RichText);
+    _p->lblUpdate->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+    connect(_p->lblUpdate, &QLabel::linkActivated, this, [this]() { _checkForUpdates(true, false); });
     _p->lblView = mk(QStringLiteral("View: %1").arg(
         _p->ocioManager ? _p->ocioManager->currentView() : QStringLiteral("sRGB")), kText);
     auto* lblMeter = mk(QStringLiteral("L |▆▆| R |▆▆|   -20.5 LUFS"), "#7bdc8b");
@@ -2304,160 +2306,162 @@ void MainWindow::_showMissingComponentsPrompt(const QStringList& missing, bool i
 
 void MainWindow::_checkForUpdates(bool interactive, bool refreshRemote)
 {
-    const UpdateCheckResult updateCheck = UpdateService::instance().checkForUpdates(
-        qApp ? qApp->applicationVersion() : QString(), refreshRemote);
-    const QString updateRemoteVersion = updateCheck.remoteVersion;
-    const QString updateCurrentVersion = updateCheck.currentVersion;
-
-    if (updateCheck.updateAvailable) {
-        _p->updateAvailable = true;
-        _p->remoteUpdateVersion = updateRemoteVersion;
-        _setUpdateStatusBadge(
-            QStringLiteral("发现新版本 %1").arg(updateRemoteVersion),
-            QString::fromLatin1(kAccent),
-            QStringLiteral("检测到可用更新，手动检查时可直接下载安装。"));
-        if (!interactive) {
-            return;
-        }
-        QMessageBox prompt(QMessageBox::Question,
-                           QStringLiteral("发现新版本"),
-                           QStringLiteral("当前版本：%1\n最新版本：%2\n\n是否现在下载安装？")
-                               .arg(updateCurrentVersion, updateRemoteVersion),
-                           QMessageBox::NoButton,
-                           this);
-        auto* updateButton = prompt.addButton(QStringLiteral("立即更新"), QMessageBox::AcceptRole);
-        auto* websiteButton = prompt.addButton(QStringLiteral("打开官网"), QMessageBox::ActionRole);
-        prompt.addButton(QStringLiteral("稍后"), QMessageBox::RejectRole);
-        prompt.setDefaultButton(updateButton);
-        prompt.exec();
-        if (prompt.clickedButton() == updateButton && _downloadAndLaunchInstaller(updateRemoteVersion)) {
-            return;
-        }
-        if (prompt.clickedButton() == websiteButton) {
-            QDesktopServices::openUrl(QUrl(QStringLiteral("https://cgplay-app.netlify.app/#download")));
-        }
+    if (_p->updateClosing) return;
+    if (_p->updateDownloadInProgress) {
+        if (statusBar()) statusBar()->showMessage(QStringLiteral("正在下载更新，可在下载窗口中查看进度或取消。"), 4000);
         return;
     }
-
-    _p->updateAvailable = false;
-    _p->remoteUpdateVersion.clear();
-    _setUpdateStatusBadge({}, QString::fromLatin1(kSec), {});
-
-    if (!interactive) {
+    if (!refreshRemote && !_p->latestUpdateResult.isEmpty()) {
+        if (interactive) _presentUpdateResult(_p->latestUpdateResult);
         return;
     }
+    if (_p->updateCheckInProgress) {
+        _p->updateCheckInteractive = _p->updateCheckInteractive || interactive;
+        return;
+    }
+    _p->updateCheckInProgress = true;
+    _p->updateCheckInteractive = interactive;
+    const QString currentVersion = qApp->applicationVersion();
+    const auto state = std::make_shared<UpdateTransferState>();
+    _p->updateCheckState = state;
+    if (interactive && statusBar()) statusBar()->showMessage(QStringLiteral("正在后台检查 GitHub 最新版本…"));
+    auto* watcher = new QFutureWatcher<UpdateCheckResult>(this);
+    connect(watcher, &QFutureWatcher<UpdateCheckResult>::finished, this, [this, watcher, state]() {
+        const auto result = watcher->result();
+        watcher->deleteLater();
+        _p->updateCheckInProgress = false;
+        const bool interactiveResult = _p->updateCheckInteractive;
+        _p->updateCheckInteractive = false;
+        if (state->cancelled.load()) {
+            if (interactiveResult && !_p->updateClosing) _checkForUpdates(true);
+            return;
+        }
+        _applyBackgroundUpdateResult(result.toJson());
+        if (interactiveResult) _presentUpdateResult(result.toJson());
+    });
+    watcher->setFuture(QtConcurrent::run([currentVersion, state]() {
+        return UpdateService::instance().checkForUpdates(currentVersion, state);
+    }));
+}
 
-    const QString versionText = !updateCheck.error.isEmpty()
-        ? QStringLiteral("检查更新失败：\n%1").arg(updateCheck.error)
-        : updateRemoteVersion.isEmpty()
-        ? QStringLiteral("未能获取远端版本信息。")
-        : QStringLiteral("当前版本：%1\n最新版本：%2\n\n当前已经是最新版本。")
-            .arg(updateCurrentVersion, updateRemoteVersion);
-    QMessageBox::information(this, QStringLiteral("版本检查"), versionText);
+void MainWindow::_presentUpdateResult(const QJsonObject& json)
+{
+    if (_p->updateClosing) return;
+    const auto result = UpdateCheckResult::fromJson(json);
+    if (!result.error.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("检查更新"), result.error);
+        return;
+    }
+    if (!result.updateAvailable) {
+        QMessageBox::information(this, QStringLiteral("检查更新"),
+            QStringLiteral("当前版本：%1\n最新版本：%2\n\n当前已经是最新版本。")
+                .arg(result.currentVersion, result.remoteVersion));
+        return;
+    }
+    QMessageBox prompt(QMessageBox::Question, QStringLiteral("发现新版本"),
+        QStringLiteral("当前版本：%1\n最新版本：%2\n\n下载完成后会校验安装包，安装前会再次提醒。")
+            .arg(result.currentVersion, result.remoteVersion), QMessageBox::NoButton, this);
+    prompt.setTextFormat(Qt::PlainText);
+    if (!result.releaseNotes.isEmpty()) prompt.setDetailedText(result.releaseNotes);
+    auto* download = prompt.addButton(QStringLiteral("下载更新"), QMessageBox::AcceptRole);
+    auto* page = prompt.addButton(QStringLiteral("查看更新说明"), QMessageBox::ActionRole);
+    prompt.addButton(QStringLiteral("稍后"), QMessageBox::RejectRole);
+    prompt.exec();
+    if (_p->updateClosing) return;
+    if (prompt.clickedButton() == download) _downloadAndLaunchInstaller(result.remoteVersion);
+    else if (prompt.clickedButton() == page) {
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/xty-luoye/CGPlay/releases/latest")));
+    }
 }
 
 bool MainWindow::_downloadAndLaunchInstaller(const QString& targetVersion)
 {
-    if (_p->updateDownloadInProgress) {
-        QMessageBox::information(
-            this,
-            QStringLiteral("正在下载更新"),
-            QStringLiteral("安装包正在后台下载，请稍候。"));
+    if (_p->updateClosing) return false;
+    if (_p->updateDownloadInProgress) return true;
+    const auto release = UpdateCheckResult::fromJson(_p->latestUpdateResult);
+    if (!release.updateAvailable || release.remoteVersion != targetVersion) {
+        _checkForUpdates(true);
+        return false;
+    }
+    if (_p->verifiedUpdateInstaller && _p->verifiedUpdateVersion == targetVersion &&
+        _p->verifiedUpdateInstaller->downloaded &&
+        _p->verifiedUpdateInstaller->sha256.compare(release.sha256, Qt::CaseInsensitive) == 0 &&
+        QFileInfo(_p->verifiedUpdateInstaller->installerPath).isFile() &&
+        QFileInfo(_p->verifiedUpdateInstaller->installerPath).size() == release.installerSize) {
+        _offerDownloadedUpdate(*_p->verifiedUpdateInstaller);
         return true;
     }
-
     _p->updateDownloadInProgress = true;
-    const QString updateDir = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
-        .filePath(QStringLiteral("cgplay_update"));
-    const QString installerPath = QDir(updateDir).filePath(
-        QStringLiteral("CGPlay_Setup_%1.exe").arg(targetVersion));
-    const qint64 expectedBytes = ComponentManager::instance().remoteInstallerSize(QStringLiteral("full"));
-    auto* progress = new QProgressDialog(
-        QStringLiteral("正在后台下载安装包，播放器可以继续使用。\n准备下载..."),
-        QString(),
-        0,
-        expectedBytes > 0 ? 1000 : 0,
-        this);
+    const auto state = std::make_shared<UpdateTransferState>();
+    _p->updateDownloadState = state;
+    auto* progress = new QProgressDialog(QStringLiteral("正在后台下载安装包，播放器可以继续使用。"),
+        QStringLiteral("取消下载"), 0, 1000, this);
+    progress->setObjectName(QStringLiteral("UpdateDownloadProgress"));
     progress->setWindowTitle(QStringLiteral("CGPlay 更新"));
     progress->setWindowModality(Qt::NonModal);
-    progress->setCancelButton(nullptr);
     progress->setMinimumDuration(0);
     progress->setAutoClose(false);
-    progress->setValue(0);
+    progress->setAutoReset(false);
     progress->setAttribute(Qt::WA_DeleteOnClose);
+    progress->setValue(0);
+    connect(progress, &QProgressDialog::canceled, this, [state]() { state->cancelled.store(true); });
     progress->show();
-
-    auto* progressTimer = new QTimer(progress);
-    progressTimer->setInterval(400);
-    connect(progressTimer, &QTimer::timeout, progress,
-            [progress, installerPath, expectedBytes]() {
-        const qint64 partialBytes = QFileInfo(installerPath + QStringLiteral(".part")).size();
-        const qint64 finalBytes = QFileInfo(installerPath).size();
-        const qint64 receivedBytes = std::max(partialBytes, finalBytes);
-        const double receivedMb = static_cast<double>(receivedBytes) / (1024.0 * 1024.0);
-        if (expectedBytes > 0) {
-            const double totalMb = static_cast<double>(expectedBytes) / (1024.0 * 1024.0);
-            const int permille = static_cast<int>(std::clamp(
-                (static_cast<double>(receivedBytes) * 1000.0) / static_cast<double>(expectedBytes),
-                0.0,
-                1000.0));
-            progress->setValue(permille);
-            progress->setLabelText(
-                QStringLiteral("正在后台下载安装包，播放器可以继续使用。\n已下载 %1 / %2 MB（%3%）")
-                    .arg(receivedMb, 0, 'f', 1)
-                    .arg(totalMb, 0, 'f', 1)
-                    .arg(permille / 10.0, 0, 'f', 1));
-        } else {
-            progress->setRange(0, 0);
-            progress->setLabelText(
-                QStringLiteral("正在后台下载安装包，播放器可以继续使用。\n已下载 %1 MB")
-                    .arg(receivedMb, 0, 'f', 1));
-        }
+    auto* timer = new QTimer(progress);
+    connect(timer, &QTimer::timeout, progress, [state, progress, total = release.installerSize]() {
+        const qint64 received = state->received.load();
+        progress->setValue(static_cast<int>(std::clamp(received * 1000 / std::max<qint64>(total, 1), 0LL, 1000LL)));
+        progress->setLabelText(QStringLiteral("正在后台下载更新，播放器可以继续使用。\n已下载 %1 / %2 MB")
+            .arg(received / (1024.0 * 1024.0), 0, 'f', 1).arg(total / (1024.0 * 1024.0), 0, 'f', 1));
     });
-    progressTimer->start();
-
-    auto* watcher = new QFutureWatcher<UpdateInstallResult>(this);
-    const QPointer<MainWindow> guard(this);
+    timer->start(250);
     const QPointer<QProgressDialog> progressGuard(progress);
+    auto* watcher = new QFutureWatcher<UpdateInstallResult>(this);
     connect(watcher, &QFutureWatcher<UpdateInstallResult>::finished, this,
-            [guard, progressGuard, watcher]() {
-        const UpdateInstallResult updateInstall = watcher->result();
+        [this, watcher, state, progressGuard, version = release.remoteVersion]() {
+        const auto result = watcher->result();
         watcher->deleteLater();
+        const bool wasCancelled = state->cancelled.load();
         if (progressGuard) {
+            progressGuard->disconnect(this);
             progressGuard->close();
         }
-        if (!guard) {
+        _p->updateDownloadInProgress = false;
+        if (wasCancelled || _p->updateClosing) {
+            if (statusBar()) statusBar()->showMessage(QStringLiteral("更新下载已取消。"), 4000);
             return;
         }
-
-        guard->_p->updateDownloadInProgress = false;
-        if (!updateInstall.downloaded) {
-            QMessageBox::warning(
-                guard,
-                QStringLiteral("下载失败"),
-                QStringLiteral("无法下载安装包：\n%1").arg(updateInstall.error));
+        if (!result.downloaded) {
+            QMessageBox::warning(this, QStringLiteral("更新下载失败"), result.error);
             return;
         }
-        if (!updateInstall.launched) {
-            QMessageBox::warning(guard, QStringLiteral("启动失败"), updateInstall.error);
-            return;
-        }
-
-        QMessageBox::information(
-            guard,
-            QStringLiteral("更新已下载"),
-            QStringLiteral("安装包已下载完成。\nCGPlay 将关闭并启动安装程序。"));
-        QTimer::singleShot(200, guard, [guard]() {
-            if (guard) {
-                guard->close();
-            }
-        });
+        _p->verifiedUpdateVersion = version;
+        _p->verifiedUpdateInstaller = std::make_shared<UpdateInstallResult>(result);
+        _offerDownloadedUpdate(result);
     });
-
-    watcher->setFuture(QtConcurrent::run([targetVersion]() {
-        return UpdateService::instance().downloadAndLaunchInstaller(targetVersion, nullptr);
+    watcher->setFuture(QtConcurrent::run([release, state]() {
+        return UpdateService::instance().downloadInstaller(release, state);
     }));
     return true;
+}
+
+void MainWindow::_offerDownloadedUpdate(UpdateInstallResult installer)
+{
+    if (_p->updateClosing) return;
+    QMessageBox prompt(QMessageBox::Information, QStringLiteral("更新已准备好"),
+        QStringLiteral("安装包已通过完整性校验。立即安装将关闭 CGPlay，请先保存需要保留的工作。"),
+        QMessageBox::NoButton, this);
+    auto* install = prompt.addButton(QStringLiteral("关闭并安装"), QMessageBox::AcceptRole);
+    prompt.addButton(QStringLiteral("稍后安装"), QMessageBox::RejectRole);
+    prompt.setDetailedText(QStringLiteral("安装包位置：%1").arg(installer.installerPath));
+    prompt.exec();
+    if (prompt.clickedButton() != install || _p->updateClosing) return;
+    QString error;
+    if (!UpdateService::launchInstaller(installer, &error)) {
+        QMessageBox::warning(this, QStringLiteral("启动安装失败"), error);
+        return;
+    }
+    close();
+    QCoreApplication::quit();
 }
 
 void MainWindow::_setUpdateStatusBadge(const QString& text, const QString& color, const QString& toolTip)
@@ -2474,7 +2478,8 @@ void MainWindow::_setUpdateStatusBadge(const QString& text, const QString& color
         return;
     }
 
-    _p->lblUpdate->setText(text);
+    _p->lblUpdate->setText(QStringLiteral("<a href=\"update\" style=\"color:%1\">%2</a>")
+        .arg(color.toHtmlEscaped(), text.toHtmlEscaped()));
     _p->lblUpdate->setToolTip(toolTip);
     _p->lblUpdate->setStyleSheet(QString(
         "QLabel{color:%1;font-size:11px;padding:4px 10px;background:#111418;"
@@ -2483,52 +2488,39 @@ void MainWindow::_setUpdateStatusBadge(const QString& text, const QString& color
 
 void MainWindow::_applyBackgroundUpdateResult(const QJsonObject& result)
 {
-    const UpdateCheckResult updateResult = UpdateCheckResult::fromJson(result);
-    if (updateResult.updateAvailable && !updateResult.remoteVersion.isEmpty()) {
-        _p->updateAvailable = true;
-        _p->remoteUpdateVersion = updateResult.remoteVersion;
-        _setUpdateStatusBadge(
-            QStringLiteral("发现新版本 %1").arg(updateResult.remoteVersion),
-            QString::fromLatin1(kAccent),
-            QStringLiteral("检测到可用更新，点击“帮助 -> 检查版本更新”可直接下载安装。"));
-        if (statusBar()) {
-            statusBar()->showMessage(QStringLiteral("检测到新版本 %1").arg(updateResult.remoteVersion), 4000);
-        }
+    const auto update = UpdateCheckResult::fromJson(result);
+    if (!update.error.isEmpty()) {
+        qWarning() << "[UpdateCheck]" << update.error;
         return;
     }
-
-    _p->updateAvailable = false;
-    _p->remoteUpdateVersion.clear();
-    _setUpdateStatusBadge({}, QString::fromLatin1(kSec), {});
-    if (!updateResult.error.isEmpty()) {
-        qWarning() << "[UpdateCheck]" << updateResult.error;
+    _p->latestUpdateResult = result;
+    _p->updateAvailable = update.updateAvailable;
+    _p->remoteUpdateVersion = update.remoteVersion;
+    if (update.updateAvailable) {
+        _setUpdateStatusBadge(QStringLiteral("发现新版本 %1，点击更新").arg(update.remoteVersion),
+            QString::fromLatin1(kAccent), QStringLiteral("查看更新说明、下载并安装新版本。"));
+        if (statusBar()) statusBar()->showMessage(QStringLiteral("发现新版本 %1").arg(update.remoteVersion), 8000);
+    } else {
+        _setUpdateStatusBadge({}, QString::fromLatin1(kSec), {});
+        if (statusBar()) statusBar()->clearMessage();
     }
 }
 
 void MainWindow::_scheduleBackgroundUpdateCheck()
 {
+    if (const auto* app = qobject_cast<Application*>(qApp); app && app->isAutomationMode()) return;
     if (qApp->property("cgplay.benchmarkMode").toBool() ||
         qApp->property("cgplay.captureUiMode").toBool() ||
         qApp->property("cgplay.playerSmokeMode").toBool() ||
-        qApp->property("cgplay.componentCheckMode").toBool()) {
-        return;
-    }
-
-    QTimer::singleShot(2500, this, [this]() {
-        QPointer<MainWindow> guard(this);
-        const auto updateCheckTask = QtConcurrent::run([guard]() {
-            const UpdateCheckResult updateResult = UpdateService::instance().checkForUpdates(
-                qApp ? qApp->applicationVersion() : QString());
-
-            QMetaObject::invokeMethod(qApp, [guard, updateResult]() {
-                if (!guard) {
-                    return;
-                }
-                guard->_applyBackgroundUpdateResult(updateResult.toJson());
-            }, Qt::QueuedConnection);
-        });
-        Q_UNUSED(updateCheckTask);
-    });
+        qApp->property("cgplay.componentCheckMode").toBool()) return;
+    const auto check = [this]() {
+        if (!_p->userSettings || _p->userSettings->value(QStringLiteral("updates/checkAutomatically"), true).toBool())
+            _checkForUpdates(false);
+    };
+    QTimer::singleShot(5000, this, check);
+    auto* dailyCheck = new QTimer(this);
+    connect(dailyCheck, &QTimer::timeout, this, check);
+    dailyCheck->start(24 * 60 * 60 * 1000);
 }
 
 // 鈹€鈹€鈹€ Signal wiring 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€

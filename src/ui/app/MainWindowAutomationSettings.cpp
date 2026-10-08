@@ -2,6 +2,7 @@
 #include "services/platform/WindowsFileAssociations.h"
 #include <QListWidget>
 #include <QStandardItemModel>
+#include <QScopeGuard>
 #include <QTabBar>
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
@@ -100,6 +101,19 @@ QJsonArray MainWindow::_runSettingsSmokeChecks()
         ? QFileInfo(args[outputArg + 1]).absolutePath()
         : QDir::current().absoluteFilePath(QStringLiteral("tests/artifacts/settings_smoke")));
     QDir().mkpath(outputDir.absolutePath());
+    const QString automaticUpdateKey = QStringLiteral("updates/checkAutomatically");
+    const bool hadAutomaticUpdateSetting = _p->userSettings->contains(automaticUpdateKey);
+    const QVariant originalAutomaticUpdateSetting = _p->userSettings->value(automaticUpdateKey);
+    const auto restoreAutomaticUpdateSetting = [&] {
+        if (hadAutomaticUpdateSetting)
+            _p->userSettings->setValue(automaticUpdateKey, originalAutomaticUpdateSetting);
+        else
+            _p->userSettings->remove(automaticUpdateKey);
+        _p->userSettings->sync();
+    };
+    const auto automaticUpdateCleanup = qScopeGuard(restoreAutomaticUpdateSetting);
+    _p->userSettings->remove(automaticUpdateKey);
+    _p->userSettings->sync();
     SettingsStyleObserver observer;
     installEventFilter(&observer);
     const bool wasConstructed = !_p->settingsDialog.isNull();
@@ -134,6 +148,50 @@ QJsonArray MainWindow::_runSettingsSmokeChecks()
         dialog->reject();
         return results;
     }
+
+    auto* automaticUpdates = dialog->findChild<QCheckBox*>(QStringLiteral("AutomaticUpdateCheck"));
+    const bool automaticDefault = automaticUpdates && automaticUpdates->isChecked();
+    const auto previousCheckState = _p->updateCheckState;
+    const bool previousCheckInteractive = _p->updateCheckInteractive;
+    const bool previousCheckInProgress = _p->updateCheckInProgress;
+    const auto cancelledBackground = std::make_shared<UpdateTransferState>();
+    const auto explicitCheck = std::make_shared<UpdateTransferState>();
+    bool savedAutomaticDisabled = false;
+    bool savedAutomaticEnabled = false;
+    bool interactiveCheckPreserved = false;
+    if (automaticUpdates) {
+        // Test cancellation with data-only tokens; never start a network worker.
+        _p->updateCheckState = cancelledBackground;
+        _p->updateCheckInteractive = false;
+        automaticUpdates->click();
+        savedAutomaticDisabled = !automaticUpdates->isChecked() &&
+            _p->userSettings->contains(automaticUpdateKey) &&
+            !_p->userSettings->value(automaticUpdateKey).toBool() && cancelledBackground->cancelled.load();
+        automaticUpdates->click();
+        savedAutomaticEnabled = automaticUpdates->isChecked() &&
+            _p->userSettings->value(automaticUpdateKey).toBool();
+        _p->updateCheckState = explicitCheck;
+        _p->updateCheckInteractive = true;
+        automaticUpdates->click();
+        interactiveCheckPreserved = !automaticUpdates->isChecked() && !explicitCheck->cancelled.load();
+    }
+    const bool noCheckDispatched = _p->updateCheckState == (automaticUpdates ? explicitCheck : previousCheckState) &&
+        _p->updateCheckInProgress == previousCheckInProgress;
+    _p->updateCheckState = previousCheckState;
+    _p->updateCheckInteractive = previousCheckInteractive;
+    restoreAutomaticUpdateSetting();
+    if (automaticUpdates) {
+        const QSignalBlocker blocker(automaticUpdates);
+        automaticUpdates->setChecked(!hadAutomaticUpdateSetting || originalAutomaticUpdateSetting.toBool());
+    }
+    const bool automaticSettingRestored = _p->userSettings->contains(automaticUpdateKey) == hadAutomaticUpdateSetting &&
+        (!hadAutomaticUpdateSetting || _p->userSettings->value(automaticUpdateKey) == originalAutomaticUpdateSetting);
+    add(QStringLiteral("Settings automatic update preference and cancellation"),
+        automaticDefault && savedAutomaticDisabled && savedAutomaticEnabled && interactiveCheckPreserved &&
+        noCheckDispatched && automaticSettingRestored,
+        {{"defaultEnabled", automaticDefault}, {"disabledPersistedAndBackgroundCancelled", savedAutomaticDisabled},
+         {"enabledPersisted", savedAutomaticEnabled}, {"explicitCheckPreserved", interactiveCheckPreserved},
+         {"noNetworkCheckDispatched", noCheckDispatched}, {"isolatedSettingRestored", automaticSettingRestored}});
 
     const QStringList expectedTabs{QStringLiteral("常规"), QStringLiteral("外观与布局"), QStringLiteral("工作区布局"),
         QStringLiteral("快捷键"), QStringLiteral("工具栏"), QStringLiteral("鼠标与手柄"), QStringLiteral("命令管理"),

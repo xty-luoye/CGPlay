@@ -94,7 +94,7 @@ class ApplicationSplitContracts(unittest.TestCase):
         self.assertIn("const bool cursorNearBottom", media)
         self.assertIn("_p->fullscreenMousePollTimer->stop();\n        showFullScreen();", media)
         self.assertIn("QTimer::singleShot(0, this, [this]()", media)
-        self.assertIn("!_p->fullscreenActive || !isFullScreen()) return;", media)
+        self.assertIn("if (_p->fullscreenActive && isFullScreen()) {", media)
         self.assertIn("_setFullScreenChromeVisible(false, true);", media)
         self.assertIn("QTimer::singleShot(150, this", media)
         self.assertIn("isFullScreen() && _p->fullscreenChromeVisible", media)
@@ -105,7 +105,7 @@ class ApplicationSplitContracts(unittest.TestCase):
         self.assertIn("_p->timeline->hide();", media)
         self.assertIn("_p->playbackBar->hide();", media)
         self.assertIn("_p->viewerShell->raise();", media)
-        self.assertIn("_p->viewer->viewport()->repaint();", media)
+        self.assertIn("_p->viewer->viewport()->update();", media)
         self.assertIn("_showFullScreenChromeTemporarily();", media)
         self.assertIn("_p->fullscreenMousePollTimer->stop();", media)
         self.assertIn("const bool fullscreen = _p->fullscreenActive || isFullScreen();", media)
@@ -128,6 +128,9 @@ class ApplicationSplitContracts(unittest.TestCase):
         self.assertIn('QStringLiteral("Fullscreen first frame and delayed zoom stability")', source)
         self.assertIn('QStringLiteral("Fullscreen explicit zoom after entry")', source)
         self.assertIn('QStringLiteral("Fullscreen entry restores repainting")', source)
+        self.assertIn('QStringLiteral("Fullscreen playing transition responsiveness")', source)
+        self.assertIn('"p95PaintGapMs"', source)
+        self.assertIn('"mediaFrameEvents"', source)
 
     def test_fullscreen_entry_defers_presentation_until_layout_settles(self):
         media = (APP_DIR / "ApplicationMedia.cpp").read_text(encoding="utf-8")
@@ -135,7 +138,10 @@ class ApplicationSplitContracts(unittest.TestCase):
             "void MainWindow::_showFullScreenChromeTemporarily()", 1)[0]
         entry = toggle.split("_p->fullscreenActive = true;", 1)[1]
         self.assertLess(entry.index("setUpdatesEnabled(false)"), entry.index("showFullScreen()"))
-        commit = entry.split("QTimer::singleShot(150", 1)[1]
+        self.assertNotIn("QTimer::singleShot(150", entry)
+        commit = entry.split("// The chrome helper queues one final splitter reconciliation.", 1)[1]
+        self.assertIn("QTimer::singleShot(0, this", commit)
+        self.assertIn("_p->fullscreenTransitionGeneration != transitionGeneration", commit)
         self.assertLess(commit.index("layout()->activate()"), commit.index("vp->setFrameView(true)"))
         self.assertLess(commit.index("vp->setFrameView(true)"), commit.index("setUpdatesEnabled(true)"))
         self.assertLess(commit.index("setUpdatesEnabled(true)"), commit.index("fullscreenMousePollTimer->start()"))
@@ -145,6 +151,13 @@ class ApplicationSplitContracts(unittest.TestCase):
         exit_entry = toggle.split("_p->fullscreenActive = false;", 1)[0]
         self.assertIn("_p->fullscreenEntryPending = false;", exit_entry)
         self.assertIn("setUpdatesEnabled(true);", exit_entry)
+
+    def test_fullscreen_chrome_does_not_synchronously_repaint_gl_ancestors(self):
+        media = (APP_DIR / "ApplicationMedia.cpp").read_text(encoding="utf-8")
+        chrome = media.split("void MainWindow::_setFullScreenChromeVisible", 1)[1].split(
+            "void MainWindow::_setFullScreenCursorHidden", 1)[0]
+        self.assertNotIn("->repaint()", chrome)
+        self.assertIn("_p->viewer->viewport()->update()", chrome)
 
 
 if __name__ == "__main__":

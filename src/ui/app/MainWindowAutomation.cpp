@@ -727,6 +727,26 @@ QJsonObject MainWindow::runPlayerSmokeChecks(const QString& mediaPath)
 {
     QJsonObject report;
     QJsonArray results;
+    // Focused regression runs share the production smoke path, while an
+    // unset filter retains the complete command/shortcut coverage gate.
+    const QStringList smokeGroups = qEnvironmentVariable("CGPLAY_SMOKE_GROUPS")
+        .split(QLatin1Char(','), Qt::SkipEmptyParts);
+    if (!smokeGroups.isEmpty()) {
+        for (const QString& requested : smokeGroups) {
+            const QString group = requested.trimmed();
+            if (group == QStringLiteral("fullscreen")) {
+                results.append(_runMediaOpenSmokeCheck(mediaPath));
+                for (const auto& result : _runFullscreenSmokeChecks()) results.append(result);
+            } else {
+                results.append(QJsonObject{{"name", "Smoke group"}, {"status", "FAIL"},
+                    {"message", QStringLiteral("Unknown smoke group: %1").arg(group)}});
+            }
+        }
+        report["groups"] = QJsonArray::fromStringList(smokeGroups);
+        report["results"] = results;
+        report["summary"] = makeSummary(results);
+        return report;
+    }
     auto addResult = [&results](const QString& name, const QString& status, const QString& message, const QJsonObject& details = {}) {
         QJsonObject item;
         item["name"] = name;

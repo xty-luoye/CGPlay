@@ -413,8 +413,8 @@ AIDetectionResult AIProviderDetector::detect(const AIDetectionRequest& request)
             validationModels.prepend(current.recommendedModel);
         }
         if (!request.model.trimmed().isEmpty()) {
-            validationModels.removeAll(request.model.trimmed());
-            validationModels.prepend(request.model.trimmed());
+            // An explicit model is a contract, not a recommendation to replace on failure.
+            validationModels = QStringList{request.model.trimmed()};
         }
 
         QStringList validationErrors;
@@ -740,7 +740,8 @@ QVector<AIProviderCategory> AIProviderDetector::_candidateCategories(const AIDet
             appendUnique(AIProviderCategory::Ollama);
         }
         if (baseUrl.contains(QStringLiteral("googleapis.com")) || baseUrl.contains(QStringLiteral("google.ai"))) {
-            appendUnique(AIProviderCategory::Gemini);
+            appendUnique(baseUrl.contains(QStringLiteral("/openai"))
+                ? AIProviderCategory::OpenAICompatible : AIProviderCategory::Gemini);
         }
         if (baseUrl.contains(QStringLiteral("anthropic"))) {
             appendUnique(AIProviderCategory::Claude);

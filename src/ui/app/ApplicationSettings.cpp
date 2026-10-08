@@ -387,7 +387,20 @@ void MainWindow::_installSettingsWidgets(ReviewPanel* panel)
     displayLayout->addWidget(resetLayoutButton);
     generalLayout->addWidget(displayGroup);
     auto* maintenanceGroup = new QGroupBox(QStringLiteral("软件维护"), generalContent);
-    auto* maintenanceLayout = new QHBoxLayout(maintenanceGroup);
+    auto* maintenanceLayout = new QVBoxLayout(maintenanceGroup);
+    auto* automaticUpdates = new QCheckBox(QStringLiteral("启动时自动检查更新（运行期间每天检查一次）"), maintenanceGroup);
+    automaticUpdates->setObjectName(QStringLiteral("AutomaticUpdateCheck"));
+    automaticUpdates->setChecked(!_p->userSettings ||
+        _p->userSettings->value(QStringLiteral("updates/checkAutomatically"), true).toBool());
+    connect(automaticUpdates, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (_p->userSettings) {
+            _p->userSettings->setValue(QStringLiteral("updates/checkAutomatically"), enabled);
+            _p->userSettings->sync();
+        }
+        if (!enabled && !_p->updateCheckInteractive && _p->updateCheckState)
+            _p->updateCheckState->cancelled.store(true);
+    });
+    maintenanceLayout->addWidget(automaticUpdates);
     maintenanceLayout->addWidget(updateButton);
     maintenanceLayout->addWidget(componentButton);
     generalLayout->addWidget(maintenanceGroup);

@@ -92,12 +92,17 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     const auto normalSizes = _p->centerSplitter->sizes();
     const bool originalTopBar = _p->topBar->isVisible();
     const int originalTimelineHeight = _p->timeline->height();
+    const bool originalAIDock = _p->aiDock && _p->aiDock->isVisible();
+    const auto* codexDock = findChild<QDockWidget*>(QStringLiteral("CodexAgentWorkspaceDock"));
+    const bool originalCodexDock = codexDock && codexDock->isVisible();
     const auto normal = [&] {
         return !_p->fullscreenActive && !isFullScreen() && !_p->fullscreenCursorHidden &&
             !_p->fullscreenEntryPending && !_p->fullscreenEntryUpdatesSuspended &&
             updatesEnabled() && target->updatesEnabled() &&
             (!_p->fullscreenMousePollTimer || !_p->fullscreenMousePollTimer->isActive()) &&
             (!_p->fullscreenChromeTimer || !_p->fullscreenChromeTimer->isActive()) &&
+            (_p->aiDock && _p->aiDock->isVisible()) == originalAIDock &&
+            (codexDock && codexDock->isVisible()) == originalCodexDock &&
             _p->topBar->isVisible() == originalTopBar && _p->timeline->height() == originalTimelineHeight;
     };
     // Use the same live descriptor/action pair as the shortcut settings UI.
@@ -182,8 +187,9 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
         entryClock.start();
         fullscreenKey(target, Qt::Key_F11);
         injectEntryInput();
-        QTimer::singleShot(40, &paintProbe, injectEntryInput);
-        QTimer::singleShot(90, &paintProbe, injectEntryInput);
+        QTimer::singleShot(0, &paintProbe, [&] {
+            if (_p->fullscreenEntryPending) injectEntryInput();
+        });
         settleFullscreen(220);
         samples.append(snapshot());
         while (entryClock.elapsed() < 2250) {
@@ -358,6 +364,116 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     const bool restoredSaved = grab().save(restoredCapture);
     add(QStringLiteral("Fullscreen layout evidence"), controlsSaved && restoredSaved && collapsed && normal(),
         {{"controlsCapture", controlsCapture}, {"restoredCapture", restoredCapture}, {"captureMethod", "QWidget::grab (background surface)"}});
+
+    // The geometry checks above also run while paused. Exercise actual
+    // playback separately: a correct final layout can still conceal a long
+    // interval with no painted video during entry/exit.
+    {
+        const QSignalBlocker cursorPollBlocker(_p->fullscreenMousePollTimer);
+        const int savedFrame = _p->playbackCtrl->currentFrame();
+        const int savedPlayback = _p->playbackCtrl->playbackState();
+        const bool savedMute = _p->playbackCtrl->isMuted();
+        _p->playbackCtrl->setMute(true);
+        QJsonArray trials;
+        bool responsive = _p->playbackCtrl->isValid() && _p->playbackCtrl->totalFrames() > 1;
+        constexpr qint64 stallLimitMs = 1000;
+        for (const bool maximized : {false, true, false}) {
+            if (maximized) showMaximized(); else showNormal();
+            _p->playbackCtrl->pause();
+            _p->playbackCtrl->seekToFrame(0);
+            _p->playbackCtrl->play();
+            settleFullscreen(300);
+
+            QElapsedTimer clock;
+            clock.start();
+            QVector<qint64> paintIntervals;
+            QJsonArray paintedFrames;
+            qint64 lastPaintMs = -1;
+            qint64 lastRendered = target->renderFrameCount();
+            qint64 firstFullscreenPaintMs = -1;
+            qint64 entryStartMs = -1;
+            qint64 maxPaintGapMs = 0;
+            int mediaFrameEvents = 0;
+            int swapEvents = 0;
+            FullscreenPaintProbe playbackProbe;
+            target->installEventFilter(&playbackProbe);
+            const auto frameConnection = connect(_p->playbackCtrl->signalProxy(), &PlaybackServiceSignals::currentFrameChanged,
+                &playbackProbe, [&](int, int) { ++mediaFrameEvents; });
+            const auto swapConnection = connect(target, &QOpenGLWidget::frameSwapped,
+                &playbackProbe, [&] { ++swapEvents; });
+            playbackProbe.onPaint = [&] {
+                if (!updatesEnabled() || !target->updatesEnabled()) return;
+                const qint64 before = target->renderFrameCount();
+                // The filter runs before paintGL. Count only a completed
+                // renderer invocation, not repeated/disabled Paint events.
+                QTimer::singleShot(0, &playbackProbe, [&, before] {
+                    const qint64 rendered = target->renderFrameCount();
+                    if (rendered <= before || rendered <= lastRendered) return;
+                    const qint64 now = clock.elapsed();
+                    if (lastPaintMs >= 0) {
+                        const qint64 gap = now - lastPaintMs;
+                        paintIntervals.append(gap);
+                        maxPaintGapMs = std::max(maxPaintGapMs, gap);
+                    }
+                    lastPaintMs = now;
+                    lastRendered = rendered;
+                    if (entryStartMs >= 0 && isFullScreen() && !_p->fullscreenEntryPending &&
+                        firstFullscreenPaintMs < 0) firstFullscreenPaintMs = now;
+                    paintedFrames.append(QJsonObject{{"elapsedMs", double(now)},
+                        {"renderFrameCount", double(rendered)},
+                        {"mediaFrame", _p->playbackCtrl->currentFrame()},
+                        {"fullscreen", isFullScreen()}, {"entryPending", _p->fullscreenEntryPending}});
+                });
+            };
+            settleFullscreen(250);
+            const int frameBefore = _p->playbackCtrl->currentFrame();
+            entryStartMs = clock.elapsed();
+            QElapsedTimer callClock;
+            callClock.start();
+            fullscreenKey(target, Qt::Key_F11);
+            const double entryCallMs = callClock.nsecsElapsed() / 1e6;
+            settleFullscreen(650);
+            const int frameInFullscreen = _p->playbackCtrl->currentFrame();
+            const bool keptPlaying = _p->playbackCtrl->playbackState() == 1;
+            callClock.restart();
+            fullscreenKey(target, Qt::Key_Escape);
+            const double exitCallMs = callClock.nsecsElapsed() / 1e6;
+            settleFullscreen(350);
+            target->removeEventFilter(&playbackProbe);
+            playbackProbe.onPaint = {};
+            disconnect(frameConnection);
+            disconnect(swapConnection);
+            if (lastPaintMs >= 0) maxPaintGapMs = std::max(maxPaintGapMs, clock.elapsed() - lastPaintMs);
+            std::sort(paintIntervals.begin(), paintIntervals.end());
+            const qint64 p95PaintGapMs = paintIntervals.isEmpty() ? -1 : paintIntervals[
+                std::min(paintIntervals.size() - 1, qsizetype(std::ceil(paintIntervals.size() * 0.95)) - 1)];
+            const qint64 firstPaintLatencyMs = firstFullscreenPaintMs >= 0
+                ? firstFullscreenPaintMs - entryStartMs : -1;
+            const bool passed = normal() && isMaximized() == maximized && keptPlaying &&
+                _p->playbackCtrl->playbackState() == 1 && mediaFrameEvents > 2 &&
+                frameInFullscreen != frameBefore && paintIntervals.size() >= 4 &&
+                firstPaintLatencyMs >= 0 && firstPaintLatencyMs < stallLimitMs &&
+                maxPaintGapMs < stallLimitMs && entryCallMs < stallLimitMs && exitCallMs < stallLimitMs;
+            responsive = responsive && passed;
+            trials.append(QJsonObject{{"passed", passed}, {"fromMaximized", maximized},
+                {"entryCallMs", entryCallMs}, {"exitCallMs", exitCallMs},
+                {"firstFullscreenPaintMs", double(firstPaintLatencyMs)},
+                {"maxPaintGapMs", double(maxPaintGapMs)}, {"p95PaintGapMs", double(p95PaintGapMs)},
+                {"paintedFrames", paintedFrames}, {"frameSwappedEvents", swapEvents},
+                {"mediaFrameEvents", mediaFrameEvents}, {"frameBefore", frameBefore},
+                {"frameInFullscreen", frameInFullscreen}, {"keptPlaying", keptPlaying}});
+        }
+        _p->playbackCtrl->pause();
+        _p->playbackCtrl->seekToFrame(savedFrame);
+        _p->playbackCtrl->setMute(savedMute);
+        if (savedPlayback == 1) _p->playbackCtrl->play();
+        else if (savedPlayback == 2) _p->playbackCtrl->reverse();
+        showNormal();
+        settleFullscreen();
+        add(QStringLiteral("Fullscreen playing transition responsiveness"), responsive,
+            {{"trials", trials}, {"stallLimitMs", double(stallLimitMs)},
+             {"measurement", "Completed paintGL invocations and media-frame events on hidden Qt surfaces"}});
+    }
     bind(originalShortcut);
     for (const auto& action : actions) action.first->setShortcut(action.second);
     return results;

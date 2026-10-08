@@ -39,6 +39,9 @@ public:
     static QList<QPair<QByteArray, QByteArray>> openAICompatibleHeaders(
         const QString& endpoint,
         const QByteArray& apiKey);
+    static QString chatTokenLimitParameter(const QString& baseUrl, const QString& model);
+    static QString geminiBaseUrl(const QString& baseUrl);
+    static QString geminiGenerateContentEndpoint(const QString& baseUrl, const QString& model);
 
     QString defaultBaseUrlForCategory(AIProviderCategory category) const;
     QString canonicalBaseUrl(AIProviderCategory category, const QString& inputBaseUrl) const;

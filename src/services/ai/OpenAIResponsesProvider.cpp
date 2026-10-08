@@ -202,23 +202,6 @@ void appendUniqueModel(QStringList* models, const QString& model)
     }
 }
 
-QStringList defaultSelectableModels()
-{
-    return {
-        QStringLiteral("deepseek-v3"),
-        QStringLiteral("qwen-max"),
-        QStringLiteral("gpt-5.5"),
-        QStringLiteral("gpt-5.5-mini"),
-        QStringLiteral("gpt-5.4"),
-        QStringLiteral("gpt-5.4-mini"),
-        QStringLiteral("gpt-5-mini"),
-        QStringLiteral("gpt-5"),
-        QStringLiteral("gemini-2.5-flash"),
-        QStringLiteral("gemini-2.5-pro"),
-        QStringLiteral("claude-sonnet-4-6")
-    };
-}
-
 bool isNonChatModel(const QString& model)
 {
     const QString lower = model.trimmed().toLower();
@@ -236,10 +219,11 @@ bool isVisionCapableModel(const QString& model)
 {
     const QString lower = model.trimmed().toLower();
     // Known text-only model families
-    if (lower.startsWith(QStringLiteral("deepseek")) ||
-        lower.startsWith(QStringLiteral("qwen-")) ||
-        lower.startsWith(QStringLiteral("kimi")) ||
-        lower.startsWith(QStringLiteral("doubao")) ||
+    if (lower == QStringLiteral("deepseek-chat") ||
+        lower == QStringLiteral("deepseek-reasoner") ||
+        lower == QStringLiteral("qwen-plus") ||
+        lower == QStringLiteral("qwen-max") ||
+        lower == QStringLiteral("qwen-turbo") ||
         lower.contains(QStringLiteral("text-only")) ||
         lower.contains(QStringLiteral("-text")) ||
         lower.contains(QStringLiteral("embedding")) ||
@@ -265,118 +249,15 @@ bool isVisionCapableModel(const QString& model)
     return true;
 }
 
-int openAIModelPriorityScore(const QString& model)
-{
-    const QString lower = model.trimmed().toLower();
-    if (lower.isEmpty()) {
-        return 1000;
-    }
-    if (isNonChatModel(lower)) {
-        return 900;
-    }
-    if (lower == QStringLiteral("deepseek-v4-pro")) {
-        return 0;
-    }
-    if (lower == QStringLiteral("deepseek-v4-flash")) {
-        return 5;
-    }
-    if (lower == QStringLiteral("deepseek-v3")) {
-        return 10;
-    }
-    if (lower == QStringLiteral("deepseek_v4")) {
-        return 0;
-    }
-    if (lower == QStringLiteral("qwen-max")) {
-        return 20;
-    }
-    if (lower == QStringLiteral("gpt-5.5")) {
-        return 30;
-    }
-    if (lower == QStringLiteral("gpt-5.5-mini")) {
-        return 35;
-    }
-    if (lower == QStringLiteral("gpt-5.4")) {
-        return 40;
-    }
-    if (lower == QStringLiteral("gpt-5.4-mini")) {
-        return 45;
-    }
-    if (lower == QStringLiteral("gpt-5-mini")) {
-        return 50;
-    }
-    if (lower == QStringLiteral("gpt-5")) {
-        return 55;
-    }
-    if (lower == QStringLiteral("gemini-2.5-flash")) {
-        return 60;
-    }
-    if (lower == QStringLiteral("gemini-2.5-pro")) {
-        return 65;
-    }
-    if (lower == QStringLiteral("claude-sonnet-4-6") ||
-        lower == QStringLiteral("claude-sonnet-4") ||
-        lower == QStringLiteral("claude-sonnet")) {
-        return 70;
-    }
-    if (lower.contains(QStringLiteral("deepseek"))) {
-        return 80;
-    }
-    if (lower.contains(QStringLiteral("qwen"))) {
-        return 90;
-    }
-    if (lower.contains(QStringLiteral("gpt-5.5-openai-compact"))) {
-        return 95;
-    }
-    if (lower.contains(QStringLiteral("gpt-5.5"))) {
-        return 100;
-    }
-    if (lower.contains(QStringLiteral("gpt-5.4-openai-compact"))) {
-        return 105;
-    }
-    if (lower.contains(QStringLiteral("gpt-5.4"))) {
-        return 110;
-    }
-    if (lower.contains(QStringLiteral("gpt-5-mini"))) {
-        return 115;
-    }
-    if (lower.contains(QStringLiteral("gpt-5"))) {
-        return lower.contains(QStringLiteral("codex")) ? 180 : 120;
-    }
-    if (lower.contains(QStringLiteral("gemini"))) {
-        return 130;
-    }
-    if (lower.contains(QStringLiteral("claude"))) {
-        return 140;
-    }
-    if (lower.contains(QStringLiteral("codex"))) {
-        return 190;
-    }
-    return 200;
-}
-
 QString preferredModelFromList(const QStringList& models)
 {
-    QStringList candidates;
+    // Discovery owns recommendations. For a raw server list, preserve its order
+    // instead of preferring a hard-coded generation that will become obsolete.
     for (const QString& model : models) {
-        appendUniqueModel(&candidates, model);
+        if (!model.trimmed().isEmpty() && !isNonChatModel(model)) return model.trimmed();
     }
-    std::stable_sort(
-        candidates.begin(),
-        candidates.end(),
-        [](const QString& lhs, const QString& rhs) {
-            const int lhsScore = openAIModelPriorityScore(lhs);
-            const int rhsScore = openAIModelPriorityScore(rhs);
-            if (lhsScore != rhsScore) {
-                return lhsScore < rhsScore;
-            }
-            if (lhs.size() != rhs.size()) {
-                return lhs.size() < rhs.size();
-            }
-            return lhs.compare(rhs, Qt::CaseInsensitive) < 0;
-        });
-    return candidates.isEmpty() ? QString() : candidates.front();
+    return models.isEmpty() ? QString() : models.front().trimmed();
 }
-
 QString scopeText(AIRequestScope scope)
 {
     switch (scope) {
@@ -525,11 +406,7 @@ bool looksLikeOpenAIModel(const QString& model)
 bool looksLikeAnthropicModel(const QString& model)
 {
     const QString normalized = model.trimmed().toLower();
-    return normalized.startsWith(QStringLiteral("claude")) ||
-        normalized.startsWith(QStringLiteral("deepseek")) ||
-        normalized.startsWith(QStringLiteral("qwen")) ||
-        normalized.startsWith(QStringLiteral("kimi")) ||
-        normalized.startsWith(QStringLiteral("doubao"));
+    return normalized.startsWith(QStringLiteral("claude"));
 }
 
 bool looksLikeGeminiModel(const QString& model)
@@ -550,33 +427,11 @@ bool looksLikeOllamaModelName(const QString& model)
 QString normalizeModelForProtocol(QString model, GatewayProtocol protocol)
 {
     model = model.trimmed();
-    const QString normalized = model.toLower();
-    if (normalized == QStringLiteral("deepseek_v4") ||
-        normalized == QStringLiteral("deepseek-v4")) {
-        model = QStringLiteral("deepseek-v4-pro");
-    } else if (normalized == QStringLiteral("deepseek_v4_flash")) {
-        model = QStringLiteral("deepseek-v4-flash");
-    } else if (normalized == QStringLiteral("deepseek_v4_pro")) {
-        model = QStringLiteral("deepseek-v4-pro");
+    // Model IDs belong to the server; aliases and future IDs must remain opaque.
+    if (protocol == GatewayProtocol::GeminiGenerateContent && model.startsWith(QStringLiteral("models/"))) {
+        model.remove(0, 7);
     }
-
-    if (model.isEmpty()) {
-        return model;
-    }
-
-    switch (protocol) {
-    case GatewayProtocol::OpenAIResponses:
-    case GatewayProtocol::OpenAIChatCompletions:
-        return model;
-    case GatewayProtocol::AnthropicMessages:
-        return model;
-    case GatewayProtocol::GeminiGenerateContent:
-        return looksLikeGeminiModel(model) ? model : QString();
-    case GatewayProtocol::OllamaChat:
-        return looksLikeOllamaModelName(model) ? model : QString();
-    default:
-        return model;
-    }
+    return model;
 }
 
 QString protocolSettingValue(GatewayProtocol protocol)
@@ -774,7 +629,7 @@ QStringList runtimeEndpointCandidates(
         appendUniqueEndpoint(
             &endpoints,
             protocol == GatewayProtocol::GeminiGenerateContent
-                ? withoutGeminiApiKeyQuery(detectedEndpoint)
+                ? AIConnectionValidator::geminiGenerateContentEndpoint(detectedEndpoint, model)
                 : detectedEndpoint);
     }
 
@@ -800,7 +655,7 @@ QStringList runtimeEndpointCandidates(
     } else if (protocol == GatewayProtocol::AnthropicMessages) {
         appendUniqueEndpoint(&endpoints, normalizeAnthropicEndpoint(baseUrl));
     } else if (protocol == GatewayProtocol::GeminiGenerateContent) {
-        appendUniqueEndpoint(&endpoints, normalizeGeminiEndpoint(baseUrl, model));
+        appendUniqueEndpoint(&endpoints, AIConnectionValidator::geminiGenerateContentEndpoint(baseUrl, model));
     } else {
         appendUniqueEndpoint(&endpoints, normalizeOllamaEndpoint(baseUrl));
     }
@@ -896,6 +751,7 @@ HttpJsonResult executeJsonRequest(
 
     QNetworkAccessManager manager;
     QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::SameOriginRedirectPolicy);
     request.setRawHeader("Accept", "application/json");
     if (body) {
         request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
@@ -953,6 +809,11 @@ HttpJsonResult executeJsonRequest(
         return result;
     }
 
+    if (result.statusCode < 200 || result.statusCode >= 300) {
+        result.errorMessage = QStringLiteral("接口未返回成功状态：HTTP %1").arg(result.statusCode);
+        reply->deleteLater();
+        return result;
+    }
     if (parseError.error != QJsonParseError::NoError) {
         result.errorMessage = QStringLiteral("返回内容不是合法 JSON：%1").arg(parseError.errorString());
         reply->deleteLater();
@@ -1150,7 +1011,9 @@ QString extractGeminiText(const QJsonObject& responseObject)
         const QJsonObject content = candidateValue.toObject().value(QStringLiteral("content")).toObject();
         const QJsonArray parts = content.value(QStringLiteral("parts")).toArray();
         for (const QJsonValue& partValue : parts) {
-            const QString text = partValue.toObject().value(QStringLiteral("text")).toString().trimmed();
+            const QJsonObject part = partValue.toObject();
+            if (part.value(QStringLiteral("thought")).toBool()) continue;
+            const QString text = part.value(QStringLiteral("text")).toString().trimmed();
             if (!text.isEmpty()) {
                 texts.push_back(text);
             }
@@ -1339,7 +1202,7 @@ QJsonObject buildGeminiRequestBody(
     const QString instructions = request.systemPrompt.trimmed();
     if (!instructions.isEmpty()) {
         body.insert(
-            QStringLiteral("system_instruction"),
+            QStringLiteral("systemInstruction"),
             QJsonObject{
                 { QStringLiteral("parts"), QJsonArray{
                       QJsonObject{ { QStringLiteral("text"), instructions } }
@@ -1368,6 +1231,12 @@ QJsonObject buildGeminiRequestBody(
             { QStringLiteral("parts"), parts }
         }
     });
+    const int maxOutputTokens = request.options.value(QStringLiteral("maxOutputTokens")).toInt();
+    if (maxOutputTokens > 0) {
+        body.insert(QStringLiteral("generationConfig"), QJsonObject{
+            { QStringLiteral("maxOutputTokens"), maxOutputTokens }
+        });
+    }
     return body;
 }
 
@@ -1600,16 +1469,7 @@ AIProviderCapabilities OpenAIResponsesProvider::capabilities() const
         if (!configured.isEmpty() && !models.contains(configured)) {
             models.prepend(configured);
         }
-        const QStringList fallbackModels = defaultSelectableModels();
-        for (const QString& model : fallbackModels) {
-            appendUniqueModel(&models, model);
-        }
-        if (models.isEmpty()) {
-            models = fallbackModels;
-        }
         capabilities.supportedModels = models;
-    } else {
-        capabilities.supportedModels = defaultSelectableModels();
     }
     return capabilities;
 }
@@ -1789,6 +1649,19 @@ AIResponse OpenAIResponsesProvider::chat(const AIRequest& request)
                 }
             }
 
+            if (httpResult.success && protocol == GatewayProtocol::OpenAIResponses) {
+                const QJsonObject resultObject = httpResult.document.object();
+                const QString status = resultObject.value(QStringLiteral("status")).toString();
+                if (status == QStringLiteral("incomplete")) {
+                    const QString reason = resultObject.value(QStringLiteral("incomplete_details"))
+                        .toObject().value(QStringLiteral("reason")).toString();
+                    return finishWithError(QStringLiteral("模型未完成回复（%1）。请增加输出预算或缩短请求后重试。")
+                        .arg(reason.isEmpty() ? status : reason));
+                }
+                if (status == QStringLiteral("failed") || status == QStringLiteral("cancelled")) {
+                    return finishWithError(QStringLiteral("模型请求未完成：%1").arg(status));
+                }
+            }
             if (httpResult.success && !attempt.text.trimmed().isEmpty()) {
                 break;
             }
@@ -1833,13 +1706,13 @@ AIResponse OpenAIResponsesProvider::chat(const AIRequest& request)
                     availableModels);
                 _settingsService->setValue(
                     QString::fromLatin1(kRecommendedModelSettingsKey),
-                    finalModel);
+                    attempt.resolvedModel);
                 _settingsService->setValue(
                     QString::fromLatin1(kGenericModelSettingsKey),
-                    finalModel);
+                    attempt.resolvedModel);
                 _settingsService->setValue(
                     QString::fromLatin1(kOpenAIModelSettingsKey),
-                    finalModel);
+                    attempt.resolvedModel);
                 _settingsService->setValue(
                     QString::fromLatin1(kDetectedProtocolSettingsKey),
                     protocolSettingValue(protocol));
@@ -2328,7 +2201,7 @@ QJsonObject OpenAIResponsesProvider::_buildRequestBody(const AIRequest& request,
 
     const int maxOutputTokens = request.options.value(QStringLiteral("maxOutputTokens")).toInt();
     if (maxOutputTokens > 0) {
-        body.insert(QStringLiteral("max_output_tokens"), maxOutputTokens);
+        body.insert(QStringLiteral("max_output_tokens"), std::max(16, maxOutputTokens));
     }
 
     return body;
@@ -2409,7 +2282,7 @@ QJsonObject OpenAIResponsesProvider::_buildChatCompletionsRequestBody(
     body.insert(QStringLiteral("messages"), messages);
     const int maxOutputTokens = request.options.value(QStringLiteral("maxOutputTokens")).toInt();
     if (maxOutputTokens > 0) {
-        body.insert(QStringLiteral("max_tokens"), maxOutputTokens);
+        body.insert(AIConnectionValidator::chatTokenLimitParameter(_baseUrl(), resolvedModel), maxOutputTokens);
     }
     return body;
 }

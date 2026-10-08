@@ -107,15 +107,16 @@ class MediaFormatSupportContracts(unittest.TestCase):
 
     def test_normal_startup_keeps_codex_and_legacy_ai_lazy(self) -> None:
         runtime = read("src/ui/app/ApplicationRuntime.cpp")
-        self.assertIn("eagerCodexWorkspace = _captureUiMode || _codexWorkbenchSmokeMode", runtime)
+        self.assertIn("eagerCodexWorkspace = _codexWorkbenchSmokeMode", runtime)
         self.assertIn("CodexLazyLoadButton", runtime)
         self.assertIn("QTimer::singleShot(0, loadButton", runtime)
-        self.assertIn("if (loadButton->isEnabled()) loadButton->click();", runtime)
+        self.assertIn("if (codexDock->isVisible() && loadButton->isEnabled()) loadButton->click();", runtime)
         self.assertIn('QStringLiteral("main.ready")', runtime)
 
         application = read("src/ui/app/Application.cpp")
         self.assertIn("const auto ensureWorkspace", application)
-        self.assertIn("if (!eagerLegacyWorkspace)", application)
+        self.assertNotIn("codexUnavailable", application)
+        self.assertIn("_p->aiDock->hide();", application)
 
     def test_startup_benchmark_is_isolated_and_has_latency_gates(self) -> None:
         runtime = read("src/ui/app/ApplicationRuntime.cpp")

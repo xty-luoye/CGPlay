@@ -3,6 +3,7 @@
 #include "AIConnectionValidator.h"
 
 #include <QEventLoop>
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -12,6 +13,9 @@
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QSet>
+
+#include <algorithm>
 
 namespace cgplay {
 
@@ -74,17 +78,9 @@ QString stripAnthropicCompatPath(QString value)
 
 QString normalizedGeminiModelsEndpoint(QString baseUrl)
 {
-    baseUrl = trimTrailingSlashes(withoutGeminiApiKeyQuery(baseUrl));
-    if (baseUrl.isEmpty()) {
-        baseUrl = QString::fromLatin1(kDefaultGeminiBaseUrl);
-    }
-    if (baseUrl.endsWith(QStringLiteral("/v1beta/models"), Qt::CaseInsensitive)) {
-        return withoutGeminiApiKeyQuery(baseUrl);
-    }
-    if (baseUrl.endsWith(QStringLiteral("/v1beta"), Qt::CaseInsensitive)) {
-        return withoutGeminiApiKeyQuery(baseUrl + QStringLiteral("/models"));
-    }
-    return withoutGeminiApiKeyQuery(baseUrl + QStringLiteral("/v1beta/models"));
+    QUrl url(AIConnectionValidator::geminiBaseUrl(baseUrl));
+    url.setPath(url.path() + QStringLiteral("/models"));
+    return url.toString(QUrl::FullyEncoded);
 }
 
 QString normalizedClaudeModelsEndpoint(QString baseUrl)
@@ -153,7 +149,8 @@ QString httpErrorMessage(QNetworkReply* reply, const QByteArray& payload, const 
 
 HttpJsonResult executeJsonRequest(
     const QUrl& url,
-    const QList<QPair<QByteArray, QByteArray>>& headers)
+    const QList<QPair<QByteArray, QByteArray>>& headers,
+    int timeoutMs = kRequestTimeoutMs)
 {
     HttpJsonResult result;
     if (!url.isValid()) {
@@ -163,8 +160,9 @@ HttpJsonResult executeJsonRequest(
 
     QNetworkAccessManager manager;
     QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::SameOriginRedirectPolicy);
     request.setRawHeader("Accept", "application/json");
-    request.setTransferTimeout(kRequestTimeoutMs);
+    request.setTransferTimeout(timeoutMs);
     for (const auto& header : headers) {
         request.setRawHeader(header.first, header.second);
     }
@@ -172,7 +170,7 @@ HttpJsonResult executeJsonRequest(
     QEventLoop loop;
     QTimer timer;
     timer.setSingleShot(true);
-    timer.setInterval(kRequestTimeoutMs);
+    timer.setInterval(timeoutMs);
 
     QNetworkReply* reply = manager.get(request);
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
@@ -188,13 +186,20 @@ HttpJsonResult executeJsonRequest(
 
     result.payload = reply->readAll();
     result.statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    result.document = QJsonDocument::fromJson(result.payload);
+    QJsonParseError parseError;
+    result.document = QJsonDocument::fromJson(result.payload, &parseError);
     if (reply->error() != QNetworkReply::NoError) {
         result.error = httpErrorMessage(reply, result.payload, result.document);
         reply->deleteLater();
         return result;
     }
 
+    if (result.statusCode < 200 || result.statusCode >= 300 ||
+        parseError.error != QJsonParseError::NoError || result.document.isNull()) {
+        result.error = QStringLiteral("The model endpoint did not return a successful JSON response.");
+        reply->deleteLater();
+        return result;
+    }
     result.success = true;
     reply->deleteLater();
     return result;
@@ -261,6 +266,69 @@ QStringList extractGenericModelIds(const QJsonDocument& document)
     return dedupedModels(models);
 }
 
+AIModelDiscoveryResult discoverPages(
+    AIProviderCategory category,
+    const QString& endpoint,
+    const QList<QPair<QByteArray, QByteArray>>& headers)
+{
+    AIModelDiscoveryResult result;
+    result.endpoint = endpoint;
+    QUrl url(endpoint);
+    QSet<QString> seenCursors;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    constexpr int kDiscoveryBudgetMs = 45000;
+    constexpr int kMaximumPages = 20;
+    for (int page = 0; page < kMaximumPages; ++page) {
+        const int remaining = kDiscoveryBudgetMs - static_cast<int>(elapsed.elapsed());
+        if (remaining <= 0) {
+            result.error = QStringLiteral("Model discovery exceeded its time budget; retry or enter a model ID.");
+            return result;
+        }
+        const HttpJsonResult http = executeJsonRequest(url, headers, std::min(remaining, kRequestTimeoutMs));
+        if (!http.success) {
+            result.error = http.error;
+            return result;
+        }
+        const QJsonObject object = http.document.object();
+        if (category == AIProviderCategory::Gemini) {
+            for (const QJsonValue& item : object.value(QStringLiteral("models")).toArray()) {
+                const QJsonObject model = item.toObject();
+                const QJsonArray methods = model.value(QStringLiteral("supportedGenerationMethods")).toArray();
+                if (model.contains(QStringLiteral("supportedGenerationMethods")) &&
+                    !methods.contains(QJsonValue(QStringLiteral("generateContent")))) continue;
+                result.models.append(model.value(QStringLiteral("name")).toString());
+            }
+        } else {
+            result.models.append(extractGenericModelIds(http.document));
+        }
+        result.models = dedupedModels(result.models);
+        const bool gemini = category == AIProviderCategory::Gemini;
+        const QString cursor = gemini
+            ? object.value(QStringLiteral("nextPageToken")).toString()
+            : object.value(QStringLiteral("last_id")).toString();
+        const bool hasMore = gemini ? !cursor.isEmpty() : object.value(QStringLiteral("has_more")).toBool();
+        if (!hasMore) {
+            result.success = !result.models.isEmpty();
+            if (!result.success) result.error = QStringLiteral("No compatible chat models were returned.");
+            return result;
+        }
+        if (cursor.isEmpty() || seenCursors.contains(cursor)) {
+            result.error = QStringLiteral("The model endpoint returned an invalid or repeated pagination cursor.");
+            return result;
+        }
+        seenCursors.insert(cursor);
+        // Only the cursor is accepted; server-supplied URLs never receive credentials.
+        QUrlQuery query(url);
+        const QString parameter = gemini ? QStringLiteral("pageToken") : QStringLiteral("after_id");
+        query.removeAllQueryItems(parameter);
+        query.addQueryItem(parameter, cursor);
+        url.setQuery(query);
+    }
+    result.error = QStringLiteral("The model list exceeded the page limit; enter a model ID directly.");
+    return result;
+}
+
 } // namespace
 
 AIModelDiscoveryResult AIModelDiscovery::discover(
@@ -280,21 +348,11 @@ AIModelDiscoveryResult AIModelDiscovery::discover(
         const AIOpenAIEndpointCandidates candidates =
             AIConnectionValidator::openAICompatibleEndpointCandidates(baseUrl);
         for (const QString& endpoint : candidates.models) {
-            const HttpJsonResult http = executeJsonRequest(
-                QUrl(endpoint),
+            AIModelDiscoveryResult pageResult = discoverPages(
+                category, endpoint,
                 AIConnectionValidator::openAICompatibleHeaders(endpoint, apiKey));
-            if (!http.success) {
-                result.diagnostics.push_back(QStringLiteral("%1 -> %2").arg(endpoint, http.error));
-                continue;
-            }
-            const QStringList models = extractGenericModelIds(http.document);
-            if (!models.isEmpty()) {
-                result.success = true;
-                result.endpoint = endpoint;
-                result.models = models;
-                return result;
-            }
-            result.diagnostics.push_back(QStringLiteral("%1 -> no models returned").arg(endpoint));
+            if (pageResult.success) return pageResult;
+            result.diagnostics.push_back(QStringLiteral("%1 -> %2").arg(endpoint, pageResult.error));
         }
         result.error = result.diagnostics.join(QLatin1Char('\n'));
         return result;
@@ -305,19 +363,7 @@ AIModelDiscoveryResult AIModelDiscovery::discover(
         const QList<QPair<QByteArray, QByteArray>> headers{
             { QByteArray("x-goog-api-key"), apiKey }
         };
-        const HttpJsonResult http = executeJsonRequest(QUrl(result.endpoint), headers);
-        if (!http.success) {
-            result.error = http.error;
-            result.diagnostics.push_back(http.error);
-            return result;
-        }
-        result.models = extractGenericModelIds(http.document);
-        result.success = !result.models.isEmpty();
-        result.error = result.success ? QString() : QStringLiteral("No Gemini models were returned.");
-        if (!result.success) {
-            result.diagnostics.push_back(result.error);
-        }
-        return result;
+        return discoverPages(category, result.endpoint, headers);
     }
 
     if (category == AIProviderCategory::Claude) {
@@ -327,17 +373,9 @@ AIModelDiscoveryResult AIModelDiscovery::discover(
         };
 
         result.endpoint = normalizedClaudeModelsEndpoint(baseUrl);
-        const HttpJsonResult http = executeJsonRequest(QUrl(result.endpoint), anthropicHeaders);
-        if (http.success) {
-            result.models = extractGenericModelIds(http.document);
-            result.success = !result.models.isEmpty();
-            if (result.success) {
-                return result;
-            }
-            result.diagnostics.push_back(QStringLiteral("%1 -> no models returned").arg(result.endpoint));
-        } else {
-            result.diagnostics.push_back(QStringLiteral("%1 -> %2").arg(result.endpoint, http.error));
-        }
+        AIModelDiscoveryResult pageResult = discoverPages(category, result.endpoint, anthropicHeaders);
+        if (pageResult.success) return pageResult;
+        result.diagnostics.push_back(QStringLiteral("%1 -> %2").arg(result.endpoint, pageResult.error));
 
         const QString openAICompatBase = stripAnthropicCompatPath(baseUrl);
         if (!openAICompatBase.isEmpty() &&

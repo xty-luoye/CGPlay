@@ -44,6 +44,7 @@ class AnnotationOverlayProvider;
 struct MediaInfo;
 struct GeneratedSubtitleCue;
 struct TranslationEnhancementScheduleRequest;
+struct UpdateInstallResult;
 
 class Application : public QApplication, public IActivePlaybackView
 {
@@ -362,7 +363,9 @@ private:
     void _showMissingComponentsPrompt(const QStringList& missing, bool interactive);
     void _checkForUpdates(bool interactive, bool refreshRemote = true);
     bool _downloadAndLaunchInstaller(const QString& targetVersion);
+    void _offerDownloadedUpdate(UpdateInstallResult installer);
     void _scheduleBackgroundUpdateCheck();
+    void _presentUpdateResult(const QJsonObject& result);
     void _applyBackgroundUpdateResult(const QJsonObject& result);
     void _setUpdateStatusBadge(const QString& text, const QString& color, const QString& toolTip = {});
     double _promptSequenceFps(const QString& path) const;

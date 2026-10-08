@@ -535,9 +535,9 @@ void MainWindow::_toggleFullScreen()
         _p->fullscreenTimelineHeight = _p->timeline->height();
         _p->fullscreenPlaybackBarHeight = _p->playbackBar->height();
         _p->annoToolsVisible = _p->annoToolbar ? _p->annoToolbar->isVisible() : false;
-        // showFullScreen and the queued chrome collapse resize the viewport
-        // separately. Keep both intermediate layouts out of the compositor;
-        // the first fullscreen paint must use the final available area.
+        // Keep intermediate native/chrome layouts out of the compositor.
+        // Suspend painting only for this queued layout transaction, not for
+        // a wall-clock delay that visibly freezes an already playing movie.
         _p->fullscreenEntryPending = true;
         _p->fullscreenEntryUpdatesSuspended = updatesEnabled();
         if (_p->fullscreenEntryUpdatesSuspended) setUpdatesEnabled(false);
@@ -548,29 +548,33 @@ void MainWindow::_toggleFullScreen()
         // collapsing docks and splitter rows. Synchronous layout churn here
         // can stall the OpenGL surface and leave a black frame for seconds.
         QTimer::singleShot(0, this, [this, transitionGeneration]() {
-            if (_p->fullscreenTransitionGeneration != transitionGeneration ||
-                !_p->fullscreenActive || !isFullScreen()) return;
-            setContentHostMargins(_p->horzSplitter, true);
-            setFullscreenSplitterHandles(_p->horzSplitter, _p->centerSplitter, true);
-            _setFullScreenChromeVisible(false, true);
-        });
-        QTimer::singleShot(150, this, [this, transitionGeneration]() {
             if (_p->fullscreenTransitionGeneration != transitionGeneration) return;
-            const bool entered = _p->fullscreenActive && isFullScreen();
-            if (entered) {
-                if (layout()) layout()->activate();
-                if (_p->viewer->layout()) _p->viewer->layout()->activate();
-                if (auto* vp = _p->viewer->viewport()) vp->setFrameView(true);
+            if (_p->fullscreenActive && isFullScreen()) {
+                setContentHostMargins(_p->horzSplitter, true);
+                setFullscreenSplitterHandles(_p->horzSplitter, _p->centerSplitter, true);
+                _setFullScreenChromeVisible(false, true);
             }
-            _p->fullscreenEntryPending = false;
-            if (_p->fullscreenEntryUpdatesSuspended) {
-                _p->fullscreenEntryUpdatesSuspended = false;
-                setUpdatesEnabled(true);
-            }
-            if (entered && _p->fullscreenMousePollTimer) {
-                _p->fullscreenLastCursorPos = systemCursorPosition();
-                _p->fullscreenMousePollTimer->start();
-            }
+            // The chrome helper queues one final splitter reconciliation.
+            // Commit after it, then let Qt coalesce one paint at final size.
+            // Always release our suspension even if native entry is refused.
+            QTimer::singleShot(0, this, [this, transitionGeneration]() {
+                if (_p->fullscreenTransitionGeneration != transitionGeneration) return;
+                const bool entered = _p->fullscreenActive && isFullScreen();
+                if (entered) {
+                    if (layout()) layout()->activate();
+                    if (_p->viewer->layout()) _p->viewer->layout()->activate();
+                    if (auto* vp = _p->viewer->viewport()) vp->setFrameView(true);
+                }
+                _p->fullscreenEntryPending = false;
+                if (_p->fullscreenEntryUpdatesSuspended) {
+                    _p->fullscreenEntryUpdatesSuspended = false;
+                    setUpdatesEnabled(true);
+                }
+                if (entered && _p->fullscreenMousePollTimer) {
+                    _p->fullscreenLastCursorPos = systemCursorPosition();
+                    _p->fullscreenMousePollTimer->start();
+                }
+            });
         });
     }
 
@@ -639,8 +643,6 @@ void MainWindow::_setFullScreenChromeVisible(bool visible, bool forceApply)
                     _p->timeline->update();
                     _p->playbackBar->update();
                     _p->centerSplitter->update();
-                    _p->timeline->repaint();
-                    _p->playbackBar->repaint();
                 }
             });
         } else if (!visible && _p->centerSplitter->count() == 3) {
@@ -660,10 +662,13 @@ void MainWindow::_setFullScreenChromeVisible(bool visible, bool forceApply)
                 }
                 if (_p->viewerShell) _p->viewerShell->raise();
                 if (_p->viewer) _p->viewer->raise();
-                if (_p->viewerShell) _p->viewerShell->repaint();
-                if (_p->viewer && _p->viewer->viewport()) _p->viewer->viewport()->repaint();
-                if (_p->centerSplitter) _p->centerSplitter->repaint();
-                repaint();
+                // A synchronous repaint at every ancestor can render the
+                // OpenGL surface repeatedly during a single layout change.
+                // update() lets Qt combine these into its next composition.
+                if (_p->viewerShell) _p->viewerShell->update();
+                if (_p->viewer && _p->viewer->viewport()) _p->viewer->viewport()->update();
+                if (_p->centerSplitter) _p->centerSplitter->update();
+                update();
             });
         }
     }
@@ -723,17 +728,8 @@ void MainWindow::_restoreAuxDocksAfterShow()
         return;
     }
     _p->auxDocksRestoredAfterShow = true;
-
-    QTimer::singleShot(0, this, [this]() {
-        if (_p->aiDock && (!_p->windowSettings ||
-                           _p->windowSettings->value(QStringLiteral("ai/workspaceVisible"), true).toBool())) {
-            _p->aiDock->setFloating(false);
-            addDockWidget(Qt::RightDockWidgetArea, _p->aiDock);
-            _p->aiDock->show();
-            resizeDocks({_p->aiDock}, {460}, Qt::Horizontal);
-            _p->aiDock->raise();
-        }
-    });
+    // AI docks start closed. Their explicit menu actions own visibility;
+    // neither persisted state nor a delayed show may reopen them at startup.
 }
 
 void MainWindow::_restoreSplitterLayoutIfNeeded()
@@ -786,11 +782,8 @@ void MainWindow::_restoreSplitterLayoutIfNeeded()
                 _p->rightVisible = workspace.panels.contains(QStringLiteral("review")) ? review.visible : true;
                 if (playlist.size > 0) _p->lastLeftPanelWidth = playlist.size;
                 if (review.size > 0) _p->lastRightPanelWidth = review.size;
-                if (workspace.panels.contains(QStringLiteral("codex"))) {
-                    if (auto* dock = findChild<QDockWidget*>(QStringLiteral("CodexAgentWorkspaceDock"))) {
-                        dock->setVisible(workspace.panels.value(QStringLiteral("codex")).visible);
-                    }
-                }
+                // Startup workspace restoration must not open the AI dock.
+                // Preserve any explicit open/close made in this session.
                 if (_p->translationToggleAction) {
                     _p->translationToggleAction->setChecked(workspace.translationEnabled);
                 }

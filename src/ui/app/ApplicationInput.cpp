@@ -30,21 +30,13 @@ void MainWindow::_restoreState()
         _p->windowSettings->sync();
         _p->windowStateRestored = false;
     }
-    if (_p->windowSettings && _p->aiDock) {
-        const bool aiVisible = _p->windowSettings->value(QStringLiteral("ai/workspaceVisible"), true).toBool();
-        _p->aiDock->setVisible(aiVisible);
-        if (aiVisible) {
-            QTimer::singleShot(0, this, [this]() {
-                if (!_p->aiDock) {
-                    return;
-                }
-                _p->aiDock->setFloating(false);
-                addDockWidget(Qt::RightDockWidgetArea, _p->aiDock);
-                _p->aiDock->show();
-                resizeDocks({_p->aiDock}, {460}, Qt::Horizontal);
-                _p->aiDock->raise();
-            });
-        }
+    // A saved layout must not open an AI workspace on the next launch.
+    if (_p->aiDock) {
+        _p->aiDock->hide();
+    }
+    if (_p->windowSettings) {
+        _p->windowSettings->setValue(QStringLiteral("ai/workspaceVisible"), false);
+        _p->windowSettings->setValue(QStringLiteral("codex/workspaceVisible"), false);
     }
     if (_p->windowSettings) {
         _p->leftVisible = _p->windowSettings
@@ -64,8 +56,8 @@ void MainWindow::_restoreState()
     }
 
     // Keep the default审片 layout deterministic after an invalid/legacy state:
-    // playlist left, review panel right, viewer in the center, Codex docked
-    // right when the runtime adds it.
+    // playlist left, review panel right, viewer in the center. AI docks remain
+    // closed until the user opens them in the current session.
     if (!_p->windowStateRestored) {
         _p->leftVisible = true;
         _p->rightVisible = true;
@@ -108,6 +100,13 @@ void MainWindow::_saveState()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    _p->updateClosing = true;
+    if (_p->updateCheckState) {
+        _p->updateCheckState->cancelled.store(true);
+    }
+    if (_p->updateDownloadState) {
+        _p->updateDownloadState->cancelled.store(true);
+    }
     if (_p->subtitleRefinementCancelRequested) {
         _p->subtitleRefinementCancelRequested->store(true);
     }

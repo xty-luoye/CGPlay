@@ -1257,7 +1257,6 @@ void AIAgentWorkspace::_refreshModels()
     appendUniqueModel(&modelOptions, recommendedModel);
     appendUniqueModel(&modelOptions, persistedModel);
     appendUniqueModel(&modelOptions, configuredModel);
-    appendCommonChatModels(&modelOptions);
 
     for (const QString& model : modelOptions) {
         _modelCombo->addItem(model);

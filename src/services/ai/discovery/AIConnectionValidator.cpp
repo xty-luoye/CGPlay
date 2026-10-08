@@ -359,6 +359,7 @@ HttpJsonResult executeJsonRequest(
 
     QNetworkAccessManager manager;
     QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::SameOriginRedirectPolicy);
     request.setRawHeader("Accept", "application/json");
     timeoutMs = std::max(1, timeoutMs);
     request.setTransferTimeout(timeoutMs);
@@ -397,16 +398,46 @@ HttpJsonResult executeJsonRequest(
 
     result.payload = reply->readAll();
     result.statusCode = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-    result.document = QJsonDocument::fromJson(result.payload);
+    QJsonParseError parseError;
+    result.document = QJsonDocument::fromJson(result.payload, &parseError);
     if (reply->error() != QNetworkReply::NoError) {
         result.error = httpErrorMessage(reply, result.payload, result.document);
         reply->deleteLater();
         return result;
     }
 
+    if (result.statusCode < 200 || result.statusCode >= 300 ||
+        parseError.error != QJsonParseError::NoError || !result.document.isObject() ||
+        result.document.object().value(QStringLiteral("error")).isObject() ||
+        result.document.object().value(QStringLiteral("error")).isString()) {
+        result.error = QStringLiteral("The endpoint did not return a successful JSON API response.");
+        reply->deleteLater();
+        return result;
+    }
     result.success = true;
     reply->deleteLater();
     return result;
+}
+
+bool matchesProtocolResponse(const QJsonDocument& document, const QString& protocol)
+{
+    const QJsonObject object = document.object();
+    if (protocol == QStringLiteral("openai_chat")) {
+        return !object.value(QStringLiteral("choices")).toArray().isEmpty();
+    }
+    if (protocol == QStringLiteral("openai_responses")) {
+        const QString status = object.value(QStringLiteral("status")).toString();
+        return object.value(QStringLiteral("output")).isArray() &&
+            status != QStringLiteral("failed") && status != QStringLiteral("cancelled");
+    }
+    if (protocol == QStringLiteral("gemini_generate_content")) {
+        return !object.value(QStringLiteral("candidates")).toArray().isEmpty();
+    }
+    if (protocol == QStringLiteral("anthropic_messages")) {
+        return object.value(QStringLiteral("type")).toString() == QStringLiteral("message") &&
+            object.value(QStringLiteral("content")).isArray();
+    }
+    return object.value(QStringLiteral("message")).isObject();
 }
 
 } // namespace
@@ -499,6 +530,45 @@ QList<QPair<QByteArray, QByteArray>> AIConnectionValidator::openAICompatibleHead
     };
 }
 
+QString AIConnectionValidator::chatTokenLimitParameter(const QString& baseUrl, const QString& model)
+{
+    const QUrl url(ensureScheme(baseUrl));
+    static const QRegularExpression reasoningModel(
+        QStringLiteral("^(?:gpt-(?:[5-9]|[1-9][0-9])(?:[.-]|$)|o[1-9](?:[.-]|$))"),
+        QRegularExpression::CaseInsensitiveOption);
+    return url.host().compare(QStringLiteral("api.openai.com"), Qt::CaseInsensitive) == 0 ||
+            usesAzureApiKeyAuthentication(baseUrl) || reasoningModel.match(model.trimmed()).hasMatch()
+        ? QStringLiteral("max_completion_tokens")
+        : QStringLiteral("max_tokens");
+}
+
+QString AIConnectionValidator::geminiBaseUrl(const QString& baseUrl)
+{
+    QUrl url(ensureScheme(baseUrl.trimmed().isEmpty()
+        ? QString::fromLatin1(kDefaultGeminiBaseUrl) : baseUrl));
+    QString path = normalizedPath(url.path());
+    static const QRegularExpression modelsSuffix(
+        QStringLiteral("/models(?:/.*)?$"), QRegularExpression::CaseInsensitiveOption);
+    const auto match = modelsSuffix.match(path);
+    if (match.hasMatch()) path.truncate(match.capturedStart());
+    if (!hasVersionTail(path)) path = joinedPath(path, QStringLiteral("v1beta"));
+    url.setPath(path);
+    url.setFragment(QString());
+    QUrlQuery query(url);
+    query.removeAllQueryItems(QStringLiteral("key"));
+    url.setQuery(query);
+    return url.toString(QUrl::FullyEncoded);
+}
+
+QString AIConnectionValidator::geminiGenerateContentEndpoint(const QString& baseUrl, const QString& model)
+{
+    QUrl url(geminiBaseUrl(baseUrl));
+    QString modelId = model.trimmed();
+    if (modelId.startsWith(QStringLiteral("models/"))) modelId.remove(0, 7);
+    url.setPath(joinedPath(url.path(), QStringLiteral("models/%1:generateContent").arg(modelId)));
+    return url.toString(QUrl::FullyEncoded);
+}
+
 QString AIConnectionValidator::defaultBaseUrlForCategory(AIProviderCategory category) const
 {
     switch (category) {
@@ -523,7 +593,7 @@ QString AIConnectionValidator::canonicalBaseUrl(
 {
     switch (category) {
     case AIProviderCategory::Gemini:
-        return trimTrailingSlashes(stripGeminiPath(inputBaseUrl));
+        return geminiBaseUrl(inputBaseUrl);
     case AIProviderCategory::Claude:
         return trimTrailingSlashes(stripClaudePath(inputBaseUrl));
     case AIProviderCategory::Ollama:
@@ -565,7 +635,7 @@ AIValidationResult AIConnectionValidator::validate(
                       { QStringLiteral("content"), QStringLiteral("ping") }
                   }
               } },
-            { QStringLiteral("max_tokens"), 1 }
+            { chatTokenLimitParameter(baseUrl, model), 16 }
         };
         const QJsonObject responsesBody{
             { QStringLiteral("model"), model },
@@ -580,7 +650,7 @@ AIValidationResult AIConnectionValidator::validate(
                         } }
                   }
               } },
-            { QStringLiteral("max_output_tokens"), 1 }
+            { QStringLiteral("max_output_tokens"), 16 }
         };
 
         QElapsedTimer validationTimer;
@@ -611,7 +681,7 @@ AIValidationResult AIConnectionValidator::validate(
                     openAICompatibleHeaders(endpoint, apiKey),
                     &body,
                     std::min(remaining, kOpenAIEndpointProbeTimeoutMs));
-                if (http.success) {
+                if (http.success && matchesProtocolResponse(http.document, protocol)) {
                     appendUnique(&result.compatibleProtocols, protocol);
                     if (protocol == QStringLiteral("openai_responses")) {
                         result.responsesEndpoint = endpoint;
@@ -648,7 +718,7 @@ AIValidationResult AIConnectionValidator::validate(
 
     if (category == AIProviderCategory::Gemini) {
         result.protocol = QStringLiteral("gemini_generate_content");
-        result.endpoint = normalizedGeminiEndpoint(baseUrl, model);
+        result.endpoint = geminiGenerateContentEndpoint(baseUrl, model);
         const QJsonObject body{
             { QStringLiteral("contents"), QJsonArray{
                   QJsonObject{
@@ -668,8 +738,9 @@ AIValidationResult AIConnectionValidator::validate(
         };
         const HttpJsonResult http = executeJsonRequest(
             QStringLiteral("POST"), QUrl(result.endpoint), headers, &body);
-        result.success = http.success;
-        result.error = http.error;
+        result.success = http.success && matchesProtocolResponse(http.document, result.protocol);
+        result.error = result.success ? QString() : (http.error.isEmpty()
+            ? QStringLiteral("Unexpected Gemini response schema.") : http.error);
         if (result.success) {
             result.compatibleProtocols.push_back(result.protocol);
         } else if (!result.error.isEmpty()) {
@@ -700,8 +771,9 @@ AIValidationResult AIConnectionValidator::validate(
             QUrl(result.endpoint),
             headers,
             &body);
-        result.success = http.success;
-        result.error = http.error;
+        result.success = http.success && matchesProtocolResponse(http.document, result.protocol);
+        result.error = result.success ? QString() : (http.error.isEmpty()
+            ? QStringLiteral("Unexpected Anthropic response schema.") : http.error);
         if (result.success) {
             result.compatibleProtocols.push_back(result.protocol);
         } else if (!result.error.isEmpty()) {
@@ -727,8 +799,9 @@ AIValidationResult AIConnectionValidator::validate(
         QUrl(result.endpoint),
         {},
         &body);
-    result.success = http.success;
-    result.error = http.error;
+    result.success = http.success && matchesProtocolResponse(http.document, result.protocol);
+    result.error = result.success ? QString() : (http.error.isEmpty()
+        ? QStringLiteral("Unexpected Ollama response schema.") : http.error);
     if (result.success) {
         result.compatibleProtocols.push_back(result.protocol);
     } else if (!result.error.isEmpty()) {

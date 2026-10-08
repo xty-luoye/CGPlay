@@ -238,7 +238,7 @@ void showHelpDocument(QWidget* parent, const QString& title, const QString& html
 QString cgplayAboutHtml()
 {
     const QString version = QCoreApplication::applicationVersion().isEmpty()
-        ? QStringLiteral("1.0.7.11")
+        ? QStringLiteral("1.0.7.12")
         : QCoreApplication::applicationVersion();
     return QStringLiteral(
         "<h2>CGPlay %1</h2>"

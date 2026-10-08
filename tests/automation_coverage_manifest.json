@@ -24,7 +24,7 @@
     "view.zoom1to1": {"test": "player-smoke:1", "shortcutTest": "player-smoke:1"},
     "view.zoomIn": {"test": "player-smoke:+", "shortcutTest": "player-smoke:+"},
     "view.zoomOut": {"test": "player-smoke:-", "shortcutTest": "player-smoke:-"},
-    "view.fullscreen": {"test": "player-smoke:Esc exits fullscreen; F11 exits fullscreen; Fullscreen rapid transitions; Fullscreen chrome coalescing; Fullscreen first frame and delayed zoom stability; Fullscreen explicit zoom after entry; Fullscreen entry restores repainting", "shortcutTest": "player-smoke:F11; Fullscreen custom shortcut; Fullscreen repeat key guard; Fullscreen foreign-window isolation"},
+    "view.fullscreen": {"test": "player-smoke:Esc exits fullscreen; F11 exits fullscreen; Fullscreen rapid transitions; Fullscreen chrome coalescing; Fullscreen first frame and delayed zoom stability; Fullscreen explicit zoom after entry; Fullscreen entry restores repainting; Fullscreen playing transition responsiveness", "shortcutTest": "player-smoke:F11; Fullscreen custom shortcut; Fullscreen repeat key guard; Fullscreen foreign-window isolation"},
     "translation.toggle": {"test": "player-smoke:Translation toggle", "shortcutTest": "player-smoke:Ctrl+Shift+T"},
     "translation.mode": {"test": "player-smoke:Translation mode control"},
     "annotation.create": {"test": "player-smoke:Annotation create"},
@@ -68,7 +68,13 @@
     "media.openPixels": "player-smoke:open media (CGPLAY_SMOKE_REQUIRE_NONBLACK=1)",
     "media.probeCache": "test_media_probe_cache.py",
     "media.pngMovHint": "test_playback_png_hint.py",
-    "media.bitrateInfo": "player-smoke:open media bitrate label;test_media_bitrate_contract.py"
+    "media.bitrateInfo": "player-smoke:open media bitrate label;test_media_bitrate_contract.py",
+    "ai.startupOnDemand": "test_ai_startup_default.py",
+    "ai.protocolsAndManualModels": "ai_protocol_contracts (offline Qt HTTP/UI)",
+    "updates.preference": "player-smoke:Settings automatic update preference and cancellation",
+    "updates.lifecycle": "test_update_ui_lifecycle.py",
+    "updates.downloadReuse": "update_ui_cache_contracts (offline Qt confirmation and cached installer reuse)",
+    "updates.integrity": "update_service_contracts (offline HTTP/version/digest/cancellation/launcher)"
   },
   "environmentCapabilities": ["physical-audio-output-device", "system-audio-driver-routing"]
 }

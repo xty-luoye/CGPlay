@@ -205,7 +205,7 @@ void AIConnectionWizardWidget::refreshFromRuntime()
     }
 
     _hintLabel->setText(
-        zh(u8"只需填写 API Key，或填写 API Key + Base URL。若 API Key 留空，将继续使用已保存的 Key 或环境变量。"));
+        zh(u8"填写服务商的 API Key 和 Base URL，可获取当前模型列表。取消自动选择后可直接填写服务商提供的模型 ID。Key 留空时使用已保存的凭据。"));
     _applyDetectionResult(current);
     if (current.success) {
         _setStatus(zh(u8"当前 AI 连接已就绪。"), QString::fromLatin1(kSuccess));
@@ -255,6 +255,7 @@ void AIConnectionWizardWidget::_setupUi()
     cardLayout->addWidget(apiLabel);
 
     _apiKeyEdit = new QLineEdit(card);
+    _apiKeyEdit->setObjectName(QStringLiteral("aiConnectionApiKey"));
     _apiKeyEdit->setEchoMode(QLineEdit::Password);
     _apiKeyEdit->setPlaceholderText(zh(u8"留空则继续使用已保存的 Key"));
     cardLayout->addWidget(_apiKeyEdit);
@@ -264,6 +265,7 @@ void AIConnectionWizardWidget::_setupUi()
     cardLayout->addWidget(baseUrlLabel);
 
     _baseUrlEdit = new QLineEdit(card);
+    _baseUrlEdit->setObjectName(QStringLiteral("aiConnectionBaseUrl"));
     _baseUrlEdit->setPlaceholderText(zh(u8"例如 https://api.openai.com 或 https://your-gateway/v1"));
     cardLayout->addWidget(_baseUrlEdit);
 
@@ -272,11 +274,15 @@ void AIConnectionWizardWidget::_setupUi()
     cardLayout->addWidget(modelLabel);
 
     _autoModelCheck = new QCheckBox(zh(u8"自动选择推荐模型"), card);
+    _autoModelCheck->setObjectName(QStringLiteral("aiConnectionAutoModel"));
     _autoModelCheck->setChecked(true);
     cardLayout->addWidget(_autoModelCheck);
 
     _modelCombo = new QComboBox(card);
-    _modelCombo->setEditable(false);
+    _modelCombo->setObjectName(QStringLiteral("aiConnectionModel"));
+    _modelCombo->setEditable(true);
+    _modelCombo->setInsertPolicy(QComboBox::NoInsert);
+    _modelCombo->lineEdit()->setPlaceholderText(zh(u8"选择或输入模型 ID，支持新模型和自定义部署"));
     _modelCombo->setEnabled(false);
     cardLayout->addWidget(_modelCombo);
 
@@ -288,6 +294,7 @@ void AIConnectionWizardWidget::_setupUi()
     buttons->addWidget(_detectButton);
 
     _saveButton = new QPushButton(zh(u8"保存"), card);
+    _saveButton->setObjectName(QStringLiteral("aiConnectionSave"));
     _saveButton->setEnabled(false);
     buttons->addWidget(_saveButton);
 
@@ -346,6 +353,16 @@ void AIConnectionWizardWidget::_setupUi()
     connect(_autoModelCheck, &QCheckBox::toggled, this, [this](bool) {
         _syncModelSelectionMode(_lastResult);
     });
+    const auto invalidateValidation = [this]() {
+        _lastResult.success = false;
+        _saveButton->setEnabled(false);
+        _setStatus(zh(u8"连接或模型已更改，请重新识别验证后保存。"), QString::fromLatin1(kMuted));
+    };
+    connect(_apiKeyEdit, &QLineEdit::textEdited, this, invalidateValidation);
+    connect(_baseUrlEdit, &QLineEdit::textEdited, this, invalidateValidation);
+    connect(_modelCombo, &QComboBox::currentTextChanged, this, [this, invalidateValidation]() {
+        if (!_isAutoModelSelectionEnabled()) invalidateValidation();
+    });
     connect(_saveImageButton, &QPushButton::clicked, this, [this]() {
         _saveImageConfiguration();
     });
@@ -399,7 +416,11 @@ void AIConnectionWizardWidget::_startDetection()
 
     _lastRequest.apiKey = _apiKeyEdit ? _apiKeyEdit->text().trimmed() : QString();
     _lastRequest.baseUrl = _baseUrlEdit ? _baseUrlEdit->text().trimmed() : QString();
-    _lastRequest.model = _selectedModel();
+    _lastRequest.model = _isAutoModelSelectionEnabled() ? QString() : _selectedModel();
+    if (!_isAutoModelSelectionEnabled() && _lastRequest.model.isEmpty()) {
+        _setStatus(zh(u8"请输入模型 ID，或启用自动选择推荐模型。"), QString::fromLatin1(kWarning));
+        return;
+    }
     _setBusy(true);
     _setStatus(zh(u8"正在识别服务、验证协议并获取模型列表..."), QString::fromLatin1(kWarning));
     _resultView->setHtml(QStringLiteral("<div style='color:%1;'>%2<br/>%3<br/>%4<br/>%5</div>")
@@ -455,6 +476,7 @@ void AIConnectionWizardWidget::_applyDetectionResult(const AIDetectionResult& re
         }
 
         QString targetModel = result.recommendedModel;
+        if (!result.success && !_isAutoModelSelectionEnabled() && !previousModel.isEmpty()) targetModel = previousModel;
         if (targetModel.isEmpty()) {
             targetModel = configuredModel;
         }
@@ -465,6 +487,8 @@ void AIConnectionWizardWidget::_applyDetectionResult(const AIDetectionResult& re
             const int index = _modelCombo->findText(targetModel);
             if (index >= 0) {
                 _modelCombo->setCurrentIndex(index);
+            } else {
+                _modelCombo->setEditText(targetModel);
             }
         } else if (_modelCombo->count() > 0) {
             _modelCombo->setCurrentIndex(0);
@@ -518,6 +542,9 @@ void AIConnectionWizardWidget::_saveConfiguration()
 
 void AIConnectionWizardWidget::_setBusy(bool busy)
 {
+    if (_apiKeyEdit) _apiKeyEdit->setEnabled(!busy);
+    if (_baseUrlEdit) _baseUrlEdit->setEnabled(!busy);
+    if (_autoModelCheck) _autoModelCheck->setEnabled(!busy);
     if (_detectButton) {
         _detectButton->setEnabled(!busy && _detector);
     }
@@ -525,7 +552,7 @@ void AIConnectionWizardWidget::_setBusy(bool busy)
         _saveButton->setEnabled(!busy && _lastResult.success);
     }
     if (_modelCombo) {
-        _modelCombo->setEnabled(!busy && _modelCombo->count() > 0 && !_isAutoModelSelectionEnabled());
+        _modelCombo->setEnabled(!busy && !_isAutoModelSelectionEnabled());
     }
 }
 
@@ -565,7 +592,8 @@ void AIConnectionWizardWidget::_syncModelSelectionMode(const AIDetectionResult& 
             _modelCombo->setCurrentIndex(index);
         }
     }
-    _modelCombo->setEnabled(_modelCombo->count() > 0 && !_isAutoModelSelectionEnabled());
+    _modelCombo->setEnabled(!_isAutoModelSelectionEnabled() &&
+        (!_detectWatcher || !_detectWatcher->isRunning()));
 }
 
 QString AIConnectionWizardWidget::_renderResultHtml(const AIDetectionResult& result) const

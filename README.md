@@ -2,15 +2,15 @@
 
 CGPlay 是面向 VFX、动画和合成审片流程的 Windows 播放器，使用 C++17、Qt 6、tlRender 和 Python 构建。项目开发目录曾使用 RVLite 名称，代码中仍保留部分命名。
 
-当前源码版本：**1.0.7.11**。
+当前源码版本：**1.0.7.12**。
 
-- [下载 1.0.7.11 Windows 完整安装包](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.7.11/CGPlay_Setup_1.0.7.11_full.exe)
-- [版本发布页](https://github.com/xty-luoye/CGPlay/releases/tag/v1.0.7.11)
+- [下载 1.0.7.12 Windows 完整安装包](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.7.12/CGPlay_Setup_1.0.7.12_full.exe)
+- [版本发布页](https://github.com/xty-luoye/CGPlay/releases/tag/v1.0.7.12)
 - [使用说明](docs/CGPlay_使用说明_1.0.7.md)
 - [构建说明与当前限制](docs/OFFICIAL_BUILD.md)
 - [贡献指南](CONTRIBUTING.md)
 
-旧版软件内的自动更新通道暂未同步到本次版本，可下载完整安装包更新。
+1.0.7.12 默认在后台检查 GitHub 最新正式版，支持下载、校验和安装。1.0.7.11 及更早版本请先手动安装一次本版，再使用新的自动更新通道。
 
 ## 主要功能
 
@@ -25,11 +25,14 @@ CGPlay 是面向 VFX、动画和合成审片流程的 Windows 播放器，使用
 
 实际支持的媒体格式取决于 tlRender、FFmpeg、OpenImageIO 和编码器的构建配置。
 
-## 1.0.7.11 更新
+## 1.0.7.12 更新
 
-- 修复进入全屏后视频画面再次跳大、缩放不稳定的问题。
-- 改善 Windows 资源管理器视频缩略图的注册与显示。
-- 本次源码整理统一开源许可说明，将主要构建依赖路径改为可配置，并移除未使用的演示图片引用。
+- 改善播放中进入全屏时的停顿，保留画面缩放稳定性修复。
+- AI / Codex 工作台默认关闭，打开时按需加载。
+- 更新现有 AI 协议兼容、模型列表与手动模型 ID 配置。
+- 新增 GitHub 自动检查更新、可取消下载和安装包完整性校验。
+
+详见[完整更新说明](docs/RELEASE_NOTES_1.0.7.12.md)。
 
 ## 构建状态
 

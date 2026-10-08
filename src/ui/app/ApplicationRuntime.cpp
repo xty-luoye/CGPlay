@@ -159,7 +159,7 @@ Application::Application(int& argc, char** argv)
         previousStartupPhaseMs = elapsedMs;
     };
     setApplicationName("CGPlay");
-    setApplicationVersion("1.0.7.11");
+    setApplicationVersion("1.0.7.12");
     setOrganizationName("CGPlay");
     _initStyle();
     _parseArgs();
@@ -328,17 +328,14 @@ Application::Application(int& argc, char** argv)
         "cgplay.codex.playbackService",
         QVariant::fromValue<qulonglong>(reinterpret_cast<qulonglong>(_mainWindow->playbackController())));
 
-    // The capture path must match the normal user layout: the Codex workspace
-    // is a right-side dock in the reference UI.  Keep it disabled only for
-    // non-visual benchmark/dump modes where it can affect timing or teardown.
-    // (The legacy condition `_captureUiMode || _dumpRuntimeMode` was too broad:
-    // capture UI is visual and must retain the right-side Codex dock.)
+    // Keep the dock available on demand; normal startup and UI captures leave
+    // both AI workspaces closed and avoid constructing the Codex UI.
     const bool suppressCodexWorkspace = property("cgplay.benchmarkMode").toBool() ||
         _dumpRuntimeMode || _componentCheckMode || _qwenAsrProviderSmokeMode;
     if (!suppressCodexWorkspace) {
         if (auto* codexPlugin = _pluginManager->pluginObject(QStringLiteral("codex"))) {
         QWidget* codexWorkspace = nullptr;
-        const bool eagerCodexWorkspace = _captureUiMode || _codexWorkbenchSmokeMode;
+        const bool eagerCodexWorkspace = _codexWorkbenchSmokeMode;
         const bool workspaceResolved = !eagerCodexWorkspace || QMetaObject::invokeMethod(
             codexPlugin,
             "workspaceWidget",
@@ -388,6 +385,11 @@ Application::Application(int& argc, char** argv)
                         placeholderLabel->setText(QStringLiteral("正在加载 Codex..."));
                         QTimer::singleShot(0, codexDock,
                             [codexPlugin, codexDock, placeholder, placeholderLabel, loadButton] {
+                                if (!codexDock->isVisible()) {
+                                    placeholderLabel->setText(QStringLiteral("Codex 工作台按需加载"));
+                                    loadButton->setEnabled(true);
+                                    return;
+                                }
                                 QWidget* workspace = nullptr;
                                 const bool resolved = QMetaObject::invokeMethod(
                                     codexPlugin,
@@ -404,12 +406,14 @@ Application::Application(int& argc, char** argv)
                                  placeholder->deleteLater();
                              });
                      });
-                // Keep workspace construction off the startup stack, but do not
-                // leave the user at a manual "Open Codex" gate on every launch.
-                // The queued click preserves the fast first paint and replaces
-                // the placeholder as soon as the event loop is idle.
-                QTimer::singleShot(0, loadButton, [loadButton] {
-                    if (loadButton->isEnabled()) loadButton->click();
+                // Opening the dock is the user's request to load the workbench.
+                // A quick open/close must cancel the queued construction.
+                connect(codexDock, &QDockWidget::visibilityChanged, loadButton,
+                    [codexDock, loadButton](bool visible) {
+                    if (!visible) return;
+                    QTimer::singleShot(0, loadButton, [codexDock, loadButton] {
+                        if (codexDock->isVisible() && loadButton->isEnabled()) loadButton->click();
+                    });
                 });
              }
 
@@ -432,15 +436,15 @@ Application::Application(int& argc, char** argv)
             }
             _mainWindow->resizeDocks({codexDock}, {460}, Qt::Horizontal);
 
-            // Codex opens on every launch; a user-hidden dock applies only to the current session.
-            codexDock->setVisible(true);
-            codexDock->raise();
+            // Only the explicit workbench smoke opens this dock at startup.
+            codexDock->setVisible(_codexWorkbenchSmokeMode);
+            if (_codexWorkbenchSmokeMode) codexDock->raise();
             if (_windowSettings) {
-                _windowSettings->setValue(QStringLiteral("codex/workspaceVisible"), true);
+                _windowSettings->setValue(QStringLiteral("codex/workspaceVisible"), _codexWorkbenchSmokeMode);
             }
             connect(codexDock, &QDockWidget::visibilityChanged, this, [this](bool visible) {
-                if (_windowSettings && visible && !QCoreApplication::closingDown()) {
-                    _windowSettings->setValue(QStringLiteral("codex/workspaceVisible"), true);
+                if (_windowSettings && !QCoreApplication::closingDown()) {
+                    _windowSettings->setValue(QStringLiteral("codex/workspaceVisible"), visible);
                 }
             });
 
@@ -475,10 +479,7 @@ Application::Application(int& argc, char** argv)
                 if (!checked) {
                     return;
                 }
-                QTimer::singleShot(0, codexDock, [codexDock] {
-                    codexDock->show();
-                    codexDock->raise();
-                });
+                codexDock->raise();
             });
         }
         }
