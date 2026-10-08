@@ -1,0 +1,20 @@
+CGPLAY LEGACY LICENSE NOTICE
+============================
+
+This filename is retained only for compatibility with older documentation.
+It is not a commercial end-user license agreement for this source release.
+
+Copyright (c) 2026 CGPlay Team.
+This source release is distributed under the GNU General Public License
+version 3 only (SPDX-License-Identifier: GPL-3.0-only). The complete license
+is in the repository root LICENSE.txt. The former draft commercial
+restrictions are not terms of this release.
+
+The MIT license text found in the local development tree is preserved in
+third_party_licenses/LICENSE_CGPlay_legacy_MIT.txt. This release does not revoke
+any rights previously granted under MIT or assert that all older installers
+used MIT. Third-party components retain their own licenses and notices;
+see THIRD_PARTY_NOTICES.txt.
+
+No new installer is distributed as part of this source-only publication.
+Existing binary releases require their own matching license and source review.

@@ -1,0 +1,52 @@
+{
+  "manifestVersion": 1,
+  "manifestUrl": "https://cgplay-app.netlify.app/manifest.json",
+  "manifestUrls": [
+    "https://cgplay-app.netlify.app/manifest.json",
+    "https://github.com/xty-luoye/CGPlay/releases/latest/download/manifest.json"
+  ],
+  "components": {
+    "ffmpeg": {
+      "version": "local",
+      "url": "",
+      "sha256": "",
+      "archiveName": "cgplay-ffmpeg-win64.zip",
+      "installSubdir": ".",
+      "requiredFiles": [
+        "ffmpeg.exe",
+        "ffprobe.exe"
+      ]
+    },
+    "python-runtime": {
+      "version": "local",
+      "url": "",
+      "sha256": "",
+      "archiveName": "cgplay-python-runtime-win64.zip",
+      "installSubdir": "runtime/python",
+      "requiredFiles": [
+        "python.exe"
+      ]
+    },
+    "tools": {
+      "version": "local",
+      "url": "",
+      "sha256": "",
+      "archiveName": "cgplay-tools-win64.zip",
+      "installSubdir": "tools",
+      "requiredFiles": [
+        "cgplay/export/export_engine.py"
+      ]
+    },
+    "core": {
+      "version": "local",
+      "url": "",
+      "sha256": "",
+      "archiveName": "cgplay-core-win64.zip",
+      "installSubdir": ".",
+      "requiredFiles": [
+        "CGPlay.exe",
+        "CGPlayQuickLook.exe"
+      ]
+    }
+  }
+}

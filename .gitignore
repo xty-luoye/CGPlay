@@ -1,0 +1,64 @@
+# Build outputs
+/build_win/
+/build_win_full/
+/_ffmpeg_tmp/
+/tmp/
+/third_party/
+
+# Backups and archives
+/backups/
+/ui_v1_backup/
+/_backup_src_compare/
+/*.zip
+/_tmp_patch_1.diff
+
+# Logs and local reports
+/*.log
+/*.txt
+/_*.txt
+!/CMakeLists.txt
+!/LICENSE.txt
+/tests/reports/
+/tests/artifacts/
+/tests/__pycache__/
+**/__pycache__/
+*.pyc
+*.pdb
+/tools/*_error.log
+/tools/*out*.log
+
+# Local screenshots / sensitive images
+/tests/media/
+/tests/fixtures/**/*.mov
+/resources/demo_*.png
+/resources/demo_*.jpg
+/resources/demo_*.jpeg
+/resources/demo_*.mp4
+*.overlay.png
+*.heatmap.png
+*.capture.png
+
+# IDE / temp
+/.vs/
+/.vscode/
+*.user
+*.tmp
+
+# Local configuration, private records and credentials
+/CMakeUserPresets.json
+/AGENTS.md
+/.agents/
+/PLAN*.md
+/TOKEN_*.md
+/docs/handoffs/
+/docs/history/
+/tools/video/
+/.env
+/.env.*
+!/.env.example
+**/auth.json
+*.key
+*.pfx
+*.p12
+/.venv/
+/.pytest_cache/

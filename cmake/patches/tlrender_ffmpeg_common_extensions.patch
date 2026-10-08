@@ -1,0 +1,37 @@
+diff --git a/lib/tlRender/IO/FFmpeg.cpp b/lib/tlRender/IO/FFmpeg.cpp
+--- a/lib/tlRender/IO/FFmpeg.cpp
++++ b/lib/tlRender/IO/FFmpeg.cpp
+@@ -220,9 +220,30 @@
+                 }
+             }
+             //! \bug Why aren't these in the list of input formats?
+-            extensions[".m4v"] = FileType::Media;
+-            extensions[".mxf"] = FileType::Media;
+-            extensions[".wav"] = FileType::Media;
++            for (const auto& extension : {
++                ".asf",
++                ".m1v",
++                ".m2ts",
++                ".m2v",
++                ".m4v",
++                ".mpeg",
++                ".mpg",
++                ".mts",
++                ".mxf",
++                ".ogv",
++                ".rm",
++                ".rmvb",
++                ".ts",
++                ".vob",
++                ".wav",
++                ".wmv",
++                ".wtv" })
++            {
++                // Several FFmpeg demuxers intentionally omit common file
++                // aliases. tlRender selects a reader by suffix before FFmpeg
++                // can probe the content, so register those aliases here.
++                extensions[extension] = FileType::Media;
++            }
+ 
+             IReadPlugin::_init("FFmpeg", extensions, logSystem);
+ 

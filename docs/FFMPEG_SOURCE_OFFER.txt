@@ -1,0 +1,52 @@
+FFMPEG BUILD AND CORRESPONDING-SOURCE INFORMATION
+================================================
+
+Scope and status
+----------------
+This historical filename records dependency provenance. It is not a written
+source offer or a claim that the publisher hosts complete corresponding source.
+This source-only publication includes neither FFmpeg binaries nor an installer.
+Before distributing binaries, the distributor must verify and supply the
+corresponding source and build information required by the applicable license.
+
+Native playback libraries
+-------------------------
+The locally inspected CGPlay 1.0.7.11 Release avcodec-62.dll identifies itself as:
+  libavcodec license: LGPL version 2.1 or later
+Its embedded configuration identifies a vcpkg MSVC shared build:
+  --enable-shared --disable-static
+  --disable-libx264 --disable-libx265
+The inspected configuration contains neither --enable-gpl nor --enable-nonfree.
+These native DLLs are distinct from the standalone executables below. A future
+binary release must record its actual FFmpeg revision, vcpkg port/version,
+configuration, patches, and corresponding source; these are not established
+by the standalone executable's source archive.
+
+Standalone command-line tools
+-----------------------------
+The existing local full package's ffmpeg.exe and ffprobe.exe are recorded as:
+  Version: 8.1.1-full_build-www.gyan.dev
+  License reported by ffmpeg.exe -L: GNU GPL version 3 or later
+  Flags: --enable-gpl --enable-version3 --enable-static
+         --enable-libx264 --enable-libx265
+The application invokes these tools as separate command-line processes.
+Their license and source obligations remain separate from the application's
+own source license; this notice does not relicense the tools.
+
+Upstream and distributor provenance leads:
+  https://ffmpeg.org/legal.html
+  https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n8.1.1.tar.gz
+  https://www.gyan.dev/ffmpeg/builds/
+  https://github.com/GyanD/codexffmpeg/archive/refs/tags/8.1.1.tar.gz
+
+These links have not been verified here as a complete corresponding-source
+package for every shipped binary and all its included libraries. In particular,
+verify exact revisions, downstream patches, dependency sources, configuration,
+compiler/build scripts, source hashes, and rebuild instructions. Do not describe
+an upstream tag or build-script archive alone as a fulfilled source obligation.
+
+Other FFmpeg builds
+------------------
+PyAV wheels and Qt WebEngine may embed additional FFmpeg builds. Their source,
+configuration, licenses, and notices must be assessed from their own exact
+versions when bundled; the information above does not cover those builds.

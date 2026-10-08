@@ -1,0 +1,79 @@
+CGPLAY THIRD-PARTY NOTICES
+==========================
+
+Copyright (c) 2026 CGPlay Team.
+This CGPlay source release is distributed under GNU General Public License
+version 3 only (SPDX-License-Identifier: GPL-3.0-only); the full text is in the
+root LICENSE.txt. Third-party components remain under the terms stated below.
+
+The local development tree included an MIT license text for CGPlay. That text
+is preserved in docs/third_party_licenses/LICENSE_CGPlay_legacy_MIT.txt.
+Any rights previously granted under MIT remain valid; this does not assert
+that every older binary release was distributed under MIT. MIT-covered code
+can be included in this GPLv3 release subject to preserving its copyright
+and permission notices.
+The GPLv3 selection for this release does not claim new ownership of upstream
+or other contributors' code.
+Third-party code, assets, and runtime dependencies retain their own licenses.
+The root license does not replace third-party licenses or claim their ownership.
+This source publication does not include an installer or its dependency runtime.
+
+Source dependencies
+-------------------
+Keep the original LICENSE and NOTICE files wherever dependency source is
+redistributed, including nested dependencies. The bundled license texts under
+docs/third_party_licenses are retained; they are not an exhaustive binary audit.
+
+- tlRender and feather-tk: BSD 3-Clause. Retain copyright and disclaimer notices,
+  including for local upstream patches.
+  https://github.com/darbyjohnston/tlRender
+  https://github.com/darbyjohnston/feather-tk
+- OpenTimelineIO: Apache-2.0. Retain its LICENSE.txt and NOTICE.txt.
+  https://github.com/AcademySoftwareFoundation/OpenTimelineIO
+- OpenColorIO and OpenEXR: BSD 3-Clause.
+  https://github.com/AcademySoftwareFoundation/OpenColorIO
+  https://github.com/AcademySoftwareFoundation/openexr
+- OpenImageIO: see the exact upstream license for the version used; the retained
+  LICENSE_OpenImageIO.md is Apache-2.0.
+  https://github.com/AcademySoftwareFoundation/OpenImageIO
+- SDL2: zlib license. yaml-cpp and nlohmann/json: MIT.
+  Preserve their own copyright notices.
+- If Codex source is included, retain its Apache-2.0 LICENSE and NOTICE as well
+  as licenses of its nested components. An optional external Codex runtime or
+  service has its own notices and usage terms.
+
+Qt 6.5.3 / Qt WebEngine
+-----------------------
+The application uses Qt and its WebEngine module. Applicable open-source Qt
+terms include LGPLv3/GPL alternatives depending on the module. Qt WebEngine
+also incorporates Chromium components with their own licenses. A binary
+publisher must retain notices and fulfill the exact source/relinking terms;
+using Qt does not replace the dependency licenses.
+  https://doc.qt.io/qt-6.5/licensing.html
+  https://doc.qt.io/qt-6.5/qtwebengine-licensing.html
+
+FFmpeg: distinct native-library and command-line builds
+------------------------------------------------------
+The inspected local Release avcodec-62.dll identifies LGPL version 2.1 or later.
+Its vcpkg shared-build configuration disables libx264/libx265 and does not enable
+GPL or nonfree options. The standalone ffmpeg.exe/ffprobe.exe in the existing
+full package are a different Gyan 8.1.1 build, reported as GPLv3-or-later with
+GPL features enabled. The application calls the standalone tools through
+processes. These observations do not certify future builds or relicense FFmpeg.
+See FFMPEG_SOURCE_OFFER.txt for provenance and outstanding source verification.
+  https://ffmpeg.org/legal.html
+
+Other runtime dependencies
+--------------------------
+A full binary package may include Python, PyAV, OpenCV, NumPy, Pillow, Torch,
+Faster Whisper, CTranslate2, and native transitive libraries such as FreeType,
+zlib, PNG, JPEG, TIFF, and OpenSSL. Preserve their original license/notice
+metadata and inventory the actual versions. Model weights and sample media
+need their own redistribution rights; a code license does not cover them.
+
+Binary publication
+------------------
+Before attaching installers, verify the exact binary payload, all applicable
+notices, and complete corresponding-source materials together. A document
+presence check or this source-only publication does not establish that the
+previously built installers meet those requirements.

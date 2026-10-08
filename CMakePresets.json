@@ -1,0 +1,50 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 31,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-full-release",
+      "displayName": "Windows Full Release (tlRender)",
+      "description": "Windows x64 Release layout; set dependency environment variables as documented in docs/OFFICIAL_BUILD.md.",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build_win_full",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "$env{CGV_INSTALL_DIR};$env{FEATHER_TK_INSTALL_DIR};$env{TLRENDER_INSTALL_DIR};$env{QT_ROOT};$env{CMAKE_PREFIX_PATH}",
+        "Qt6_DIR": "$env{QT_ROOT}/lib/cmake/Qt6",
+        "CGPLAY_USE_TLRENDER": "ON",
+        "TLRENDER_SOURCE_DIR": "$env{TLRENDER_SOURCE_DIR}",
+        "TLRENDER_INSTALL_DIR": "$env{TLRENDER_INSTALL_DIR}",
+        "CGPLAY_REQUIRE_RUNTIME": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-full-release-apps",
+      "displayName": "Build CGPlay, QuickLook and thumbnail provider (Release)",
+      "configurePreset": "windows-full-release",
+      "configuration": "Release",
+      "targets": ["CGPlay", "CGPlayQuickLook", "CGPlayThumbnailProvider"]
+    },
+    {
+      "name": "windows-full-release-cgplay",
+      "displayName": "Build CGPlay (Release)",
+      "configurePreset": "windows-full-release",
+      "configuration": "Release",
+      "targets": ["CGPlay"]
+    },
+    {
+      "name": "windows-full-release-quicklook",
+      "displayName": "Build CGPlayQuickLook (Release)",
+      "configurePreset": "windows-full-release",
+      "configuration": "Release",
+      "targets": ["CGPlayQuickLook"]
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+diff --git a/lib/tlRender/IO/FFmpegReadVideo.cpp b/lib/tlRender/IO/FFmpegReadVideo.cpp
+--- a/lib/tlRender/IO/FFmpegReadVideo.cpp
++++ b/lib/tlRender/IO/FFmpegReadVideo.cpp
+@@ -151,8 +151,28 @@
+                 {
+                     throw std::runtime_error(ftk::Format("{0}: \"{1}\"").arg(getErrorLabel(r)).arg(fileName));
+                 }
+                 _avCodecContext[_avStream]->thread_count = options.threadCount;
+-                _avCodecContext[_avStream]->thread_type = FF_THREAD_FRAME;
++                switch (avVideoCodecParameters->codec_id)
++                {
++                case AV_CODEC_ID_VP3:
++                case AV_CODEC_ID_VP4:
++                case AV_CODEC_ID_VP5:
++                case AV_CODEC_ID_VP6:
++                case AV_CODEC_ID_VP6A:
++                case AV_CODEC_ID_VP6F:
++                case AV_CODEC_ID_VP7:
++                case AV_CODEC_ID_VP8:
++                case AV_CODEC_ID_VP9:
++                    // Frame threading delays decoder output and breaks the
++                    // reader's seek/request ordering for VP codecs. Slice
++                    // threading keeps supported VP decoders parallel without
++                    // deferring complete frames across requests.
++                    _avCodecContext[_avStream]->thread_type = FF_THREAD_SLICE;
++                    break;
++                default:
++                    _avCodecContext[_avStream]->thread_type = FF_THREAD_FRAME;
++                    break;
++                }
+ 
+                 // v1.5: Hardware decode support
+                 AVDictionary* avOptions = nullptr;

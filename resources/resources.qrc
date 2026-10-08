@@ -1,0 +1,12 @@
+<RCC>
+  <qresource prefix="/cgplay">
+    <file>CGPlay.png</file>
+    <file>component_manifest.json</file>
+    <file>icons/nav_playlist.svg</file>
+    <file>icons/nav_review.svg</file>
+    <file>icons/nav_compare.svg</file>
+    <file>icons/nav_versions.svg</file>
+    <file>icons/nav_timeline.svg</file>
+    <file>icons/nav_settings.svg</file>
+  </qresource>
+</RCC>

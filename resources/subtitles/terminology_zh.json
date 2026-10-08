@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "targetLanguage": "zh-Hans",
+  "terms": [
+    {
+      "source": ["Shadow Garden", "シャドウガーデン"],
+      "target": "暗影庭园"
+    },
+    {
+      "source": ["Shadow", "シャドウ"],
+      "target": "暗影大人"
+    },
+    {
+      "source": ["Bushin Festival", "武神祭"],
+      "target": "武神祭"
+    },
+    {
+      "source": ["Oriana", "オリアナ"],
+      "target": "奥利亚纳"
+    }
+  ]
+}

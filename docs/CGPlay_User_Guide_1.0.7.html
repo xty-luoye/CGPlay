@@ -1,0 +1,923 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CGPlay 使用说明 v1.0.7</title>
+  <style>
+    :root {
+      --bg: #f7f9fb;
+      --paper: #ffffff;
+      --ink: #18212f;
+      --muted: #667085;
+      --line: #d9e2ec;
+      --blue: #2364aa;
+      --green: #227a5b;
+      --amber: #9a6a16;
+      --red: #a43f3f;
+      --soft-blue: #e9f2fb;
+      --soft-green: #e8f5ef;
+      --soft-amber: #fff5db;
+      --soft-red: #fbeaea;
+      --shadow: 0 8px 24px rgba(18, 33, 50, .08);
+      font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.58;
+      letter-spacing: 0;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 290px minmax(0, 1fr);
+    }
+
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 22px 18px;
+      background: #101828;
+      color: #eef4ff;
+      overflow: auto;
+    }
+
+    .brand {
+      display: grid;
+      gap: 4px;
+      margin-bottom: 18px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid rgba(255, 255, 255, .18);
+    }
+
+    .brand strong {
+      font-size: 22px;
+      line-height: 1.15;
+    }
+
+    .brand span {
+      color: #b8c4d6;
+      font-size: 13px;
+    }
+
+    .tools {
+      display: grid;
+      grid-template-columns: 1fr 42px;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    input[type="search"] {
+      width: 100%;
+      height: 38px;
+      border: 1px solid rgba(255,255,255,.2);
+      border-radius: 6px;
+      padding: 0 10px;
+      background: rgba(255,255,255,.08);
+      color: #fff;
+      outline: none;
+    }
+
+    input[type="search"]::placeholder { color: #b8c4d6; }
+
+    button {
+      height: 38px;
+      border: 1px solid rgba(255,255,255,.24);
+      border-radius: 6px;
+      background: rgba(255,255,255,.1);
+      color: #fff;
+      cursor: pointer;
+      font-size: 16px;
+    }
+
+    button:hover { background: rgba(255,255,255,.18); }
+
+    nav {
+      display: grid;
+      gap: 3px;
+      font-size: 14px;
+    }
+
+    nav a {
+      color: #dce7f7;
+      text-decoration: none;
+      padding: 7px 8px;
+      border-radius: 6px;
+    }
+
+    nav a:hover,
+    nav a.active {
+      color: #fff;
+      background: rgba(255,255,255,.12);
+    }
+
+    main {
+      min-width: 0;
+      padding: 34px clamp(18px, 4vw, 54px) 60px;
+    }
+
+    .doc {
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(320px, .9fr);
+      gap: 24px;
+      align-items: start;
+      margin-bottom: 24px;
+    }
+
+    .title-block,
+    section,
+    .feature-map {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+    }
+
+    .title-block {
+      padding: 26px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--blue);
+      font-weight: 700;
+      font-size: 13px;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(28px, 4vw, 44px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .meta {
+      min-width: 0;
+      padding: 12px;
+      border-radius: 6px;
+      background: #f3f6fa;
+      border: 1px solid #e2e8f0;
+    }
+
+    .meta b {
+      display: block;
+      margin-bottom: 2px;
+      font-size: 13px;
+      color: #344054;
+    }
+
+    .meta span {
+      color: var(--muted);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+
+    .feature-map {
+      padding: 16px;
+    }
+
+    .feature-map h2 {
+      margin: 0 0 12px;
+      font-size: 17px;
+      color: #0b2545;
+    }
+
+    svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    section {
+      margin: 18px 0;
+      padding: 22px;
+      scroll-margin-top: 18px;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 24px;
+      color: #0b2545;
+      line-height: 1.25;
+    }
+
+    h3 {
+      margin: 18px 0 8px;
+      font-size: 18px;
+      color: #1f4d78;
+    }
+
+    p { margin: 8px 0; }
+
+    ul, ol {
+      margin: 8px 0 8px 20px;
+      padding: 0;
+    }
+
+    li { margin: 4px 0; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .tile {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfdff;
+    }
+
+    .tile h3 {
+      margin-top: 0;
+      font-size: 16px;
+    }
+
+    .tile p {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 26px;
+      padding: 2px 9px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .ok { color: var(--green); background: var(--soft-green); }
+    .info { color: var(--blue); background: var(--soft-blue); }
+    .warn { color: var(--amber); background: var(--soft-amber); }
+    .risk { color: var(--red); background: var(--soft-red); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      table-layout: fixed;
+      font-size: 14px;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 11px;
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+
+    th {
+      background: #e8eef5;
+      color: #0b2545;
+    }
+
+    code, .path {
+      font-family: Consolas, "Cascadia Mono", monospace;
+      font-size: .94em;
+      background: #f1f4f8;
+      padding: 1px 4px;
+      border-radius: 4px;
+      overflow-wrap: anywhere;
+    }
+
+    pre {
+      margin: 12px 0;
+      padding: 13px 14px;
+      overflow: auto;
+      border: 1px solid #d6e0ea;
+      border-radius: 8px;
+      background: #111827;
+      color: #e8f1ff;
+      line-height: 1.45;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+    }
+
+    .note {
+      padding: 13px 14px;
+      border-left: 4px solid var(--amber);
+      background: var(--soft-amber);
+      border-radius: 6px;
+    }
+
+    .compare {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .hidden { display: none !important; }
+
+    mark {
+      background: #fff0a8;
+      color: inherit;
+      padding: 0 2px;
+      border-radius: 3px;
+    }
+
+    @media (max-width: 980px) {
+      .app { grid-template-columns: 1fr; }
+      aside {
+        position: relative;
+        height: auto;
+        max-height: none;
+      }
+      nav {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      header {
+        grid-template-columns: 1fr;
+      }
+      .grid,
+      .compare {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 620px) {
+      main { padding: 18px 12px 40px; }
+      section, .title-block, .feature-map { padding: 16px; }
+      .meta-grid { grid-template-columns: 1fr; }
+      nav { grid-template-columns: 1fr; }
+      table { font-size: 13px; }
+      th, td { padding: 8px; }
+    }
+
+    @media print {
+      body { background: #fff; }
+      .app { display: block; }
+      aside { display: none; }
+      main { padding: 0; }
+      .title-block, section, .feature-map {
+        box-shadow: none;
+        border-color: #cfd8e3;
+        break-inside: avoid;
+      }
+      a { color: inherit; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div class="brand">
+        <strong>CGPlay v1.0.7</strong>
+        <span>完整使用说明 · 离线版</span>
+      </div>
+      <div class="tools">
+        <input id="search" type="search" placeholder="搜索功能、格式、关键词">
+        <button type="button" id="printBtn" title="打印或另存为 PDF">⎙</button>
+      </div>
+      <nav id="toc">
+        <a href="#overview">总览</a>
+        <a href="#quickstart">快速上手</a>
+        <a href="#packages">安装包</a>
+        <a href="#playback">播放与格式</a>
+        <a href="#view">视图窗口</a>
+        <a href="#playlist">播放列表</a>
+        <a href="#compare">A/B 对比</a>
+        <a href="#review">批注审片</a>
+        <a href="#color-export">色彩与导出</a>
+        <a href="#ai">AI 工作台</a>
+        <a href="#codex">Codex 工作台</a>
+        <a href="#api-setup">API 配置</a>
+        <a href="#subtitles">字幕翻译</a>
+        <a href="#components">组件更新</a>
+        <a href="#shortcuts">快捷键</a>
+        <a href="#limits">边界说明</a>
+      </nav>
+    </aside>
+
+    <main>
+      <div class="doc">
+        <header id="overview">
+          <div class="title-block">
+            <p class="eyebrow">Current Player Feature Guide</p>
+            <h1>CGPlay 使用说明</h1>
+            <p class="subtitle">面向审片、动画、VFX、合成和字幕检查流程的专业播放器。本文为单文件离线网页，双击即可打开，不依赖网络资源。</p>
+            <div class="meta-grid">
+              <div class="meta"><b>当前版本</b><span>1.0.7</span></div>
+              <div class="meta"><b>更新日期</b><span>2026-07-13</span></div>
+              <div class="meta"><b>主程序</b><span>CGPlay.exe</span></div>
+              <div class="meta"><b>字幕输出</b><span>CGPlay_Translations</span></div>
+            </div>
+          </div>
+          <div class="feature-map" aria-label="播放器功能结构图">
+            <h2>功能结构图</h2>
+            <svg viewBox="0 0 620 440" role="img" aria-label="CGPlay 功能结构示意">
+              <rect x="12" y="12" width="596" height="416" rx="10" fill="#f8fbff" stroke="#cbd8e6"/>
+              <rect x="42" y="48" width="536" height="54" rx="6" fill="#101828"/>
+              <text x="62" y="82" fill="#ffffff" font-size="20" font-family="Microsoft YaHei">顶部菜单 / 状态栏 / AI 工作台入口</text>
+              <rect x="42" y="122" width="128" height="212" rx="6" fill="#e8f5ef" stroke="#97cbb5"/>
+              <text x="65" y="160" fill="#184f3b" font-size="17" font-family="Microsoft YaHei">播放列表</text>
+              <text x="63" y="193" fill="#184f3b" font-size="13" font-family="Microsoft YaHei">Shot / 缩略图</text>
+              <text x="63" y="219" fill="#184f3b" font-size="13" font-family="Microsoft YaHei">搜索 / 状态</text>
+              <text x="63" y="245" fill="#184f3b" font-size="13" font-family="Microsoft YaHei">OTIO</text>
+              <rect x="190" y="122" width="240" height="212" rx="6" fill="#e9f2fb" stroke="#9bbce0"/>
+              <text x="246" y="170" fill="#164b7c" font-size="22" font-family="Microsoft YaHei">播放器视口</text>
+              <text x="242" y="205" fill="#164b7c" font-size="14" font-family="Microsoft YaHei">tlRender / OpenGL</text>
+              <text x="231" y="232" fill="#164b7c" font-size="14" font-family="Microsoft YaHei">字幕 overlay / 批注 overlay</text>
+              <text x="249" y="259" fill="#164b7c" font-size="14" font-family="Microsoft YaHei">A/B 对比显示</text>
+              <rect x="450" y="122" width="128" height="212" rx="6" fill="#fff5db" stroke="#dbc071"/>
+              <text x="482" y="160" fill="#74500e" font-size="17" font-family="Microsoft YaHei">审片面板</text>
+              <text x="480" y="193" fill="#74500e" font-size="13" font-family="Microsoft YaHei">批注记录</text>
+              <text x="480" y="219" fill="#74500e" font-size="13" font-family="Microsoft YaHei">元数据</text>
+              <text x="480" y="245" fill="#74500e" font-size="13" font-family="Microsoft YaHei">设置</text>
+              <rect x="42" y="356" width="536" height="42" rx="6" fill="#ffffff" stroke="#cbd8e6"/>
+              <text x="62" y="382" fill="#26384d" font-size="15" font-family="Microsoft YaHei">播放栏：帧号 / 时间码 / FPS / 循环 / 音量 / 翻译开关 / 高质量模式</text>
+            </svg>
+          </div>
+        </header>
+
+        <section id="quickstart">
+          <h2>0. 新用户快速上手</h2>
+          <table>
+            <thead><tr><th>步骤</th><th>怎么做</th><th>结果</th></tr></thead>
+            <tbody>
+              <tr><td>1. 安装</td><td>双击 Full 或 Lite 安装包，根据提示完成安装。</td><td>桌面或开始菜单中出现 CGPlay。</td></tr>
+              <tr><td>2. 打开素材</td><td>启动 CGPlay 后，把视频或图片序列拖入窗口，或使用顶部菜单“文件 / 打开”。</td><td>素材出现在播放视口和播放列表中。</td></tr>
+              <tr><td>3. 播放审看</td><td>用空格播放/暂停，用左右方向键逐帧检查，用鼠标滚轮缩放画面。</td><td>可以快速检查画面、帧号、时间码和声音。</td></tr>
+              <tr><td>4. 批注反馈</td><td>打开批注工具栏，选择箭头、矩形、文字或自由绘制，在画面上标注问题。</td><td>批注会绑定到当前帧，可在 Review 面板中查看。</td></tr>
+              <tr><td>5. 字幕翻译</td><td>先在“AI 工作台”填写 API，再在播放栏打开翻译开关。</td><td>播放器会生成并显示中文字幕。</td></tr>
+              <tr><td>6. 导出交付</td><td>使用“导出视频”“导出带批注视频”或“HTML 报告”。</td><td>可输出给导演、客户或团队成员查看。</td></tr>
+              <tr><td>7. Codex 工作台</td><td>在右侧选择项目并直接描述任务。</td><td>可读取当前画面、项目文件和审片上下文。</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="packages">
+          <h2>1. 版本与安装包</h2>
+          <table>
+            <thead><tr><th>类型</th><th>文件名</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><span class="status info">Full</span></td>
+                <td><span class="path">CGPlay_Setup_1.0.7_full.exe</span></td>
+                <td>推荐版本，内置 Codex CLI、FFmpeg、Python、Qt WebEngine、导出与 AI 运行环境。</td>
+              </tr>
+              <tr>
+                <td><span class="status ok">Lite</span></td>
+                <td><span class="path">CGPlay_Setup_1.0.7_lite.exe</span></td>
+                <td>精简版，适合基础播放；部分导出、AI 和 Codex 能力需要后续补齐组件。</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>当前提供 Full 与 Lite 两种安装形态，可根据部署环境选择完整组件包或轻量安装包。</p>
+          <h3>怎么选</h3>
+          <ul>
+            <li>第一次安装、跨电脑使用或需要完整 Codex/导出/AI 功能时，使用 Full。</li>
+            <li>只需要基础播放、体积要小、后续可以在线补组件时，使用 Lite。</li>
+            <li>如果某些导出、AI 或运行组件缺失，可在播放器内使用组件更新功能补齐。</li>
+          </ul>
+        </section>
+
+        <section id="playback">
+          <h2>2. 播放与媒体支持</h2>
+          <div class="grid">
+            <div class="tile">
+              <h3>播放核心</h3>
+              <p>基于 Qt6、OpenGL 和 tlRender，支持专业审片播放、时间线显示、帧号和时间码。</p>
+            </div>
+            <div class="tile">
+              <h3>素材格式</h3>
+              <p>支持 EXR、DPX、TIFF、PNG、JPG 图像序列，以及 MOV、MP4、MXF、MKV、AVI、WebM 等视频容器。</p>
+            </div>
+            <div class="tile">
+              <h3>控制能力</h3>
+              <p>播放/暂停、正放、倒放、单帧、跳帧、首尾帧、循环、入点/出点、音量、静音和 0.25x-8x 倍速。</p>
+            </div>
+          </div>
+          <h3>支持格式</h3>
+          <table>
+            <thead><tr><th>类别</th><th>格式</th></tr></thead>
+            <tbody>
+              <tr><td>图像序列</td><td>EXR / DPX / TIFF / PNG / JPG</td></tr>
+              <tr><td>视频容器</td><td>MOV / MP4 / MXF</td></tr>
+              <tr><td>时间线</td><td>OTIO 导入/导出</td></tr>
+              <tr><td>导出</td><td>MP4 / MOV，支持 H.264、H.265、ProRes 等编码路径</td></tr>
+            </tbody>
+          </table>
+          <h3>怎么用</h3>
+          <ul>
+            <li>打开素材：点击顶部菜单“文件 / 打开”，或直接把文件拖入播放器窗口。</li>
+            <li>播放控制：点击底部播放栏按钮，或使用 <code>Space</code>、<code>J</code>、<code>K</code>、<code>L</code>。</li>
+            <li>逐帧检查：使用左右方向键；需要快速跳帧时使用 <code>Shift+Left</code> / <code>Shift+Right</code>。</li>
+            <li>设置循环：用播放栏或快捷键设置入点/出点，再开启循环播放。</li>
+          </ul>
+        </section>
+
+        <section id="view">
+          <h2>3. 视图与窗口</h2>
+          <ul>
+            <li>适应窗口、1:1 像素显示、缩放、平移。</li>
+            <li>全屏播放，退出全屏后恢复面板布局。</li>
+            <li>顶部菜单、状态栏、播放栏和可停靠面板。</li>
+            <li>多窗口能力，每个窗口可保持独立播放状态，同时共享部分资源管理器。</li>
+            <li>状态栏显示当前帧、FPS、解码器、编码、分辨率、缩放和 OCIO 状态。</li>
+          </ul>
+          <h3>怎么用</h3>
+          <ul>
+            <li>缩放画面：鼠标滚轮缩放。</li>
+            <li>平移画面：按住鼠标中键拖动，或使用视图平移操作。</li>
+            <li>适应窗口：按 <code>F</code>。</li>
+            <li>1:1 查看像素：按 <code>1</code>。</li>
+            <li>全屏审看：按 <code>F11</code>，退出全屏按 <code>Esc</code>。</li>
+          </ul>
+        </section>
+
+        <section id="playlist">
+          <h2>4. 播放列表与 Shot 管理</h2>
+          <ul>
+            <li>拖拽或打开文件加入播放列表。</li>
+            <li>Shot 卡片显示缩略图、文件名、格式、分辨率、帧率、时长等信息。</li>
+            <li>状态颜色标记，用于区分待审、通过、修改、问题等状态。</li>
+            <li>搜索、过滤、排序。</li>
+            <li>快速把素材设置为 A/B 对比源。</li>
+            <li>OTIO 导入/导出，便于和剪辑或审片时间线衔接。</li>
+          </ul>
+          <h3>怎么用</h3>
+          <ul>
+            <li>添加素材：把多个文件拖入播放列表，或从“文件 / 打开”批量选择。</li>
+            <li>切换镜头：点击播放列表中的 Shot 卡片。</li>
+            <li>查找素材：在播放列表搜索框输入文件名、格式或状态关键词。</li>
+            <li>标记状态：在 Shot 卡片或 Review 面板中给镜头设置审片状态。</li>
+            <li>导入剪辑线：使用 OTIO 导入，把剪辑时间线转换成审看片段列表。</li>
+          </ul>
+        </section>
+
+        <section id="compare">
+          <h2>5. A/B 对比</h2>
+          <table>
+            <thead><tr><th>模式</th><th>用途</th></tr></thead>
+            <tbody>
+              <tr><td>A / B</td><td>只看 A 源或 B 源。</td></tr>
+              <tr><td>Wipe</td><td>划像对比，可调位置和角度。</td></tr>
+              <tr><td>Overlay</td><td>叠加对比，可调混合比例。</td></tr>
+              <tr><td>Difference</td><td>差异对比，用于查找画面变化。</td></tr>
+              <tr><td>Horizontal / Vertical</td><td>水平或垂直分割对比。</td></tr>
+              <tr><td>Tile</td><td>平铺对比。</td></tr>
+            </tbody>
+          </table>
+          <p>支持拖放设置 A/B、自动清除 B 源和快捷键切换主要对比模式。</p>
+          <h3>怎么用</h3>
+          <ul>
+            <li>先打开 A 版本素材。</li>
+            <li>把 B 版本拖到 A/B 对比区域，或在播放列表中指定为 B 源。</li>
+            <li>在对比工具栏选择 Wipe、Overlay、Difference、Horizontal、Vertical 或 Tile。</li>
+            <li>需要检查细节时，使用划像位置、叠加比例等滑块调节对比效果。</li>
+            <li>常用快捷键：<code>A</code>、<code>B</code>、<code>W</code>、<code>N</code>、<code>D</code>、<code>H</code>、<code>V</code>。</li>
+          </ul>
+        </section>
+
+        <section id="review">
+          <h2>6. 批注与审片</h2>
+          <div class="compare">
+            <div>
+              <h3>批注工具</h3>
+              <ul>
+                <li>选择、箭头、矩形、圆形、文本、自由绘制、点标记。</li>
+                <li>颜色预设和自定义颜色。</li>
+                <li>撤销/重做。</li>
+                <li>批注绑定到具体帧。</li>
+              </ul>
+            </div>
+            <div>
+              <h3>审片数据</h3>
+              <ul>
+                <li>自动保存到 <code>.review.json</code>。</li>
+                <li>Review 面板可浏览、搜索、过滤、排序、跳转和删除批注。</li>
+                <li>支持审片状态记录、备注和元数据查看。</li>
+                <li>支持导出 JSON、HTML 审片报告和带批注视频。</li>
+              </ul>
+            </div>
+          </div>
+          <h3>怎么用</h3>
+          <ul>
+            <li>打开素材并定位到需要反馈的帧。</li>
+            <li>在批注工具栏选择箭头、矩形、圆形、文字或自由绘制工具。</li>
+            <li>直接在画面上绘制或输入文字说明。</li>
+            <li>在 Review 面板中查看所有批注、跳转到对应帧、修改状态或删除批注。</li>
+            <li>交付时可导出 HTML 审片报告、批注 JSON 或带批注视频。</li>
+          </ul>
+        </section>
+
+        <section id="color-export">
+          <h2>7. 色彩管理与导出</h2>
+          <h3>OCIO 色彩管理</h3>
+          <ul>
+            <li>支持启用/禁用 OCIO。</li>
+            <li>支持内置 ACES 配置。</li>
+            <li>支持加载外部 <code>.ocio</code> 配置。</li>
+            <li>支持输入色彩空间、显示、视图、曝光、伽马等设置。</li>
+            <li>导出带批注视频时可应用 CPU 色彩处理路径。</li>
+          </ul>
+          <h3>导出能力</h3>
+          <table>
+            <thead><tr><th>类型</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>JSON</td><td>批注和审片数据导出。</td></tr>
+              <tr><td>HTML Report</td><td>按镜头/帧整理的审片报告。</td></tr>
+              <tr><td>Clean 视频</td><td>不带批注的转码导出。</td></tr>
+              <tr><td>Annotated 视频</td><td>烧录批注的审片视频导出。</td></tr>
+              <tr><td>OTIO</td><td>OpenTimelineIO 导入/导出。</td></tr>
+            </tbody>
+          </table>
+          <p>视频导出由 Python 工具链参与，支持完整媒体、入出点或指定帧范围，不再限制为单帧。</p>
+          <h3>怎么用</h3>
+          <ul>
+            <li>色彩管理：从顶部菜单“颜色”进入，选择是否启用 OCIO，并设置输入/显示/视图。</li>
+            <li>导出普通视频：使用“导出视频”，选择输出格式、编码和范围。</li>
+            <li>导出批注视频：使用“导出带批注视频”，把画面批注烧录进视频。</li>
+            <li>导出审片报告：使用 HTML 报告，适合发给不安装播放器的人查看。</li>
+            <li>导入/导出时间线：使用 OTIO，把 CGPlay 和剪辑、合成流程衔接起来。</li>
+          </ul>
+        </section>
+
+        <section id="ai">
+          <h2>8. AI 工作台</h2>
+          <ul>
+            <li>AI 模型与服务商设置，支持 OpenAI-compatible、MiMo、Qwen/DashScope 等路线。</li>
+            <li>API key、base URL、模型名配置。</li>
+            <li>模型发现、连接验证和测试。</li>
+            <li>ASR 与字幕翻译相关设置。</li>
+            <li>字幕源语言、目标语言、在线字幕/参考源相关配置。</li>
+            <li>Qwen ASR 测试入口。</li>
+            <li>导出诊断报告。</li>
+          </ul>
+          <table>
+            <thead><tr><th>能力</th><th>当前说明</th></tr></thead>
+            <tbody>
+              <tr><td>Qwen / DashScope</td><td>支持 Qwen 文本翻译和 Qwen ASR，可用于字幕识别、字幕翻译和内容处理。</td></tr>
+              <tr><td>MiMo</td><td>支持 MiMo 相关配置，可用于语音识别、字幕翻译和高质量字幕流程。</td></tr>
+              <tr><td>Gemini</td><td>支持 Gemini 系列模型接入，可用于 AI 工作台、文本处理和字幕翻译。</td></tr>
+              <tr><td>GPT-4o</td><td>支持 GPT-4o / OpenAI-compatible 路线，可用于 AI 工作台、字幕翻译、文本修正和高质量增强。</td></tr>
+              <tr><td>独立配置</td><td>不同模型服务可分别保存 key、地址和模型配置，便于按任务切换。</td></tr>
+              <tr><td>连接检查</td><td>提供模型连接验证和诊断信息，方便确认当前 AI 服务是否可用。</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="codex">
+          <h2>9. RVLite Codex 工作台</h2>
+          <p>播放器右侧工作台使用无界面的 Codex CLI/app-server 运行核心，不是 Codex 桌面应用。完整版已经内置该运行时。</p>
+          <ul>
+            <li>读取播放器当前画面、媒体信息、项目文件和审片上下文。</li>
+            <li>在项目范围内读写文件、搜索文本、运行受控命令并登记成果。</li>
+            <li>使用媒体导出、审片包、音频分析、HDR 信息、MCP、Skills、插件和 Apps。</li>
+            <li>管理会话、Git Diff、项目终端、后台任务和本地多代理编排。</li>
+          </ul>
+          <h3>怎么用</h3>
+          <ol>
+            <li>打开右侧 RVLite Codex 工作台并选择项目目录。</li>
+            <li>选择模型、推理等级和权限模式。</li>
+            <li>输入任务；需要分析播放器画面时可直接说“分析当前画面”。</li>
+          </ol>
+          <div class="note">提示内置 Codex CLI 缺失时，请使用完整版修复或重装，不需要安装 Codex 桌面应用。</div>
+        </section>
+
+        <section id="api-setup">
+          <h2>10. API 配置方法</h2>
+          <p>字幕翻译、语音识别、AI 文本处理和高质量字幕功能都需要先在 AI 工作台中配置 API。</p>
+          <h3>入口在哪里</h3>
+          <ol>
+            <li>打开 CGPlay。</li>
+            <li>点击顶部菜单“窗口”。</li>
+            <li>打开“AI 工作台”。</li>
+            <li>进入设置区域，找到“服务提供方”“API Key”“Base URL / API 地址”“模型”。</li>
+            <li>填写后点击“测试连接”，成功后点击“保存配置”。</li>
+          </ol>
+          <h3>通用填写规则</h3>
+          <table>
+            <thead><tr><th>字段</th><th>填写内容</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>服务提供方</td><td>选择 Qwen / MiMo / Gemini / OpenAI-compatible 等。</td><td>决定使用哪一家模型服务。</td></tr>
+              <tr><td>API Key</td><td>填写对应服务商后台生成的密钥。</td><td>密钥只需要填一次；以后可以留空继续使用已保存密钥。</td></tr>
+              <tr><td>Base URL / API 地址</td><td>填写服务商提供的接口地址。</td><td>OpenAI-compatible 服务通常填写到 <code>/v1</code> 这一层即可。</td></tr>
+              <tr><td>模型</td><td>填写或选择要使用的模型名。</td><td>例如 GPT-4o、Gemini、Qwen 或 MiMo 对应模型。</td></tr>
+              <tr><td>测试连接</td><td>点击按钮测试。</td><td>看到“连接测试通过”后，再保存配置。</td></tr>
+            </tbody>
+          </table>
+          <h3>常见 API 填写示例</h3>
+          <table>
+            <thead><tr><th>模型路线</th><th>适合用途</th><th>Base URL 示例</th><th>模型示例</th></tr></thead>
+            <tbody>
+              <tr><td>Qwen / DashScope</td><td>字幕翻译、语音识别、文本处理。</td><td><code>https://dashscope.aliyuncs.com/compatible-mode/v1</code></td><td><code>qwen-plus</code>、<code>qwen3-asr-flash</code></td></tr>
+              <tr><td>MiMo</td><td>语音识别、字幕翻译、高质量字幕流程。</td><td>填写 MiMo 后台提供的 API 地址。</td><td>填写 MiMo 后台支持的模型名。</td></tr>
+              <tr><td>Gemini</td><td>AI 工作台、文本处理、字幕翻译。</td><td><code>https://generativelanguage.googleapis.com</code></td><td>填写 Gemini 系列模型名。</td></tr>
+              <tr><td>GPT-4o / OpenAI-compatible</td><td>AI 工作台、字幕翻译、文本修正、高质量增强。</td><td><code>https://api.openai.com</code> 或兼容服务地址。</td><td><code>gpt-4o</code></td></tr>
+            </tbody>
+          </table>
+          <h3>字幕相关 API 怎么填</h3>
+          <table>
+            <thead><tr><th>位置</th><th>用途</th><th>怎么填</th></tr></thead>
+            <tbody>
+              <tr><td>语音识别 API 协议</td><td>无字幕视频、音频听写、自动生成源字幕。</td><td>选择 Qwen3-ASR / DashScope、Gemini 或 OpenAI transcription，并填写对应 API Key、Base URL、模型。</td></tr>
+              <tr><td>工作台 API</td><td>搜字幕、读画面字、翻译、修复、融合。</td><td>选择 Qwen / DashScope 或 OpenAI-compatible，再填写文本模型 API。</td></tr>
+              <tr><td>在线字幕 API</td><td>高质量模式下查找参考字幕。</td><td>如果有在线字幕服务，填写它的 API Key 和接口地址；没有则可以不填。</td></tr>
+              <tr><td>保存字幕管线</td><td>保存上述字幕相关配置。</td><td>填完后点击“保存字幕管线”。</td></tr>
+              <tr><td>测试语音识别 API</td><td>确认 ASR 能否正常工作。</td><td>点击“测试语音识别 API”，成功后再打开视频使用翻译。</td></tr>
+            </tbody>
+          </table>
+          <div class="note">给他人配置时，建议先填“工作台 API”，再填“语音识别 API”。如果只翻译已有字幕，通常工作台 API 就能完成；如果视频没有字幕，才需要语音识别 API。</div>
+        </section>
+
+        <section id="subtitles">
+          <h2>11. 实时字幕与翻译</h2>
+          <h3>快速字幕模式</h3>
+          <p>快速模式目标是“边播边出字幕”，适合预览、审片和快速理解视频内容。</p>
+          <ul>
+            <li>不暂停播放等待字幕。</li>
+            <li>优先使用轻量识别和翻译流程，尽快显示字幕。</li>
+            <li>生成的字幕可复用，重复播放时可更快加载。</li>
+            <li>无对白或无有效当前字幕时，字幕 overlay 保持干净，不用进度文字遮挡画面。</li>
+          </ul>
+
+          <h3>字幕来源选择</h3>
+          <ol>
+            <li>本地、同名、嵌入式、外部文本字幕。</li>
+            <li>已配置的在线或参考字幕来源。</li>
+            <li>画面内硬字幕 OCR。</li>
+            <li>音频语音识别。</li>
+            <li>快速字幕结果作为兜底显示。</li>
+          </ol>
+
+          <h3>高质量字幕模式</h3>
+          <ul>
+            <li>可对硬字幕视频启用 OCR，提取画面内字幕内容。</li>
+            <li>可对无字幕视频使用更长窗口的语音识别，提升上下文完整度。</li>
+            <li>可使用本地/嵌入/外部字幕作为优先源。</li>
+            <li>可使用在线或参考字幕来源辅助校对。</li>
+            <li>根据可用来源自动选择更可靠的字幕文本。</li>
+            <li>在字幕缺失或识别不完整时自动回到可用结果，保证播放时仍有字幕参考。</li>
+          </ul>
+          <div class="note">字幕识别和翻译效果会受到音频清晰度、字幕画质、模型能力和网络状态影响。高质量模式适合对重要片段进行更精细的字幕处理。</div>
+          <h3>怎么用</h3>
+          <ul>
+            <li>先按“API 配置方法”填写工作台 API 和语音识别 API。</li>
+            <li>打开需要翻译的视频。</li>
+            <li>在播放栏点击翻译开关。</li>
+            <li>普通预览选择快速模式；重要片段或硬字幕视频选择高质量模式。</li>
+            <li>如果视频自带字幕或旁边有同名字幕文件，播放器会优先使用文字字幕进行翻译。</li>
+            <li>如果视频没有字幕，播放器会调用语音识别生成字幕后再翻译。</li>
+          </ul>
+        </section>
+
+        <section id="components">
+          <h2>12. 组件、更新与架构</h2>
+          <div class="grid">
+            <div class="tile">
+              <h3>组件/更新</h3>
+              <p>组件清单管理、缺失组件检测、下载、校验和安装；自动更新优先使用官网完整版，GitHub 为备用源。</p>
+            </div>
+            <div class="tile">
+              <h3>插件/模块</h3>
+              <p>批注、OCIO、OTIO、播放列表、AI/字幕服务、QuickLook 相关组件和运行诊断。</p>
+            </div>
+            <div class="tile">
+              <h3>稳定边界</h3>
+              <p>常规播放保持轻快稳定；OCR、在线参考和高质量识别等重功能用于手动或高质量字幕流程。</p>
+            </div>
+          </div>
+          <h3>怎么用</h3>
+          <ul>
+            <li>如果提示缺少组件，进入帮助、组件或更新相关入口检查。</li>
+            <li>点击下载或安装缺失组件，完成后重启播放器。</li>
+            <li>Lite 安装包更适合轻量部署；Full 安装包适合一次性安装完整环境。</li>
+          </ul>
+        </section>
+
+        <section id="shortcuts">
+          <h2>13. 常用快捷键</h2>
+          <table>
+            <thead><tr><th>快捷键</th><th>功能</th></tr></thead>
+            <tbody>
+              <tr><td><code>Space</code></td><td>播放/暂停</td></tr>
+              <tr><td><code>J</code> / <code>K</code> / <code>L</code></td><td>倒放 / 停止 / 正放</td></tr>
+              <tr><td><code>Left</code> / <code>Right</code></td><td>上一帧 / 下一帧</td></tr>
+              <tr><td><code>Shift+Left</code> / <code>Shift+Right</code></td><td>快速跳帧</td></tr>
+              <tr><td><code>Home</code> / <code>End</code></td><td>首帧 / 尾帧</td></tr>
+              <tr><td><code>M</code></td><td>静音</td></tr>
+              <tr><td><code>I</code> / <code>O</code></td><td>设置入点 / 出点</td></tr>
+              <tr><td><code>Alt+I</code> / <code>Alt+O</code></td><td>清除入点 / 出点</td></tr>
+              <tr><td><code>F</code> / <code>1</code> / <code>F11</code> / <code>Esc</code></td><td>适应窗口 / 1:1 / 全屏 / 退出全屏</td></tr>
+              <tr><td><code>A</code> / <code>B</code> / <code>W</code> / <code>N</code> / <code>D</code> / <code>H</code> / <code>V</code></td><td>A/B 对比相关模式</td></tr>
+              <tr><td><code>Ctrl+Shift+C</code></td><td>自动清除 B 源</td></tr>
+              <tr><td><code>S</code> / <code>R</code> / <code>C</code> / <code>T</code> / <code>Delete</code></td><td>批注选择 / 矩形 / 圆形 / 文本 / 删除选中批注</td></tr>
+              <tr><td><code>Ctrl+O</code> / <code>Ctrl+S</code> / <code>Ctrl+E</code></td><td>打开文件 / 保存 Review / 导出视频</td></tr>
+              <tr><td><code>Ctrl+Shift+E</code> / <code>Ctrl+Shift+O</code> / <code>Ctrl+Shift+N</code> / <code>Ctrl+Q</code></td><td>导出带批注视频 / 导入 OTIO / 新窗口 / 退出</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section id="limits">
+          <h2>14. 使用注意事项</h2>
+          <ul>
+            <li>安装包当前未签名，系统可能提示未知发布者。</li>
+            <li>完整版体积较大，因为真实内置 Codex CLI、Python、FFmpeg 和 WebEngine。</li>
+            <li>AI 字幕和翻译质量会受到模型服务、API key、网络状态和素材质量影响。</li>
+            <li>在线字幕和参考字幕功能需要配置可用的服务或数据来源。</li>
+            <li>硬字幕 OCR 效果会受到画面清晰度、字体、遮挡和压缩噪声影响。</li>
+            <li>不同模型在语音识别、翻译和文本润色上的表现可能不同，建议根据素材类型选择 Qwen、MiMo、Gemini 或 GPT-4o 等模型路线。</li>
+          </ul>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const search = document.getElementById('search');
+    const printBtn = document.getElementById('printBtn');
+    const sections = Array.from(document.querySelectorAll('section, header'));
+    const links = Array.from(document.querySelectorAll('#toc a'));
+
+    printBtn.addEventListener('click', () => window.print());
+
+    function clearMarks(node) {
+      node.querySelectorAll('mark').forEach(mark => {
+        mark.replaceWith(document.createTextNode(mark.textContent));
+      });
+    }
+
+    function highlightText(container, term) {
+      if (!term) return;
+      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          if (!node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+          if (node.parentElement && ['SCRIPT', 'STYLE', 'MARK'].includes(node.parentElement.tagName)) {
+            return NodeFilter.FILTER_REJECT;
+          }
+          return node.nodeValue.toLowerCase().includes(term) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        }
+      });
+      const nodes = [];
+      while (walker.nextNode()) nodes.push(walker.currentNode);
+      nodes.forEach(node => {
+        const value = node.nodeValue;
+        const lower = value.toLowerCase();
+        const idx = lower.indexOf(term);
+        if (idx < 0) return;
+        const before = document.createTextNode(value.slice(0, idx));
+        const mark = document.createElement('mark');
+        mark.textContent = value.slice(idx, idx + term.length);
+        const after = document.createTextNode(value.slice(idx + term.length));
+        node.replaceWith(before, mark, after);
+      });
+    }
+
+    search.addEventListener('input', () => {
+      const term = search.value.trim().toLowerCase();
+      sections.forEach(section => {
+        clearMarks(section);
+        const hit = !term || section.textContent.toLowerCase().includes(term);
+        section.classList.toggle('hidden', !hit);
+        if (hit) highlightText(section, term);
+      });
+    });
+
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (!entry.isIntersecting) return;
+        links.forEach(link => link.classList.toggle('active', link.getAttribute('href') === '#' + entry.target.id));
+      });
+    }, { rootMargin: '-35% 0px -55% 0px', threshold: 0.01 });
+
+    sections.forEach(section => observer.observe(section));
+  </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+README.md
+LICENSE.txt
+CMakeLists.txt
+src/**
+cmake/**
+installer/**
+tools/**
+resources/CGPlay.ico
+resources/CGPlay.png
+resources/CGPlay.rc
+resources/resources.qrc
+resources/icons/**
+resources/component_manifest.json
+build_win_full/installer/*.exe
+build_win_full/releases/*.zip
+build_win_full/releases/*.json
+build_win_full/releases/*.sha256
