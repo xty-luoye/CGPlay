@@ -422,6 +422,32 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
     }
 
     const bool fullscreenActive = _p->fullscreenActive || isFullScreen();
+    if (fullscreenActive && event->type() == QEvent::Resize && _p->viewer && obj == _p->viewer->viewport())
+        _layoutFullScreenOverlay();
+    if (fullscreenActive && eventBelongsToMainWindow &&
+        (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress ||
+         event->type() == QEvent::KeyRelease)) {
+        auto* key = static_cast<QKeyEvent*>(event);
+        // Route transport through the command even when a hidden toolbar or
+        // a focused button would otherwise consume Space. Honor user rebinding.
+        const bool editing = isTextInputFocusWidget(eventWidget);
+        if (!editing) {
+            const QKeySequence pressed(QKeyCombination(key->modifiers(), Qt::Key(key->key())));
+            for (const auto& descriptor : _p->commandDescriptors) {
+                if (descriptor.id != QStringLiteral("playback.toggle")) continue;
+                if (!descriptor.shortcut.trimmed().isEmpty() &&
+                    QKeySequence(descriptor.shortcut).matches(pressed) == QKeySequence::ExactMatch) {
+                    if (event->type() == QEvent::KeyPress && !key->isAutoRepeat()) {
+                        _executeCommandId(descriptor.id);
+                        _showFullScreenChromeTemporarily();
+                    }
+                    key->accept();
+                    return true;
+                }
+                break;
+            }
+        }
+    }
     if (eventBelongsToMainWindow &&
         (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress)) {
         auto* keyEvent = static_cast<QKeyEvent*>(event);

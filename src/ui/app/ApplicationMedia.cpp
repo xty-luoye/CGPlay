@@ -3,6 +3,7 @@
 #include "common/jobs/JobSystem.h"
 
 #include <numeric>
+#include <QVariantAnimation>
 
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
@@ -429,14 +430,24 @@ void MainWindow::_toggleFullScreen()
     const bool fullscreen = _p->fullscreenActive || isFullScreen();
     const quint64 transitionGeneration = ++_p->fullscreenTransitionGeneration;
     if (fullscreen) {
-        // An exit can cancel entry before its deferred layout has completed.
-        // The cancelled callback must never leave the window unable to paint.
+        // Batch exit as well as entry: reattaching each control must not
+        // allocate/present an intermediate OpenGL framebuffer.
         _p->fullscreenEntryPending = false;
-        if (_p->fullscreenEntryUpdatesSuspended) {
-            _p->fullscreenEntryUpdatesSuspended = false;
-            setUpdatesEnabled(true);
+        if (!_p->fullscreenEntryUpdatesSuspended && updatesEnabled()) {
+            _p->fullscreenEntryUpdatesSuspended = true;
+            setUpdatesEnabled(false);
         }
         _p->fullscreenActive = false;
+        if (_p->fullscreenOverlayAnimation) _p->fullscreenOverlayAnimation->stop();
+        if (_p->fullscreenOverlay) {
+            _p->fullscreenOverlay->hide();
+            // Only raster controls change parent. The OpenGL surface and
+            // player remain attached throughout the transition.
+            _p->centerSplitter->insertWidget(1, _p->timeline);
+            _p->centerSplitter->insertWidget(2, _p->playbackBar);
+        }
+        _p->fullscreenOverlayProgress = 0.0;
+        _p->fullscreenChromeVisible = false;
         _p->fullscreenRestorePending = true;
         if (_p->fullscreenChromeTimer) {
             _p->fullscreenChromeTimer->stop();
@@ -469,7 +480,6 @@ void MainWindow::_toggleFullScreen()
         } else {
             _onAnnotationModeToggled(false);
         }
-        if (auto* vp = _p->viewer->viewport()) vp->setFrameView(true);
         setContentHostMargins(_p->horzSplitter, false);
         setFullscreenSplitterHandles(_p->horzSplitter, _p->centerSplitter, false);
         if (_p->centerSplitter) {
@@ -488,6 +498,13 @@ void MainWindow::_toggleFullScreen()
             // Geometry restoration can clear Qt's maximized state. Apply it
             // after restoring normal geometry and splitter layout.
             if (restoreMaximized) showMaximized();
+            if (layout()) layout()->activate();
+            if (_p->viewer->layout()) _p->viewer->layout()->activate();
+            if (auto* vp = _p->viewer->viewport()) vp->setFrameView(true);
+            if (_p->fullscreenEntryUpdatesSuspended) {
+                _p->fullscreenEntryUpdatesSuspended = false;
+                setUpdatesEnabled(true);
+            }
         });
         // Windows may deliver the old normal-geometry state after the queued
         // layout pass. Reconcile once after that transition, never polling.
@@ -500,7 +517,8 @@ void MainWindow::_toggleFullScreen()
     } else {
         // A new entry before the previous exit settles must inherit its
         // intended window state, rather than a temporary normal geometry.
-        if (!_p->fullscreenRestorePending) _p->fullscreenWindowState = windowState();
+        const bool restoreInFlight = _p->fullscreenRestorePending;
+        if (!restoreInFlight) _p->fullscreenWindowState = windowState();
         _p->fullscreenRestorePending = false;
         _p->fullscreenActive = true;
         if (!_p->fullscreenMousePollTimer) {
@@ -531,7 +549,8 @@ void MainWindow::_toggleFullScreen()
         _p->fullscreenCompareBar = _p->compareBar->isVisible();
         _p->fullscreenAIDock = _p->aiDock ? _p->aiDock->isVisible() : false;
         _p->fullscreenViewerChrome = true;
-        _p->fullscreenCenterSizes = _p->centerSplitter ? _p->centerSplitter->sizes() : QList<int>{};
+        if (!restoreInFlight)
+            _p->fullscreenCenterSizes = _p->centerSplitter ? _p->centerSplitter->sizes() : QList<int>{};
         _p->fullscreenTimelineHeight = _p->timeline->height();
         _p->fullscreenPlaybackBarHeight = _p->playbackBar->height();
         _p->annoToolsVisible = _p->annoToolbar ? _p->annoToolbar->isVisible() : false;
@@ -539,42 +558,35 @@ void MainWindow::_toggleFullScreen()
         // Suspend painting only for this queued layout transaction, not for
         // a wall-clock delay that visibly freezes an already playing movie.
         _p->fullscreenEntryPending = true;
-        _p->fullscreenEntryUpdatesSuspended = updatesEnabled();
+        _p->fullscreenEntryUpdatesSuspended = _p->fullscreenEntryUpdatesSuspended || updatesEnabled();
         if (_p->fullscreenEntryUpdatesSuspended) setUpdatesEnabled(false);
         _p->fullscreenLastCursorPos = systemCursorPosition();
         _p->fullscreenMousePollTimer->stop();
+        setContentHostMargins(_p->horzSplitter, true);
+        setFullscreenSplitterHandles(_p->horzSplitter, _p->centerSplitter, true);
+        _setFullScreenChromeVisible(false, true);
         showFullScreen();
-        // Let Windows/Qt complete the native fullscreen transition before
-        // collapsing docks and splitter rows. Synchronous layout churn here
-        // can stall the OpenGL surface and leave a black frame for seconds.
+        // Commit one final layout at screen size. Chrome has already left
+        // the splitter, so later pointer movement cannot resize the GL FBO.
         QTimer::singleShot(0, this, [this, transitionGeneration]() {
             if (_p->fullscreenTransitionGeneration != transitionGeneration) return;
-            if (_p->fullscreenActive && isFullScreen()) {
-                setContentHostMargins(_p->horzSplitter, true);
-                setFullscreenSplitterHandles(_p->horzSplitter, _p->centerSplitter, true);
-                _setFullScreenChromeVisible(false, true);
+            const bool entered = _p->fullscreenActive && isFullScreen();
+            if (entered) {
+                if (layout()) layout()->activate();
+                if (_p->viewer->layout()) _p->viewer->layout()->activate();
+                if (auto* vp = _p->viewer->viewport()) vp->setFrameView(true);
+                _layoutFullScreenOverlay();
+                _p->viewer->viewport()->setFocus(Qt::OtherFocusReason);
             }
-            // The chrome helper queues one final splitter reconciliation.
-            // Commit after it, then let Qt coalesce one paint at final size.
-            // Always release our suspension even if native entry is refused.
-            QTimer::singleShot(0, this, [this, transitionGeneration]() {
-                if (_p->fullscreenTransitionGeneration != transitionGeneration) return;
-                const bool entered = _p->fullscreenActive && isFullScreen();
-                if (entered) {
-                    if (layout()) layout()->activate();
-                    if (_p->viewer->layout()) _p->viewer->layout()->activate();
-                    if (auto* vp = _p->viewer->viewport()) vp->setFrameView(true);
-                }
-                _p->fullscreenEntryPending = false;
-                if (_p->fullscreenEntryUpdatesSuspended) {
-                    _p->fullscreenEntryUpdatesSuspended = false;
-                    setUpdatesEnabled(true);
-                }
-                if (entered && _p->fullscreenMousePollTimer) {
-                    _p->fullscreenLastCursorPos = systemCursorPosition();
-                    _p->fullscreenMousePollTimer->start();
-                }
-            });
+            _p->fullscreenEntryPending = false;
+            if (_p->fullscreenEntryUpdatesSuspended) {
+                _p->fullscreenEntryUpdatesSuspended = false;
+                setUpdatesEnabled(true);
+            }
+            if (entered && _p->fullscreenMousePollTimer) {
+                _p->fullscreenLastCursorPos = systemCursorPosition();
+                _p->fullscreenMousePollTimer->start();
+            }
         });
     }
 
@@ -596,89 +608,81 @@ void MainWindow::_hideFullScreenChrome()
     if (!isFullScreen()) {
         return;
     }
+    // Never slide an active seek/volume drag or an open control popup away.
+    if (QApplication::mouseButtons() != Qt::NoButton || QApplication::activePopupWidget()) {
+        if (_p->fullscreenChromeTimer) _p->fullscreenChromeTimer->start(2000);
+        return;
+    }
     _setFullScreenChromeVisible(false);
+}
+
+void MainWindow::_layoutFullScreenOverlay()
+{
+    if (!_p->fullscreenActive || !_p->fullscreenOverlay || !_p->viewer) return;
+    auto* viewport = _p->viewer->viewport();
+    if (!viewport) return;
+    const QPoint origin = viewport->mapTo(centralWidget(), QPoint());
+    const int controlsHeight = (_p->fullscreenTimeline ? _p->fullscreenTimelineHeight : 0) +
+        (_p->fullscreenPlaybackBar ? _p->fullscreenPlaybackBarHeight : 0);
+    // Slide the controls over the bottom edge; the viewport geometry stays fixed.
+    const int offset = qRound(controlsHeight * _p->fullscreenOverlayProgress);
+    _p->fullscreenOverlay->setGeometry(origin.x(), origin.y() + viewport->height() - offset,
+        viewport->width(), controlsHeight);
+    _p->fullscreenOverlay->raise();
 }
 
 void MainWindow::_setFullScreenChromeVisible(bool visible, bool forceApply)
 {
-    if (!forceApply && !isFullScreen()) {
-        return;
-    }
-
-    // Input and the 50 ms cursor poll can request the same state hundreds of
-    // times. Only a visibility transition needs dock/layout and paint work.
+    if (!forceApply && (!isFullScreen() || !_p->fullscreenOverlay)) return;
     if (!forceApply && _p->fullscreenChromeVisible == visible) return;
-    const quint64 transitionGeneration = _p->fullscreenTransitionGeneration;
     ++_p->fullscreenChromeApplyCount;
     _p->fullscreenChromeVisible = visible;
-    _p->topBar->hide();
-    _p->navRail->hide();
-    _p->playlist->hide();
-    if (_p->reviewPanel) _p->reviewPanel->hide();
-    hideDockWidgetsForFullscreen(this);
-    // Keep raster controls in the fullscreen composition and collapse their
-    // splitter rows instead of hide/show. QOpenGLWidget can otherwise retain
-    // or cover stale sibling surfaces after the first fullscreen frame.
-    _p->timeline->setVisible(visible && _p->fullscreenTimeline);
-    _p->playbackBar->setVisible(visible && _p->fullscreenPlaybackBar);
-    _p->timeline->setFixedHeight(visible && _p->fullscreenTimeline
-        ? std::max(1, _p->fullscreenTimelineHeight)
-        : 0);
-    _p->playbackBar->setFixedHeight(visible && _p->fullscreenPlaybackBar
-        ? std::max(1, _p->fullscreenPlaybackBarHeight)
-        : 0);
-    if (_p->centerSplitter) {
-        _p->centerSplitter->setHandleWidth(visible ? 1 : 0);
-        _p->centerSplitter->setCollapsible(1, true);
-        _p->centerSplitter->setCollapsible(2, true);
-        if (visible && _p->fullscreenCenterSizes.size() == _p->centerSplitter->count()) {
-            _p->centerSplitter->setSizes(_p->fullscreenCenterSizes);
-            QTimer::singleShot(0, this, [this, transitionGeneration]() {
-                if (_p->fullscreenTransitionGeneration == transitionGeneration &&
-                    _p->fullscreenActive && isFullScreen() && _p->fullscreenChromeVisible && _p->centerSplitter &&
-                    _p->fullscreenCenterSizes.size() == _p->centerSplitter->count()) {
-                    _p->centerSplitter->setSizes(_p->fullscreenCenterSizes);
-                    _p->timeline->raise();
-                    _p->playbackBar->raise();
-                    _p->timeline->update();
-                    _p->playbackBar->update();
-                    _p->centerSplitter->update();
-                }
-            });
-        } else if (!visible && _p->centerSplitter->count() == 3) {
-            const QList<int> sizes = _p->centerSplitter->sizes();
-            const int total = std::accumulate(sizes.cbegin(), sizes.cend(), 0);
-            _p->centerSplitter->setSizes({std::max(total, _p->centerSplitter->height()), 0, 0});
-            QTimer::singleShot(0, this, [this, transitionGeneration]() {
-                if (_p->fullscreenTransitionGeneration != transitionGeneration ||
-                    !_p->fullscreenActive || !isFullScreen() || _p->fullscreenChromeVisible) return;
-                _p->timeline->hide();
-                _p->playbackBar->hide();
-                _p->timeline->setFixedHeight(0);
-                _p->playbackBar->setFixedHeight(0);
-                if (_p->centerSplitter && _p->centerSplitter->count() == 3) {
-                    const int total = std::max(_p->centerSplitter->height(), 1);
-                    _p->centerSplitter->setSizes({total, 0, 0});
-                }
-                if (_p->viewerShell) _p->viewerShell->raise();
-                if (_p->viewer) _p->viewer->raise();
-                // A synchronous repaint at every ancestor can render the
-                // OpenGL surface repeatedly during a single layout change.
-                // update() lets Qt combine these into its next composition.
-                if (_p->viewerShell) _p->viewerShell->update();
-                if (_p->viewer && _p->viewer->viewport()) _p->viewer->viewport()->update();
-                if (_p->centerSplitter) _p->centerSplitter->update();
-                update();
+    if (forceApply) {
+        _p->topBar->hide();
+        _p->navRail->hide();
+        _p->playlist->hide();
+        if (_p->reviewPanel) _p->reviewPanel->hide();
+        hideDockWidgetsForFullscreen(this);
+        _p->compareBar->hide();
+        _p->viewer->setChromeVisible(false);
+        if (statusBar()) statusBar()->hide();
+        if (_p->annoToolbar) _p->annoToolbar->hide();
+        if (!_p->fullscreenOverlay) {
+            _p->fullscreenOverlay = new QWidget(centralWidget());
+            _p->fullscreenOverlay->setObjectName(QStringLiteral("FullscreenControlsOverlay"));
+            _p->fullscreenOverlay->setFocusPolicy(Qt::NoFocus);
+            auto* controls = new QVBoxLayout(_p->fullscreenOverlay);
+            controls->setContentsMargins(0, 0, 0, 0);
+            controls->setSpacing(0);
+            _p->fullscreenOverlayAnimation = new QVariantAnimation(this);
+            _p->fullscreenOverlayAnimation->setEasingCurve(QEasingCurve::OutCubic);
+            connect(_p->fullscreenOverlayAnimation, &QVariantAnimation::valueChanged, this,
+                [this](const QVariant& value) {
+                    _p->fullscreenOverlayProgress = value.toReal();
+                    _layoutFullScreenOverlay();
+                });
+            connect(_p->fullscreenOverlayAnimation, &QVariantAnimation::finished, this, [this] {
+                if (!_p->fullscreenChromeVisible) _p->fullscreenOverlay->hide();
             });
         }
-    }
-    _p->compareBar->hide();
-    _p->viewer->setChromeVisible(false);
-    if (statusBar()) {
-        statusBar()->hide();
-    }
-    if (_p->annoToolbar) {
-        _p->annoToolbar->hide();
+        _p->fullscreenOverlayAnimation->stop();
+        _p->fullscreenOverlay->hide();
+        _p->fullscreenOverlayProgress = 0.0;
+        _p->fullscreenOverlay->layout()->addWidget(_p->timeline);
+        _p->fullscreenOverlay->layout()->addWidget(_p->playbackBar);
+        _p->timeline->setFixedHeight(_p->fullscreenTimelineHeight);
+        _p->playbackBar->setFixedHeight(_p->fullscreenPlaybackBarHeight);
+        _p->timeline->setVisible(_p->fullscreenTimeline);
+        _p->playbackBar->setVisible(_p->fullscreenPlaybackBar);
+        _layoutFullScreenOverlay();
+    } else {
+        _p->fullscreenOverlayAnimation->stop();
+        _p->fullscreenOverlay->show();
+        _layoutFullScreenOverlay();
+        _p->fullscreenOverlayAnimation->setDuration(140);
+        _p->fullscreenOverlayAnimation->setStartValue(_p->fullscreenOverlayProgress);
+        _p->fullscreenOverlayAnimation->setEndValue(visible ? 1.0 : 0.0);
+        _p->fullscreenOverlayAnimation->start();
     }
     _setFullScreenCursorHidden(!visible);
 }
@@ -713,6 +717,7 @@ void MainWindow::resizeEvent(QResizeEvent* event)
 {
     QMainWindow::resizeEvent(event);
     _queueGeneratedSubtitleOverlayLayout();
+    _layoutFullScreenOverlay();
     if (!_p->sidePanelLayoutQueued) {
         _p->sidePanelLayoutQueued = true;
         QTimer::singleShot(0, this, [this] {

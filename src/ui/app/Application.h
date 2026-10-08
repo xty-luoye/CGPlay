@@ -324,6 +324,7 @@ private:
     void _showFullScreenChromeTemporarily();
     void _hideFullScreenChrome();
     void _setFullScreenChromeVisible(bool visible, bool forceApply = false);
+    void _layoutFullScreenOverlay();
     void _setFullScreenCursorHidden(bool hidden);
     void _checkVersionAndComponents(bool interactive);
     void _generateSubtitlesForCurrentMedia(double startSeconds = -1.0, bool background = false);

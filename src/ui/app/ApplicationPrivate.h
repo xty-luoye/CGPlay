@@ -21,6 +21,7 @@ class QProgressDialog;
 class QScrollArea;
 class QSplitter;
 class QTimer;
+class QVariantAnimation;
 class QVBoxLayout;
 class QWidget;
 
@@ -236,6 +237,9 @@ struct MainWindow::Private
     bool fullscreenEntryUpdatesSuspended = false;
     bool fullscreenChromeVisible = false;
     quint64 fullscreenChromeApplyCount = 0;
+    QWidget* fullscreenOverlay = nullptr;
+    QVariantAnimation* fullscreenOverlayAnimation = nullptr;
+    qreal fullscreenOverlayProgress = 0.0;
     bool fullscreenCursorHidden = false;
     QList<int> fullscreenCenterSizes;
     int fullscreenTimelineHeight = 0;

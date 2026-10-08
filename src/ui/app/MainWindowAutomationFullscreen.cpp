@@ -21,7 +21,7 @@ void settleFullscreen(int milliseconds = 220)
 void fullscreenKey(QWidget* target, int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier,
                    bool repeat = false)
 {
-    QKeyEvent press(QEvent::KeyPress, key, modifiers, QString(), repeat);
+    QKeyEvent press(QEvent::KeyPress, key, modifiers, key == Qt::Key_Space ? QStringLiteral(" ") : QString(), repeat);
     QApplication::sendEvent(target, &press);
     QKeyEvent release(QEvent::KeyRelease, key, modifiers);
     QApplication::sendEvent(target, &release);
@@ -152,6 +152,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
                 {"renderFrameCount", static_cast<double>(target->renderFrameCount())},
                 {"timelineHeight", _p->timeline->height()},
                 {"playbackBarHeight", _p->playbackBar->height()},
+                {"controlsVisible", _p->timeline->isVisible() || _p->playbackBar->isVisible()},
                 {"chromeVisible", _p->fullscreenChromeVisible},
                 {"entryPending", _p->fullscreenEntryPending},
                 {"updatesEnabled", updatesEnabled() && target->updatesEnabled()}};
@@ -199,8 +200,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
         target->removeEventFilter(&paintProbe);
         paintProbe.onPaint = {};
         const auto hiddenLayout = [](const QJsonObject& state) {
-            return !state.isEmpty() && state.value("timelineHeight").toInt() == 0 &&
-                state.value("playbackBarHeight").toInt() == 0 &&
+            return !state.isEmpty() && !state.value("controlsVisible").toBool() &&
                 !state.value("chromeVisible").toBool() && !state.value("entryPending").toBool() &&
                 state.value("updatesEnabled").toBool();
         };
@@ -302,7 +302,9 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     add(QStringLiteral("Fullscreen rapid transitions"), rapidPassed && geometry() == originalGeometry &&
         _p->centerSplitter->sizes() == normalSizes,
         {{"cycles", 5}, {"settleMs", 220}, {"normalGeometryRestored", geometry() == originalGeometry},
-         {"splitterRestored", _p->centerSplitter->sizes() == normalSizes}});
+         {"splitterRestored", _p->centerSplitter->sizes() == normalSizes},
+         {"expectedSizes", QJsonArray{normalSizes.value(0), normalSizes.value(1), normalSizes.value(2)}},
+         {"actualSizes", QJsonArray{_p->centerSplitter->sizes().value(0), _p->centerSplitter->sizes().value(1), _p->centerSplitter->sizes().value(2)}}});
 
     QJsonObject maximizedDetail;
     showMaximized();
@@ -340,7 +342,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     requestTimer.start();
     for (int i = 0; i < 200; ++i) _showFullScreenChromeTemporarily();
     const double requestMs = requestTimer.nsecsElapsed() / 1e6;
-    settleFullscreen(30);
+    settleFullscreen(180);
     const quint64 applies = _p->fullscreenChromeApplyCount - countBefore;
     add(QStringLiteral("Fullscreen chrome coalescing"), applies == 1 && _p->fullscreenChromeVisible &&
         _p->playbackBar->height() > 0 && _p->fullscreenChromeTimer->isActive(),
@@ -356,8 +358,8 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     // Hidden automation surfaces cannot be read reliably by native PrintWindow.
     const bool controlsSaved = grab().save(controlsCapture);
     _hideFullScreenChrome();
-    settleFullscreen(30);
-    const bool collapsed = _p->timeline->height() == 0 && _p->playbackBar->height() == 0 && _p->fullscreenCursorHidden;
+    settleFullscreen(180);
+    const bool collapsed = !_p->timeline->isVisible() && !_p->playbackBar->isVisible() && _p->fullscreenCursorHidden;
     fullscreenKey(target, Qt::Key_Escape);
     settleFullscreen();
     const QString restoredCapture = outputDir.filePath(QStringLiteral("fullscreen_restored.png"));
@@ -376,7 +378,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
         _p->playbackCtrl->setMute(true);
         QJsonArray trials;
         bool responsive = _p->playbackCtrl->isValid() && _p->playbackCtrl->totalFrames() > 1;
-        constexpr qint64 stallLimitMs = 1000;
+        constexpr qint64 stallLimitMs = 250;
         for (const bool maximized : {false, true, false}) {
             if (maximized) showMaximized(); else showNormal();
             _p->playbackCtrl->pause();
@@ -473,6 +475,113 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
         add(QStringLiteral("Fullscreen playing transition responsiveness"), responsive,
             {{"trials", trials}, {"stallLimitMs", double(stallLimitMs)},
              {"measurement", "Completed paintGL invocations and media-frame events on hidden Qt surfaces"}});
+    }
+    {
+        const QSignalBlocker cursorPollBlocker(_p->fullscreenMousePollTimer);
+        _p->playbackCtrl->pause();
+        _p->playbackCtrl->seekToFrame(0);
+        _p->playbackCtrl->play();
+        fullscreenKey(target, Qt::Key_F11);
+        settleFullscreen(250);
+        const QRect videoRect(target->mapTo(this, QPoint()), target->size());
+        const double videoZoom = target->zoom();
+        const bool keptPlaying = _p->playbackCtrl->playbackState() == 1;
+        _showFullScreenChromeTemporarily();
+        bool animationStable = true;
+        for (int sample = 0; sample < 10; ++sample) {
+            settleFullscreen(20);
+            animationStable = animationStable && QRect(target->mapTo(this, QPoint()), target->size()) == videoRect &&
+                std::abs(videoZoom - target->zoom()) < 1e-6;
+        }
+        const QRect chromeVideoRect(target->mapTo(this, QPoint()), target->size());
+        const bool stableVideo = animationStable && videoRect == chromeVideoRect && std::abs(videoZoom - target->zoom()) < 1e-6;
+        add(QStringLiteral("Fullscreen controls overlay without resizing video"), stableVideo &&
+            _p->timeline->isVisible() && _p->playbackBar->isVisible(),
+            {{"hiddenVideoHeight", videoRect.height()}, {"shownVideoHeight", chromeVideoRect.height()}});
+        fullscreenKey(target, Qt::Key_Space);
+        const bool paused = _p->playbackCtrl->playbackState() == 0;
+        auto* playButton = _p->playbackBar->findChild<QToolButton*>(QStringLiteral("PlaybackBarPlayToggle"));
+        fullscreenKey(playButton ? static_cast<QWidget*>(playButton) : target, Qt::Key_Space);
+        const bool resumed = _p->playbackCtrl->playbackState() == 1;
+        fullscreenKey(target, Qt::Key_Space, Qt::NoModifier, true);
+        const bool repeatIgnored = _p->playbackCtrl->playbackState() == 1;
+        const int frameBefore = _p->playbackCtrl->currentFrame();
+        settleFullscreen(200);
+        add(QStringLiteral("Fullscreen Space pauses and resumes playback"), keptPlaying && paused && resumed &&
+            repeatIgnored && _p->playbackCtrl->currentFrame() != frameBefore,
+            {{"keptPlayingOnEntry", keptPlaying}, {"paused", paused}, {"resumed", resumed}, {"repeatIgnored", repeatIgnored}});
+        QLineEdit editor(centralWidget());
+        editor.show();
+        fullscreenKey(&editor, Qt::Key_Space);
+        add(QStringLiteral("Fullscreen playback shortcut respects text input"),
+            editor.text() == QStringLiteral(" ") && _p->playbackCtrl->playbackState() == 1);
+        editor.hide();
+        // A real timeline seek must remain usable after moving its controls
+        // out of the splitter; it must not change the paused state.
+        _p->playbackCtrl->pause();
+        auto* seekBar = _p->timeline->layout()->itemAt(0)->widget();
+        const QPointF seekPoint(seekBar->width() / 2, seekBar->height() / 2);
+        const QPointF seekGlobal(seekBar->mapToGlobal(seekPoint.toPoint()));
+        QMouseEvent seekPress(QEvent::MouseButtonPress, seekPoint, seekGlobal,
+            Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QMouseEvent seekRelease(QEvent::MouseButtonRelease, seekPoint, seekGlobal,
+            Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(seekBar, &seekPress);
+        QApplication::sendEvent(seekBar, &seekRelease);
+        settleFullscreen(100);
+        const int sought = _p->playbackCtrl->currentFrame();
+        add(QStringLiteral("Fullscreen overlay timeline seek"), _p->playbackCtrl->playbackState() == 0 &&
+            std::abs(sought - _p->playbackCtrl->totalFrames() / 2) <= 2 &&
+            QRect(target->mapTo(this, QPoint()), target->size()) == videoRect, {{"seekFrame", sought}});
+        auto playbackBinding = std::find_if(_p->commandDescriptors.begin(), _p->commandDescriptors.end(),
+            [](const auto& item) { return item.id == QStringLiteral("playback.toggle"); });
+        if (playbackBinding != _p->commandDescriptors.end()) {
+            const QString oldBinding = playbackBinding->shortcut;
+            QList<QPair<QAction*, QKeySequence>> playbackActions;
+            for (auto* action : findChildren<QAction*>()) {
+                if (action->property("cgplay.command.id").toString() == QStringLiteral("playback.toggle")) {
+                    playbackActions.append(qMakePair(action, action->shortcut()));
+                    action->setShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+P")));
+                }
+            }
+            playbackBinding->shortcut = QStringLiteral("Ctrl+Alt+P");
+            fullscreenKey(target, Qt::Key_Space);
+            const bool oldIgnored = _p->playbackCtrl->playbackState() == 0;
+            fullscreenKey(target, Qt::Key_P, Qt::ControlModifier | Qt::AltModifier);
+            const bool reboundPlays = _p->playbackCtrl->playbackState() == 1;
+            _p->playbackCtrl->pause();
+            playbackBinding->shortcut.clear();
+            for (const auto& action : playbackActions) action.first->setShortcut(QKeySequence());
+            fullscreenKey(target, Qt::Key_Space);
+            fullscreenKey(target, Qt::Key_P, Qt::ControlModifier | Qt::AltModifier);
+            add(QStringLiteral("Fullscreen playback custom and cleared shortcut"), oldIgnored && reboundPlays &&
+                _p->playbackCtrl->playbackState() == 0);
+            playbackBinding->shortcut = oldBinding;
+            for (const auto& action : playbackActions) action.first->setShortcut(action.second);
+        } else {
+            add(QStringLiteral("Fullscreen playback custom and cleared shortcut"), false);
+        }
+        _hideFullScreenChrome();
+        settleFullscreen(200);
+        add(QStringLiteral("Fullscreen controls hide without resizing video"),
+            QRect(target->mapTo(this, QPoint()), target->size()) == videoRect &&
+            std::abs(videoZoom - target->zoom()) < 1e-6 && !_p->timeline->isVisible());
+        fullscreenKey(target, Qt::Key_Escape);
+        settleFullscreen();
+        _p->playbackCtrl->pause();
+        add(QStringLiteral("Fullscreen overlay restores windowed controls"), normal() &&
+            _p->centerSplitter->count() == 3 && _p->centerSplitter->widget(1) == _p->timeline &&
+            _p->centerSplitter->widget(2) == _p->playbackBar);
+        fullscreenKey(target, Qt::Key_F11);
+        settleFullscreen();
+        _showFullScreenChromeTemporarily();
+        settleFullscreen(30);
+        fullscreenKey(target, Qt::Key_Escape);
+        settleFullscreen();
+        add(QStringLiteral("Fullscreen exit cancels controls animation"), normal() &&
+            _p->fullscreenOverlay && !_p->fullscreenOverlay->isVisible() &&
+            _p->timeline->parentWidget() == _p->centerSplitter &&
+            _p->playbackBar->parentWidget() == _p->centerSplitter);
     }
     bind(originalShortcut);
     for (const auto& action : actions) action.first->setShortcut(action.second);
