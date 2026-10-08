@@ -4,10 +4,13 @@ CGPlay 是面向 VFX、动画和合成审片流程的 Windows 播放器，使用
 
 当前源码版本：**1.0.7.11**。
 
-- [下载安装包](https://github.com/xty-luoye/CGPlay/releases)
+- [下载 1.0.7.11 Windows 完整安装包](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.7.11/CGPlay_Setup_1.0.7.11_full.exe)
+- [版本发布页](https://github.com/xty-luoye/CGPlay/releases/tag/v1.0.7.11)
 - [使用说明](docs/CGPlay_使用说明_1.0.7.md)
 - [构建说明与当前限制](docs/OFFICIAL_BUILD.md)
 - [贡献指南](CONTRIBUTING.md)
+
+旧版软件内的自动更新通道暂未同步到本次版本，可下载完整安装包更新。
 
 ## 主要功能
 
