@@ -737,6 +737,8 @@ QJsonObject MainWindow::runPlayerSmokeChecks(const QString& mediaPath)
             if (group == QStringLiteral("fullscreen")) {
                 results.append(_runMediaOpenSmokeCheck(mediaPath));
                 for (const auto& result : _runFullscreenSmokeChecks()) results.append(result);
+            } else if (group == QStringLiteral("sequence-time")) {
+                for (const auto& result : _runSequenceTimeSmokeChecks(mediaPath)) results.append(result);
             } else {
                 results.append(QJsonObject{{"name", "Smoke group"}, {"status", "FAIL"},
                     {"message", QStringLiteral("Unknown smoke group: %1").arg(group)}});

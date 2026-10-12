@@ -31,6 +31,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 
 #if CGPLAY_HAS_TLRENDER
   #include <tlRender/Timeline/Timeline.h>
@@ -887,7 +888,19 @@ void PlaybackController::_tickTimer()
 
         // Poll player state from UI timer (same pattern as DJV)
         auto& ct = _p->player->getCurrentTime();
-        int frame = static_cast<int>(ct.value());
+        // tlRender keeps the source time in the sequence's absolute frame
+        // domain (for example, an EXR sequence named 0101..0132 starts at
+        // frame 101).  The public playback API and UI use a zero-based frame
+        // relative to the opened source.  Convert in the timeline rate before
+        // emitting the frame so timecode, seek, A/B points and cache read-ahead
+        // all share the same contract.
+        const auto& range = _p->player->getTimeRange();
+        const double displayRate = range.duration().rate();
+        const double absoluteFrame = ct.value_rescaled_to(displayRate);
+        const double sourceStart = range.start_time().value_rescaled_to(displayRate);
+        const int lastFrame = std::max(0, _p->totalStub - 1);
+        int frame = std::clamp(
+            static_cast<int>(std::llround(absoluteFrame - sourceStart)), 0, lastFrame);
         if (frame != _p->frameStub) {
             _p->frameStub = frame;
             _enforceLoopBounds();

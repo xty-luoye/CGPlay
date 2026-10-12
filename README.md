@@ -2,15 +2,15 @@
 
 CGPlay 是面向 VFX、动画和合成审片流程的 Windows 播放器，使用 C++17、Qt 6、tlRender 和 Python 构建。项目开发目录曾使用 RVLite 名称，代码中仍保留部分命名。
 
-当前源码版本：**1.0.7.14**。
+当前源码版本：**1.0.7.15**。
 
-- [下载 1.0.7.14 Windows 完整安装包](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.7.14/CGPlay_Setup_1.0.7.14_full.exe)
-- [版本发布页](https://github.com/xty-luoye/CGPlay/releases/tag/v1.0.7.14)
+- [下载 1.0.7.15 Windows 完整安装包](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.7.15/CGPlay_Setup_1.0.7.15_full.exe)
+- [版本发布页](https://github.com/xty-luoye/CGPlay/releases/tag/v1.0.7.15)
 - [使用说明](docs/CGPlay_使用说明_1.0.7.md)
 - [构建说明与当前限制](docs/OFFICIAL_BUILD.md)
 - [贡献指南](CONTRIBUTING.md)
 
-1.0.7.14 默认在后台检查 GitHub 最新正式版，支持下载、校验和安装。1.0.7.11 及更早版本请先手动安装一次本版，再使用新的自动更新通道。
+1.0.7.15 默认在后台检查 GitHub 最新正式版，支持下载、校验和安装。1.0.7.11 及更早版本请先手动安装一次本版，再使用新的自动更新通道。
 
 ## 主要功能
 
@@ -74,3 +74,5 @@ docs/          使用、构建与第三方许可说明
 当前源码版本按 [GNU GPL v3.0](LICENSE.txt)（GPL-3.0-only）发布，允许商用；分发本程序或其修改版时，须遵守 GPLv3，包括向接收者提供相应源码和保留许可声明。第三方组件保留各自许可证。此前已依据 MIT 取得的授权继续有效；这不表示所有旧安装包均采用 MIT。
 
 第三方声明及二进制分发注意事项见 [THIRD_PARTY_NOTICES.txt](docs/THIRD_PARTY_NOTICES.txt)。源码公开并不代表任意重新打包的依赖或安装包已经满足分发条件。
+
+1.0.7.15 修复非零起始 EXR 序列的相对帧和时间码显示，并覆盖时间线点击、逐帧、入点/出点循环和缓存预读。详见 [更新说明](docs/RELEASE_NOTES_1.0.7.15.md)。

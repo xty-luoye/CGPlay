@@ -164,10 +164,10 @@ function Set-ProjectVersion([string]$Root, [string]$Version) {
         '(?m)^([ \t]*!define\s+APP_FILE_VERSION\s+")[^"]+(")' `
         ('${1}' + $fileVersion + '${2}')
     Update-VersionText (Join-Path $Root "resources\CGPlay.rc") `
-        '(?m)^(FILEVERSION\s+)[0-9]+,[0-9]+,[0-9]+,[0-9]+' `
+        '(?m)^([ \t]*FILEVERSION\s+)[0-9]+,[0-9]+,[0-9]+,[0-9]+' `
         ('${1}' + $numericVersion)
     Update-VersionText (Join-Path $Root "resources\CGPlay.rc") `
-        '(?m)^(PRODUCTVERSION\s+)[0-9]+,[0-9]+,[0-9]+,[0-9]+' `
+        '(?m)^([ \t]*PRODUCTVERSION\s+)[0-9]+,[0-9]+,[0-9]+,[0-9]+' `
         ('${1}' + $numericVersion)
     Update-VersionText (Join-Path $Root "resources\CGPlay.rc") `
         '(?m)(VALUE\s+"FileVersion",\s+")[0-9.]+(\\0")' `

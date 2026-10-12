@@ -1,10 +1,10 @@
 !define PRODUCT_NAME "CGPlay"
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.7.14"
+  !define APP_VERSION "1.0.7.15"
 !endif
 !define PRODUCT_VERSION "${APP_VERSION}"
 !ifndef APP_FILE_VERSION
-  !define APP_FILE_VERSION "1.0.7.14"
+  !define APP_FILE_VERSION "1.0.7.15"
 !endif
 !ifndef PACKAGE_MODE
   !define PACKAGE_MODE "full"
@@ -53,7 +53,7 @@ SetCompressorDictSize 64
 !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
 
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_LICENSE "..\LICENSE.txt"
+!insertmacro MUI_PAGE_LICENSE "..\docs\CGPlay_Commercial_EULA.txt"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
