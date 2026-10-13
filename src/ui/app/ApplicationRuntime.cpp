@@ -159,7 +159,7 @@ Application::Application(int& argc, char** argv)
         previousStartupPhaseMs = elapsedMs;
     };
     setApplicationName("CGPlay");
-    setApplicationVersion("1.0.7.16");
+    setApplicationVersion("1.0.7.17");
     setOrganizationName("CGPlay");
     _initStyle();
     _parseArgs();

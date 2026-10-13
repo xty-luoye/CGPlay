@@ -457,6 +457,7 @@ struct TimelineWidget::Private {
     std::shared_ptr<IPlaybackService> playback;
     TimelineBar* bar = nullptr;
     QLabel* lblFrame = nullptr;
+    QLabel* lblInOut = nullptr;
     int curFrame = 0;
     int total = 1;
     QString mediaPath;
@@ -518,6 +519,12 @@ void TimelineWidget::_buildUI()
     auto* lr = new QHBoxLayout();
     lr->setContentsMargins(10, 2, 10, 2);
     lr->setSpacing(10);
+    _p->lblInOut = new QLabel(this);
+    _p->lblInOut->setObjectName(QStringLiteral("TimelineInOutRange"));
+    _p->lblInOut->setStyleSheet("QLabel{font-size:10px;font-weight:600;}");
+    _p->lblInOut->setToolTip(QStringLiteral("A 为入点，B 为出点；A 早于 B 时循环播放该区间。"));
+    _p->lblInOut->hide();
+    lr->addWidget(_p->lblInOut);
     lr->addStretch();
     _p->lblFrame = new QLabel("0 / 0", this);
     _p->lblFrame->setAlignment(Qt::AlignCenter);
@@ -708,6 +715,16 @@ void TimelineWidget::setInOutPoints(int i, int o)
 {
     if (_p->bar) {
         _p->bar->setInOutPointsState(i, o);
+    }
+    // A short range on a long clip can occupy less than one pixel and be
+    // covered by the playhead. Keep explicit values outside the scaled track.
+    if (_p->lblInOut) {
+        const double fps = _p->playback ? _p->playback->fps() : 24.0;
+        _p->lblInOut->setText(QStringLiteral("<span style='color:%1'>A %2</span>　<span style='color:%3'>B %4</span>%5")
+            .arg(kInPoint.name(), i >= 0 ? formatFrameTimecode(i, fps) : QStringLiteral("--"),
+                 kOutPoint.name(), o >= 0 ? formatFrameTimecode(o, fps) : QStringLiteral("--"),
+                 i >= 0 && o >= 0 && i >= o ? QStringLiteral(" （A 须早于 B）") : QString()));
+        _p->lblInOut->setVisible(i >= 0 || o >= 0);
     }
 }
 

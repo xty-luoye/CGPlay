@@ -47,20 +47,20 @@
       "shortcutTest": "player-smoke:Shift+Right"
     },
     "playback.setInPoint": {
-      "test": "player-smoke:I",
-      "shortcutTest": "player-smoke:I"
+      "test": "player-smoke:I; in-out:range and loop at start/middle/end",
+      "shortcutTest": "player-smoke:I; in-out:keys viewer/playlist/timeline/transport/window; custom/disabled shortcut, text input, fullscreen"
     },
     "playback.setOutPoint": {
-      "test": "player-smoke:O",
-      "shortcutTest": "player-smoke:O"
+      "test": "player-smoke:O; in-out:range and loop at start/middle/end",
+      "shortcutTest": "player-smoke:O; in-out:keys viewer/playlist/timeline/transport/window; text input, fullscreen, playback"
     },
     "playback.clearInPoint": {
-      "test": "player-smoke:Alt+I",
-      "shortcutTest": "player-smoke:Alt+I"
+      "test": "player-smoke:Alt+I; in-out:clear keys and label",
+      "shortcutTest": "player-smoke:Alt+I; in-out:clear keys"
     },
     "playback.clearOutPoint": {
-      "test": "player-smoke:Alt+O",
-      "shortcutTest": "player-smoke:Alt+O"
+      "test": "player-smoke:Alt+O; in-out:clear keys and label",
+      "shortcutTest": "player-smoke:Alt+O; in-out:clear keys"
     },
     "playback.setSpeed": {
       "test": "player-smoke:Playback speed control; state-switch:Speed preference survives media switch; Speed multiplier follows new media rate"
@@ -203,6 +203,7 @@
     }
   },
   "featureTests": {
+    "timeline.inOutVisibility": "tests/run_in_out_regression.py; in-out:values visible for subpixel range; timeline screenshot; cleared label; close clears values",
     "settings.lifecycle": "player-smoke:Settings lazy construction and local theme+Settings reuse and close cleanup",
     "settings.pages": "player-smoke:Settings all pages and captures+Settings shared command choices",
     "settings.appearance": "player-smoke:Settings existing slider values+Settings slider preview and commit+Settings theme changes remain live+Settings isolated values restored",

@@ -326,6 +326,7 @@ private:
     QJsonObject _automationCoverage() const;
     QJsonArray _runMediaStateSmokeChecks(const QString& mediaPath);
     QJsonArray _runSequenceTimeSmokeChecks(const QString& mediaPath);
+    QJsonArray _runInOutSmokeChecks(const QString& mediaPath);
     void _showFullScreenChromeTemporarily();
     void _hideFullScreenChrome();
     void _setFullScreenChromeVisible(bool visible, bool forceApply = false);
