@@ -2,6 +2,7 @@
 #include "CommandPresentation.h"
 
 #include "playback/api/IPlaybackService.h"
+#include "playback/api/Timecode.h"
 
 #include <QHBoxLayout>
 #include <QApplication>
@@ -337,7 +338,7 @@ PlaybackBar::PlaybackBar(std::shared_ptr<IPlaybackService> playback, QWidget* pa
     layout->addWidget(_btnTranslationMode);
     _updateTranslationModeButton();
 
-    _btnSpeed = _makeBtn(speedLabel(_speedMultiplier), QString::fromUtf8(u8"鎾斁鍊嶉€熷垏鎹㈣彍鍗�"), 48);
+    _btnSpeed = _makeBtn(speedLabel(_playback ? _playback->speedMultiplier() : 1.0), QStringLiteral("播放倍速"), 48);
     _btnSpeed->setObjectName(QStringLiteral("PlaybackBarSpeed"));
     _btnSpeed->setProperty("commandId", QStringLiteral("playback.setSpeed"));
     _btnSpeed->setFixedSize(40, 32);
@@ -349,15 +350,9 @@ PlaybackBar::PlaybackBar(std::shared_ptr<IPlaybackService> playback, QWidget* pa
     for (const double multiplier : speedOptions) {
         auto* action = speedMenu->addAction(speedLabel(multiplier));
         connect(action, &QAction::triggered, this, [this, multiplier] {
-            _speedMultiplier = multiplier;
             if (_playback) {
                 const double mediaFps = _playback->fps() > 0.0 ? _playback->fps() : 24.0;
                 _playback->setSpeed(mediaFps * multiplier);
-            }
-            if (_btnSpeed) {
-                _btnSpeed->setText(speedLabel(_speedMultiplier));
-                updateCommandPresentationState(_btnSpeed, QStringLiteral("播放倍速"),
-                    QStringLiteral("当前：%1").arg(speedLabel(_speedMultiplier)));
             }
         });
     }
@@ -478,17 +473,7 @@ PlaybackBar::PlaybackBar(std::shared_ptr<IPlaybackService> playback, QWidget* pa
                 fps = 24.0;
             }
 
-            const int fpsInt = qMax(1, static_cast<int>(fps + 0.5));
-            const int ff = frame % fpsInt;
-            const int totalSeconds = frame / fpsInt;
-            const int ss = totalSeconds % 60;
-            const int mm = (totalSeconds / 60) % 60;
-            const int hh = totalSeconds / 3600;
-            const QString frameText = QStringLiteral("%1:%2:%3:%4")
-                                          .arg(hh, 2, 10, QChar('0'))
-                                          .arg(mm, 2, 10, QChar('0'))
-                                          .arg(ss, 2, 10, QChar('0'))
-                                          .arg(ff, 2, 10, QChar('0'));
+            const QString frameText = formatFrameTimecode(frame, fps);
             if (_lblFrame->text() != frameText) {
                 _lblFrame->setText(frameText);
             }
@@ -499,25 +484,32 @@ PlaybackBar::PlaybackBar(std::shared_ptr<IPlaybackService> playback, QWidget* pa
         });
 
         connect(_btnLoop, &QToolButton::clicked, this, [this] {
-            static int mode = 0;
-            mode = (mode + 1) % 3;
             if (_playback) {
-                _playback->setLoop(mode);
+                _playback->setLoop((_playback->loopMode() + 1) % 3);
             }
-            _btnLoop->setText(mode == 0 ? "LP" : (mode == 1 ? "1" : "AB"));
-            updateCommandPresentationState(_btnLoop, QStringLiteral("循环模式"),
-                mode == 0 ? QStringLiteral("当前：循环播放") :
-                (mode == 1 ? QStringLiteral("当前：单次播放") : QStringLiteral("当前：往返播放")));
         });
+        connect(_playback->signalProxy(), &PlaybackServiceSignals::playbackOptionsChanged,
+            this, &PlaybackBar::_refreshPlaybackOptions);
     }
-    updateCommandPresentationState(_btnSpeed, QStringLiteral("播放倍速"),
-        QStringLiteral("当前：%1").arg(speedLabel(_speedMultiplier)));
-    updateCommandPresentationState(_btnLoop, QStringLiteral("循环模式"), QStringLiteral("当前：循环播放"));
+    _refreshPlaybackOptions();
     updateCommandPresentationState(_btnMute, QStringLiteral("打开音量控制"),
         initiallyMuted ? QStringLiteral("当前已静音；单击打开音量") : QStringLiteral("单击打开音量"));
 }
 
 PlaybackBar::~PlaybackBar() = default;
+
+void PlaybackBar::_refreshPlaybackOptions()
+{
+    const double multiplier = _playback ? _playback->speedMultiplier() : 1.0;
+    const int mode = _playback ? _playback->loopMode() : 0;
+    _btnSpeed->setText(speedLabel(multiplier));
+    updateCommandPresentationState(_btnSpeed, QStringLiteral("播放倍速"),
+        QStringLiteral("当前：%1").arg(speedLabel(multiplier)));
+    _btnLoop->setText(mode == 0 ? "LP" : (mode == 1 ? "1" : "AB"));
+    updateCommandPresentationState(_btnLoop, QStringLiteral("循环模式"),
+        mode == 0 ? QStringLiteral("当前：循环播放") :
+        (mode == 1 ? QStringLiteral("当前：单次播放") : QStringLiteral("当前：往返播放")));
+}
 
 void PlaybackBar::resizeEvent(QResizeEvent* event)
 {

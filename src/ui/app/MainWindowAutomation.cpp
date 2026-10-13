@@ -737,6 +737,8 @@ QJsonObject MainWindow::runPlayerSmokeChecks(const QString& mediaPath)
             if (group == QStringLiteral("fullscreen")) {
                 results.append(_runMediaOpenSmokeCheck(mediaPath));
                 for (const auto& result : _runFullscreenSmokeChecks()) results.append(result);
+            } else if (group == QStringLiteral("state-switch")) {
+                for (const auto& result : _runMediaStateSmokeChecks(mediaPath)) results.append(result);
             } else if (group == QStringLiteral("sequence-time")) {
                 for (const auto& result : _runSequenceTimeSmokeChecks(mediaPath)) results.append(result);
             } else {
@@ -744,6 +746,9 @@ QJsonObject MainWindow::runPlayerSmokeChecks(const QString& mediaPath)
                     {"message", QStringLiteral("Unknown smoke group: %1").arg(group)}});
             }
         }
+        report["coverage"] = _automationCoverage();
+        if (!report["coverage"].toObject().value("complete").toBool())
+            results.append(QJsonObject{{"name", "Automation coverage gate"}, {"status", "FAIL"}});
         report["groups"] = QJsonArray::fromStringList(smokeGroups);
         report["results"] = results;
         report["summary"] = makeSummary(results);
@@ -1652,32 +1657,8 @@ QJsonObject MainWindow::runPlayerSmokeChecks(const QString& mediaPath)
     report["baseline"] = baseline;
     report["final_state"] = finalState;
     report["lifecycle_events"] = lifecycleEvents;
-    QJsonObject manifestCommands; QString coverageManifestPath;
-    const QStringList manifestCandidates = {QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(
-        QStringLiteral("../../../tests/automation_coverage_manifest.json")), QDir::current().absoluteFilePath(QStringLiteral("tests/automation_coverage_manifest.json"))};
-    for (const QString& candidate : manifestCandidates) {
-        QFile manifestFile(candidate);
-        if (!manifestFile.open(QIODevice::ReadOnly)) continue;
-        const QJsonDocument document = QJsonDocument::fromJson(manifestFile.readAll()); if (!document.isObject()) continue;
-        manifestCommands = document.object().value(QStringLiteral("commands")).toObject();
-        coverageManifestPath = QFileInfo(candidate).absoluteFilePath();
-        break;
-    }
-    QJsonArray commandInventory, uncoveredCommands, uncoveredShortcuts;
-    for (const auto& descriptor : _p->commandDescriptors) {
-        const QString commandId = descriptor.id.trimmed(), shortcut = _p->commandDefaultShortcuts.value(commandId, descriptor.shortcut).trimmed();
-        const QJsonObject evidence = manifestCommands.value(commandId).toObject();
-        commandInventory.append(QJsonObject{{QStringLiteral("id"), commandId}, {QStringLiteral("shortcut"), shortcut}, {QStringLiteral("test"),
-            evidence.value(QStringLiteral("test")).toString()}, {QStringLiteral("shortcutTest"), evidence.value(QStringLiteral("shortcutTest")).toString()}});
-        if (commandId.isEmpty() || evidence.value(QStringLiteral("test")).toString().trimmed().isEmpty()) uncoveredCommands.append(commandId);
-        if (!shortcut.isEmpty() && evidence.value(QStringLiteral("shortcutTest")).toString().trimmed().isEmpty())
-            uncoveredShortcuts.append(QJsonObject{{QStringLiteral("id"), commandId}, {QStringLiteral("shortcut"), shortcut}});
-    }
-    const bool coverageComplete = !coverageManifestPath.isEmpty() && uncoveredCommands.isEmpty() &&
-        uncoveredShortcuts.isEmpty() && manifestCommands.size() == _p->commandDescriptors.size();
-    report["coverage"] = QJsonObject{{QStringLiteral("complete"), coverageComplete}, {QStringLiteral("manifest"), coverageManifestPath},
-        {QStringLiteral("registeredCommandCount"), _p->commandDescriptors.size()}, {QStringLiteral("manifestCommandCount"), manifestCommands.size()},
-        {QStringLiteral("commands"), commandInventory}, {QStringLiteral("uncoveredCommands"), uncoveredCommands}, {QStringLiteral("uncoveredShortcuts"), uncoveredShortcuts}};
+    report["coverage"] = _automationCoverage();
+    const bool coverageComplete = report["coverage"].toObject().value("complete").toBool();
     addResult(QStringLiteral("Automation coverage gate"), coverageComplete ? QStringLiteral("PASS") : QStringLiteral("FAIL"),
               QStringLiteral("every registered command and default shortcut requires automated evidence"), report.value(QStringLiteral("coverage")).toObject());
 

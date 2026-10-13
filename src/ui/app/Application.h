@@ -228,6 +228,7 @@ class PlaybackBar;
 // ─── MainWindow ───────────────────────────────────────────────────────────
 class MainWindow : public QMainWindow
 {
+    friend class FullscreenController;
     Q_OBJECT
 public:
     explicit MainWindow(std::shared_ptr<AnnotationManager> annoMgr = nullptr,
@@ -313,6 +314,7 @@ private:
     void _autoLoadReview();
     void _onAnnotationModeToggled(bool active);
     void _closeCurrentMedia();
+    void _resetMediaSession(const QString& path, const QString& fingerprint);
     void _openFileWithMediaInfo(
         const QString& path,
         double sequenceFpsOverride,
@@ -321,6 +323,8 @@ private:
     QJsonArray _runFullscreenSmokeChecks();
     QJsonArray _runSettingsSmokeChecks();
     QJsonObject _runMediaOpenSmokeCheck(const QString& mediaPath);
+    QJsonObject _automationCoverage() const;
+    QJsonArray _runMediaStateSmokeChecks(const QString& mediaPath);
     QJsonArray _runSequenceTimeSmokeChecks(const QString& mediaPath);
     void _showFullScreenChromeTemporarily();
     void _hideFullScreenChrome();

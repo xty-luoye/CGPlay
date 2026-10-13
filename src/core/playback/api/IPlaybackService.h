@@ -27,6 +27,10 @@ public:
     virtual int totalFrames() const = 0;
     virtual double fps() const = 0;
     virtual int playbackState() const = 0;
+    // Session preferences; retained across source changes. fps() is always
+    // the media rate, not the selected playback speed.
+    virtual double speedMultiplier() const = 0;
+    virtual int loopMode() const = 0; // 0=Loop, 1=Once, 2=PingPong
 
 #if CGPLAY_HAS_TLRENDER
     virtual std::shared_ptr<tl::Player> player() const = 0;

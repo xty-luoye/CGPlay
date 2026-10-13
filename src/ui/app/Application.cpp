@@ -233,15 +233,7 @@ MainWindow::~MainWindow()
         _p->mediaProbeJob->cancel();
         _p->mediaProbeJob.clear();
     }
-    if (_p->subtitleGenerationCancelRequested) {
-        _p->subtitleGenerationCancelRequested->store(true);
-    }
-    if (_p->subtitleRefinementCancelRequested) {
-        _p->subtitleRefinementCancelRequested->store(true);
-    }
-    if (_p->highQualityEnhancementCancelRequested) {
-        _p->highQualityEnhancementCancelRequested->store(true);
-    }
+    _p->subtitleSession.cancelTasks();
     _saveState();
     if (_p->sessionMgr) {
         _p->sessionMgr->clearRecovery();
@@ -373,6 +365,7 @@ void MainWindow::refreshAnnotationCapabilityForRuntime()
 
 void MainWindow::_setupUI()
 {
+    _p->fullscreen = std::make_unique<FullscreenController>(this);
     auto* central = createThemedBackdrop(this);
     auto* mainVLayout = new QVBoxLayout(central);
     mainVLayout->setContentsMargins(0, 0, 0, 0);
@@ -629,10 +622,6 @@ void MainWindow::_setupUI()
         }
     });
 
-    _p->fullscreenChromeTimer = new QTimer(this);
-    _p->fullscreenChromeTimer->setSingleShot(true);
-    _p->fullscreenChromeTimer->setInterval(2000);
-    connect(_p->fullscreenChromeTimer, &QTimer::timeout, this, &MainWindow::_hideFullScreenChrome);
     qApp->installEventFilter(this);
 }
 

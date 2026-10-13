@@ -41,6 +41,8 @@ public:
     int  totalFrames()  const override;
     double fps()        const override;
     int  playbackState() const override; // 0=stop, 1=forward, 2=reverse
+    double speedMultiplier() const override;
+    int loopMode() const override;
 
 #if CGPLAY_HAS_TLRENDER
     std::shared_ptr<tl::Player> player() const override;
@@ -125,6 +127,7 @@ Q_SIGNALS:
     void fpsChanged(double fps);
     void cacheUsageChanged(float videoPercent, float audioPercent);
     void playbackStateChanged(int state); // 0=stop, 1=fwd, 2=rev
+    void playbackOptionsChanged(double speedMultiplier, int loopMode);
     void inOutPointsChanged(int inFrame, int outFrame);
     void volumeChanged(float volume);
     void muteChanged(bool muted);
@@ -150,6 +153,8 @@ private:
         const QString& logicalPath = {},
         const QString& codecHint = {});
     void _destroyPlayer();
+    void _resetMediaState();
+    void _applyPlaybackOptions();
     void _connectPlayer();
     void _tickTimer();
     void _enforceLoopBounds();

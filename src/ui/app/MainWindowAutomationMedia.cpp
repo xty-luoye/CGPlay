@@ -128,7 +128,7 @@ QJsonArray MainWindow::_runSequenceTimeSmokeChecks(const QString& mediaPath)
     checkFrame("Sequence timeline seek time", sought);
     playback->gotoStart();
     playback->forward();
-    settle(350);
+    settle(std::max(350, qRound(1500.0 / fps)));
     playback->pause();
     settle();
     const int played = playback->currentFrame();
@@ -144,7 +144,7 @@ QJsonArray MainWindow::_runSequenceTimeSmokeChecks(const QString& mediaPath)
     connect(playback->signalProxy(), &PlaybackServiceSignals::currentFrameChanged, &receiver,
         [&](int frame, int) { loopFrames.append(frame); });
     playback->forward();
-    settle(600);
+    settle(std::max(600, qRound(2500.0 / fps)));
     playback->pause();
     disconnect(playback->signalProxy(), nullptr, &receiver, nullptr);
     bool wrapped = false;

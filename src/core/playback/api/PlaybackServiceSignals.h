@@ -23,6 +23,7 @@ Q_SIGNALS:
     void fpsChanged(double fps);
     void cacheUsageChanged(float videoPercent, float audioPercent);
     void playbackStateChanged(int state);
+    void playbackOptionsChanged(double speedMultiplier, int loopMode);
     void inOutPointsChanged(int inFrame, int outFrame);
     void volumeChanged(float volume);
     void muteChanged(bool muted);

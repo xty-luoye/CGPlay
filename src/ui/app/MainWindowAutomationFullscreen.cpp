@@ -72,10 +72,10 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
         detail.insert("visiblePlatformWindows", visibleWindows);
         detail.insert("nativeVisibleWindows", nativeVisibleWindows);
         detail.insert("nativeFullscreen", isFullScreen());
-        detail.insert("requestedFullscreen", _p->fullscreenActive);
-        detail.insert("mousePollActive", _p->fullscreenMousePollTimer && _p->fullscreenMousePollTimer->isActive());
-        detail.insert("entryPending", _p->fullscreenEntryPending);
-        detail.insert("entryUpdatesSuspended", _p->fullscreenEntryUpdatesSuspended);
+        detail.insert("requestedFullscreen", _p->fullscreen->state().fullscreenActive);
+        detail.insert("mousePollActive", _p->fullscreen->state().fullscreenMousePollTimer && _p->fullscreen->state().fullscreenMousePollTimer->isActive());
+        detail.insert("entryPending", _p->fullscreen->state().fullscreenEntryPending);
+        detail.insert("entryUpdatesSuspended", _p->fullscreen->state().fullscreenEntryUpdatesSuspended);
         detail.insert("updatesEnabled", updatesEnabled());
         results.append(QJsonObject{{"name", name}, {"status", passed && background && visibleWindows == 0 && nativeVisibleWindows == 0 ? "PASS" : "FAIL"},
                                    {"message", "fullscreen interaction regression"}, {"details", detail}});
@@ -85,7 +85,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
         return results;
     }
     auto* target = _p->viewer->viewport();
-    if (_p->fullscreenActive || isFullScreen()) _toggleFullScreen();
+    if (_p->fullscreen->state().fullscreenActive || isFullScreen()) _toggleFullScreen();
     showNormal();
     settleFullscreen();
     const QRect originalGeometry = geometry();
@@ -101,11 +101,11 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     const auto* codexDock = findChild<QDockWidget*>(QStringLiteral("CodexAgentWorkspaceDock"));
     const bool originalCodexDock = codexDock && codexDock->isVisible();
     const auto normal = [&] {
-        return !_p->fullscreenActive && !isFullScreen() && !_p->fullscreenCursorHidden &&
-            !_p->fullscreenEntryPending && !_p->fullscreenEntryUpdatesSuspended &&
+        return !_p->fullscreen->state().fullscreenActive && !isFullScreen() && !_p->fullscreen->state().fullscreenCursorHidden &&
+            !_p->fullscreen->state().fullscreenEntryPending && !_p->fullscreen->state().fullscreenEntryUpdatesSuspended &&
             updatesEnabled() && target->updatesEnabled() &&
-            (!_p->fullscreenMousePollTimer || !_p->fullscreenMousePollTimer->isActive()) &&
-            (!_p->fullscreenChromeTimer || !_p->fullscreenChromeTimer->isActive()) &&
+            (!_p->fullscreen->state().fullscreenMousePollTimer || !_p->fullscreen->state().fullscreenMousePollTimer->isActive()) &&
+            (!_p->fullscreen->state().fullscreenChromeTimer || !_p->fullscreen->state().fullscreenChromeTimer->isActive()) &&
             (_p->aiDock && _p->aiDock->isVisible()) == originalAIDock &&
             (codexDock && codexDock->isVisible()) == originalCodexDock &&
             _p->topBar->isVisible() == originalTopBar && _p->timeline->height() == originalTimelineHeight;
@@ -134,7 +134,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     const auto fullscreenNativeWindow = reinterpret_cast<HWND>(winId());
     const LONG_PTR fullscreenNativeStyle = GetWindowLongPtr(fullscreenNativeWindow, GWL_STYLE);
     add(QStringLiteral("Windows fullscreen composition style"),
-        entered && _p->fullscreenActive && IsWindow(fullscreenNativeWindow) &&
+        entered && _p->fullscreen->state().fullscreenActive && IsWindow(fullscreenNativeWindow) &&
             (fullscreenNativeStyle & WS_BORDER) != 0,
         {{"nativeStyle", QString::number(static_cast<qulonglong>(fullscreenNativeStyle), 16)},
          {"nativeBorder", (fullscreenNativeStyle & WS_BORDER) != 0}});
@@ -167,8 +167,8 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
         // Entry queued its commit first. Exit on the very next queued turn,
         // after native composition refreshed but before a settling delay.
         QTimer::singleShot(0, &exitAfterCommitContext, [&] {
-            entryCommitted = _p->fullscreenActive && isFullScreen() &&
-                !_p->fullscreenEntryPending && !_p->fullscreenEntryUpdatesSuspended &&
+            entryCommitted = _p->fullscreen->state().fullscreenActive && isFullScreen() &&
+                !_p->fullscreen->state().fullscreenEntryPending && !_p->fullscreen->state().fullscreenEntryUpdatesSuspended &&
                 updatesEnabled() && target->updatesEnabled();
 #ifdef Q_OS_WIN
             const auto committedWindow = reinterpret_cast<HWND>(winId());
@@ -199,7 +199,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     {
         // Ignore physical cursor movement without changing production timers.
         // Only injected input can request chrome in this deterministic case.
-        const QSignalBlocker cursorPollBlocker(_p->fullscreenMousePollTimer);
+        const QSignalBlocker cursorPollBlocker(_p->fullscreen->state().fullscreenMousePollTimer);
         FullscreenPaintProbe paintProbe;
         target->installEventFilter(&paintProbe);
         QElapsedTimer entryClock;
@@ -220,8 +220,8 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
                 {"timelineHeight", _p->timeline->height()},
                 {"playbackBarHeight", _p->playbackBar->height()},
                 {"controlsVisible", _p->timeline->isVisible() || _p->playbackBar->isVisible()},
-                {"chromeVisible", _p->fullscreenChromeVisible},
-                {"entryPending", _p->fullscreenEntryPending},
+                {"chromeVisible", _p->fullscreen->state().fullscreenChromeVisible},
+                {"entryPending", _p->fullscreen->state().fullscreenEntryPending},
                 {"updatesEnabled", updatesEnabled() && target->updatesEnabled()}};
         };
         paintProbe.onPaint = [&] {
@@ -244,7 +244,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
             const QPointF local(target->rect().center());
             const QPointF global(target->mapToGlobal(local.toPoint()));
             for (const auto type : {QEvent::MouseMove, QEvent::MouseButtonRelease}) {
-                if (_p->fullscreenEntryPending) ++entryInputEvents;
+                if (_p->fullscreen->state().fullscreenEntryPending) ++entryInputEvents;
                 ++injectedInputEvents;
                 QMouseEvent event(type, local, global,
                     type == QEvent::MouseButtonRelease ? Qt::LeftButton : Qt::NoButton,
@@ -256,7 +256,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
         fullscreenKey(target, Qt::Key_F11);
         injectEntryInput();
         QTimer::singleShot(0, &paintProbe, [&] {
-            if (_p->fullscreenEntryPending) injectEntryInput();
+            if (_p->fullscreen->state().fullscreenEntryPending) injectEntryInput();
         });
         settleFullscreen(220);
         samples.append(snapshot());
@@ -293,7 +293,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
         settleFullscreen(350);
         add(QStringLiteral("Fullscreen explicit zoom after entry"),
             !target->hasFrameView() && std::abs(target->zoom() - manualZoom) < 1e-6 &&
-                updatesEnabled() && target->updatesEnabled() && !_p->fullscreenEntryPending,
+                updatesEnabled() && target->updatesEnabled() && !_p->fullscreen->state().fullscreenEntryPending,
             {{"requestedZoom", manualZoom}, {"actualZoom", target->zoom()}});
         fullscreenKey(target, Qt::Key_Escape);
         settleFullscreen();
@@ -360,7 +360,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
         fullscreenKey(target, Qt::Key_F11);
         settleFullscreen();
         rapidPassed = rapidPassed && isFullScreen() && !_p->topBar->isVisible() &&
-            !_p->fullscreenEntryPending && !_p->fullscreenEntryUpdatesSuspended &&
+            !_p->fullscreen->state().fullscreenEntryPending && !_p->fullscreen->state().fullscreenEntryUpdatesSuspended &&
             updatesEnabled() && target->updatesEnabled();
         fullscreenKey(target, Qt::Key_Escape);
         settleFullscreen();
@@ -379,7 +379,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     settleFullscreen();
     maximizedDetail.insert("maximizeSettled", static_cast<int>(windowState()));
     fullscreenKey(target, Qt::Key_F11);
-    maximizedDetail.insert("savedWindowState", static_cast<int>(_p->fullscreenWindowState));
+    maximizedDetail.insert("savedWindowState", static_cast<int>(_p->fullscreen->state().fullscreenWindowState));
     settleFullscreen();
     maximizedDetail.insert("entered", static_cast<int>(windowState()));
     fullscreenKey(target, Qt::Key_Escape);
@@ -394,25 +394,25 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     settleFullscreen();
     fullscreenKey(target, Qt::Key_Escape);
     settleFullscreen();
-    add(QStringLiteral("Fullscreen rapid maximized transitions"), isMaximized() && normal() && !_p->fullscreenRestorePending);
+    add(QStringLiteral("Fullscreen rapid maximized transitions"), isMaximized() && normal() && !_p->fullscreen->state().fullscreenRestorePending);
     showNormal();
     settleFullscreen();
 
     fullscreenKey(target, Qt::Key_F11);
     settleFullscreen();
     // Stop physical-cursor input only for this deterministic request burst.
-    _p->fullscreenMousePollTimer->stop();
+    _p->fullscreen->state().fullscreenMousePollTimer->stop();
     _hideFullScreenChrome();
     settleFullscreen(30);
-    const quint64 countBefore = _p->fullscreenChromeApplyCount;
+    const quint64 countBefore = _p->fullscreen->state().fullscreenChromeApplyCount;
     QElapsedTimer requestTimer;
     requestTimer.start();
     for (int i = 0; i < 200; ++i) _showFullScreenChromeTemporarily();
     const double requestMs = requestTimer.nsecsElapsed() / 1e6;
     settleFullscreen(180);
-    const quint64 applies = _p->fullscreenChromeApplyCount - countBefore;
-    add(QStringLiteral("Fullscreen chrome coalescing"), applies == 1 && _p->fullscreenChromeVisible &&
-        _p->playbackBar->height() > 0 && _p->fullscreenChromeTimer->isActive(),
+    const quint64 applies = _p->fullscreen->state().fullscreenChromeApplyCount - countBefore;
+    add(QStringLiteral("Fullscreen chrome coalescing"), applies == 1 && _p->fullscreen->state().fullscreenChromeVisible &&
+        _p->playbackBar->height() > 0 && _p->fullscreen->state().fullscreenChromeTimer->isActive(),
         {{"requests", 200}, {"layoutApplications", static_cast<double>(applies)}, {"requestMs", requestMs}});
 
     const QStringList args = QCoreApplication::arguments();
@@ -426,7 +426,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     const bool controlsSaved = grab().save(controlsCapture);
     _hideFullScreenChrome();
     settleFullscreen(180);
-    const bool collapsed = !_p->timeline->isVisible() && !_p->playbackBar->isVisible() && _p->fullscreenCursorHidden;
+    const bool collapsed = !_p->timeline->isVisible() && !_p->playbackBar->isVisible() && _p->fullscreen->state().fullscreenCursorHidden;
     fullscreenKey(target, Qt::Key_Escape);
     settleFullscreen();
     const QString restoredCapture = outputDir.filePath(QStringLiteral("fullscreen_restored.png"));
@@ -438,7 +438,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
     // playback separately: a correct final layout can still conceal a long
     // interval with no painted video during entry/exit.
     {
-        const QSignalBlocker cursorPollBlocker(_p->fullscreenMousePollTimer);
+        const QSignalBlocker cursorPollBlocker(_p->fullscreen->state().fullscreenMousePollTimer);
         const int savedFrame = _p->playbackCtrl->currentFrame();
         const int savedPlayback = _p->playbackCtrl->playbackState();
         const bool savedMute = _p->playbackCtrl->isMuted();
@@ -486,12 +486,12 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
                     }
                     lastPaintMs = now;
                     lastRendered = rendered;
-                    if (entryStartMs >= 0 && isFullScreen() && !_p->fullscreenEntryPending &&
+                    if (entryStartMs >= 0 && isFullScreen() && !_p->fullscreen->state().fullscreenEntryPending &&
                         firstFullscreenPaintMs < 0) firstFullscreenPaintMs = now;
                     paintedFrames.append(QJsonObject{{"elapsedMs", double(now)},
                         {"renderFrameCount", double(rendered)},
                         {"mediaFrame", _p->playbackCtrl->currentFrame()},
-                        {"fullscreen", isFullScreen()}, {"entryPending", _p->fullscreenEntryPending}});
+                        {"fullscreen", isFullScreen()}, {"entryPending", _p->fullscreen->state().fullscreenEntryPending}});
                 });
             };
             settleFullscreen(250);
@@ -544,7 +544,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
              {"measurement", "Completed paintGL invocations and media-frame events on hidden Qt surfaces"}});
     }
     {
-        const QSignalBlocker cursorPollBlocker(_p->fullscreenMousePollTimer);
+        const QSignalBlocker cursorPollBlocker(_p->fullscreen->state().fullscreenMousePollTimer);
         _p->playbackCtrl->pause();
         _p->playbackCtrl->seekToFrame(0);
         _p->playbackCtrl->play();
@@ -646,7 +646,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
         fullscreenKey(target, Qt::Key_Escape);
         settleFullscreen();
         add(QStringLiteral("Fullscreen exit cancels controls animation"), normal() &&
-            _p->fullscreenOverlay && !_p->fullscreenOverlay->isVisible() &&
+            _p->fullscreen->state().fullscreenOverlay && !_p->fullscreen->state().fullscreenOverlay->isVisible() &&
             _p->timeline->parentWidget() == _p->centerSplitter &&
             _p->playbackBar->parentWidget() == _p->centerSplitter);
     }

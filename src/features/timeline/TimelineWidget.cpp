@@ -4,6 +4,7 @@
 #include "media/MediaProbe.h"
 #include "media/ThumbnailService.h"
 #include "playback/api/IPlaybackService.h"
+#include "playback/api/Timecode.h"
 #include "playback/api/PlaybackServiceSignals.h"
 #include "common/jobs/JobSystem.h"
 
@@ -120,7 +121,7 @@ public:
     void updateFrameVisual(int frame, int total, double fpsValue)
     {
         const int nextTotal = std::max(1, total);
-        const double nextFps = fpsValue > 1.0 ? fpsValue : 24.0;
+        const double nextFps = fpsValue > 0.0 ? fpsValue : 24.0;
         if (totalFrames != nextTotal || std::abs(fps - nextFps) > 0.001) {
             totalFrames = nextTotal;
             fps = nextFps;
@@ -288,7 +289,7 @@ private:
         p.setPen(QPen(themeAlpha(border, 150), 1));
         p.drawLine(0, y1 + kMarkerH - 1, w, y1 + kMarkerH - 1);
 
-        const double fpsValue = fps > 1.0 ? fps : 24.0;
+        const double fpsValue = fps > 0.0 ? fps : 24.0;
         const int majorTickCount = std::max(5, std::min(9, w / 120));
         const int majorStepFrames = std::max(1, totalFrames / majorTickCount);
         p.setPen(QPen(themeAlpha(border, 130), 1));
@@ -305,20 +306,11 @@ private:
                 const int mx = fx(mf);
                 p.drawLine(mx, y1 + kMarkerH - 6, mx, y1 + kMarkerH - 1);
             }
-            const int sec = static_cast<int>(f / fpsValue);
-            const int ss = sec % 60;
-            const int mm = (sec / 60) % 60;
-            const int hh = sec / 3600;
-            const int ff = static_cast<int>(f - std::floor(sec * fpsValue));
             p.setPen(text);
             p.drawText(
                 QRect(x - 38, y1 + 2, 76, 13),
                 Qt::AlignHCenter | Qt::AlignTop,
-                QStringLiteral("%1:%2:%3:%4")
-                    .arg(hh, 2, 10, QChar('0'))
-                    .arg(mm, 2, 10, QChar('0'))
-                    .arg(ss, 2, 10, QChar('0'))
-                    .arg(ff, 2, 10, QChar('0')));
+                formatFrameTimecode(f, fpsValue));
             p.setPen(QPen(themeAlpha(border, 120), 1));
         }
 

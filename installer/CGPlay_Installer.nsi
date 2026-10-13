@@ -1,10 +1,10 @@
 !define PRODUCT_NAME "CGPlay"
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.7.15"
+  !define APP_VERSION "1.0.7.16"
 !endif
 !define PRODUCT_VERSION "${APP_VERSION}"
 !ifndef APP_FILE_VERSION
-  !define APP_FILE_VERSION "1.0.7.15"
+  !define APP_FILE_VERSION "1.0.7.16"
 !endif
 !ifndef PACKAGE_MODE
   !define PACKAGE_MODE "full"

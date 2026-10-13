@@ -24,6 +24,9 @@ set(CGPLAY_SOURCES
     ui/app/ApplicationEnhancement.cpp
     ui/app/ApplicationInput.cpp
     ui/app/ApplicationMedia.cpp
+    ui/app/FullscreenController.cpp
+    ui/app/FullscreenController.h
+    ui/app/SubtitleSessionController.h
     ui/app/ApplicationSettings.cpp
     ui/app/ApplicationSubtitles.cpp
     ui/app/ApplicationUiSupport.cpp
@@ -33,6 +36,8 @@ set(CGPLAY_SOURCES
     ui/app/ApplicationRuntimeSupport.cpp
     ui/app/MainWindowAutomation.cpp
     ui/app/MainWindowAutomationFullscreen.cpp
+    ui/app/MainWindowAutomationState.cpp
+    ui/app/MainWindowAutomationCoverage.cpp
     ui/app/MainWindowAutomationMedia.cpp
     ui/app/MainWindowAutomationSettings.cpp
     ui/app/MainWindowAutomationSubtitles.cpp

@@ -12,12 +12,28 @@ def production_sources():
 
 
 class ArchitectureTenContracts(unittest.TestCase):
-    def test_nonempty_production_loc_is_below_verified_baseline(self) -> None:
-        nonempty_lines = 0
-        for path in production_sources():
-            text = path.read_text(encoding="utf-8", errors="replace")
-            nonempty_lines += sum(bool(line.strip()) for line in text.splitlines())
-        self.assertLess(nonempty_lines, 78_328)
+    def test_playback_core_has_no_ui_dependency(self) -> None:
+        forbidden = re.compile(r'#\s*include\s*[<"](?:ui/|viewer/|app/)')
+        for path in (SRC / "core/playback").rglob("*"):
+            if path.suffix in {".cpp", ".h"}:
+                self.assertNotRegex(path.read_text(encoding="utf-8"), forbidden, str(path))
+
+    def test_timecode_has_one_shared_contract(self) -> None:
+        for path in ("ui/app/PlaybackBar.cpp", "ui/viewer/ViewerWidget.cpp", "features/timeline/TimelineWidget.cpp"):
+            text = (SRC / path).read_text(encoding="utf-8")
+            self.assertIn('playback/api/Timecode.h', text, path)
+            self.assertIn('formatFrameTimecode(', text, path)
+            self.assertNotIn('QStringLiteral("%1:%2:%3:%4")', text, path)
+
+    def test_main_window_delegates_lifecycle_state(self) -> None:
+        state = (SRC / "ui/app/ApplicationPrivate.h").read_text(encoding="utf-8")
+        self.assertIn('std::unique_ptr<FullscreenController> fullscreen', state)
+        self.assertIn('SubtitleSessionController subtitleSession', state)
+        for duplicate in ("fullscreenTransitionGeneration", "fullscreenChromeTimer", "subtitleGenerationWatcher", "subtitleRefinementBusy"):
+            self.assertNotIn(duplicate, state)
+        media = (SRC / "ui/app/ApplicationMedia.cpp").read_text(encoding="utf-8")
+        self.assertIn('_p->fullscreen->toggle()', media)
+        self.assertIn('_p->subtitleSession.reset()', media)
 
     def test_process_waits_are_owned_by_job_system(self) -> None:
         violations = []

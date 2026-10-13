@@ -394,6 +394,8 @@ struct PlaybackController::Private
     int     totalStub = 1;
     double  fpsStub   = 24.0;
     int     stateStub = 0; // 0=stop, 1=fwd, 2=rev
+    double speedMultiplier = 1.0;
+    int loopMode = 0;
 
     // In/Out points (-1 = not set)
     int     inPoint  = -1;
@@ -427,6 +429,7 @@ PlaybackController::PlaybackController(
     connect(this, &PlaybackController::fpsChanged, _p->signalProxy, &PlaybackServiceSignals::fpsChanged);
     connect(this, &PlaybackController::cacheUsageChanged, _p->signalProxy, &PlaybackServiceSignals::cacheUsageChanged);
     connect(this, &PlaybackController::playbackStateChanged, _p->signalProxy, &PlaybackServiceSignals::playbackStateChanged);
+    connect(this, &PlaybackController::playbackOptionsChanged, _p->signalProxy, &PlaybackServiceSignals::playbackOptionsChanged);
     connect(this, &PlaybackController::inOutPointsChanged, _p->signalProxy, &PlaybackServiceSignals::inOutPointsChanged);
     connect(this, &PlaybackController::volumeChanged, _p->signalProxy, &PlaybackServiceSignals::volumeChanged);
     connect(this, &PlaybackController::muteChanged, _p->signalProxy, &PlaybackServiceSignals::muteChanged);
@@ -604,12 +607,7 @@ void PlaybackController::openFile(
     }
     ++_p->openGeneration;
     _destroyPlayer();
-    _p->lastReadAheadFrame = -1;
-    _p->lastReadAheadTotal = -1;
-    if (_p->cache) {
-        _p->cache->onCacheInfoChanged(0.0f, 0.0f);
-    }
-    Q_EMIT cacheUsageChanged(0.0f, 0.0f);
+    _resetMediaState();
     _createPlayer(path, sequenceFpsOverride, {}, codecHint);
 }
 
@@ -623,6 +621,17 @@ void PlaybackController::closeFile()
     ++_p->openGeneration;
     _destroyPlayer();
     _p->currentPath.clear();
+    _resetMediaState();
+    if (hadMedia) {
+        Q_EMIT fileClosed();
+    }
+    _updateTimerCadence();
+}
+
+void PlaybackController::_resetMediaState()
+{
+    // Source-local state must be reset for both close and direct replacement.
+    // Volume, playback multiplier and loop mode are session preferences.
     _p->frameStub = 0;
     _p->totalStub = 1;
     _p->fpsStub = 24.0;
@@ -638,10 +647,6 @@ void PlaybackController::closeFile()
     Q_EMIT inOutPointsChanged(-1, -1);
     Q_EMIT currentFrameChanged(0, 1);
     Q_EMIT fpsChanged(24.0);
-    if (hadMedia) {
-        Q_EMIT fileClosed();
-    }
-    _updateTimerCadence();
 }
 
 QString PlaybackController::currentPath() const { return _p->currentPath; }
@@ -743,9 +748,6 @@ void PlaybackController::_createPlayer(
             return false;
         }
 
-        // Set loop mode
-        player->setLoop(tl::Loop::Loop);
-
         _p->player = player;
         player->setVolume(_p->volume);
         player->setMute(_p->muted);
@@ -753,6 +755,7 @@ void PlaybackController::_createPlayer(
             _p->cache->onCacheInfoChanged(0.0f, 0.0f);
         }
         _connectPlayer();
+        _applyPlaybackOptions();
 
         Q_EMIT fileOpened(sourcePath);
         Q_EMIT playerReady(_p->player);
@@ -760,6 +763,7 @@ void PlaybackController::_createPlayer(
         // Report initial info
         Q_EMIT fpsChanged(fps);
         Q_EMIT currentFrameChanged(0, total);
+        Q_EMIT playbackOptionsChanged(_p->speedMultiplier, _p->loopMode);
         _p->fpsStub   = fps;
         _p->totalStub = total;
         _updateTimerCadence();
@@ -971,6 +975,8 @@ bool PlaybackController::isValid() const
 int PlaybackController::currentFrame() const { return _p->frameStub; }
 int PlaybackController::totalFrames()  const { return _p->totalStub; }
 double PlaybackController::fps()       const { return _p->fpsStub;   }
+double PlaybackController::speedMultiplier() const { return _p->speedMultiplier; }
+int PlaybackController::loopMode() const { return _p->loopMode; }
 int PlaybackController::playbackState() const { return _p->stateStub; }
 
 #if CGPLAY_HAS_TLRENDER
@@ -1134,22 +1140,31 @@ void PlaybackController::gotoEnd()
 
 void PlaybackController::setSpeed(double spd)
 {
-#if CGPLAY_HAS_TLRENDER
-    if (_p->player) _p->player->setSpeed(spd);
-#else
-    _p->fpsStub = spd;
-    Q_EMIT fpsChanged(spd);
-#endif
+    if (!std::isfinite(spd) || spd <= 0.0 || _p->fpsStub <= 0.0) return;
+    const double multiplier = spd / _p->fpsStub;
+    if (_p->speedMultiplier == multiplier) return;
+    _p->speedMultiplier = multiplier;
+    _applyPlaybackOptions();
+    Q_EMIT playbackOptionsChanged(_p->speedMultiplier, _p->loopMode);
 }
 
 void PlaybackController::setLoop(int mode)
 {
+    if (mode < 0 || mode > 2 || _p->loopMode == mode) return;
+    _p->loopMode = mode;
+    _applyPlaybackOptions();
+    Q_EMIT playbackOptionsChanged(_p->speedMultiplier, _p->loopMode);
+}
+
+void PlaybackController::_applyPlaybackOptions()
+{
 #if CGPLAY_HAS_TLRENDER
     if (_p->player) {
         tl::Loop l = tl::Loop::Loop;
-        if (mode == 1) l = tl::Loop::Once;
-        else if (mode == 2) l = tl::Loop::PingPong;
+        if (_p->loopMode == 1) l = tl::Loop::Once;
+        else if (_p->loopMode == 2) l = tl::Loop::PingPong;
         _p->player->setLoop(l);
+        _p->player->setSpeed(_p->fpsStub * _p->speedMultiplier);
     }
 #endif
 }

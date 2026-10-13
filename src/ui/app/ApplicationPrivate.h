@@ -2,7 +2,8 @@
 
 #include "Application.h"
 #include "plugins/api/HostExtensionPoints.h"
-#include "services/ai/SubtitleGenerationService.h"
+#include "SubtitleSessionController.h"
+#include "FullscreenController.h"
 
 #include <QPointer>
 #include <QFutureWatcher>
@@ -91,67 +92,12 @@ struct MainWindow::Private
     QPointer<QLabel> generatedSubtitleLabel;
     QAction* translationToggleAction = nullptr;
     bool translationStripVisible = false;
-    bool subtitleGenerationBusy = false;
-    std::shared_ptr<std::atomic_bool> subtitleGenerationCancelRequested;
-    QPointer<QFutureWatcher<SubtitleGenerationResult>> subtitleGenerationWatcher;
-    bool subtitleRefinementBusy = false;
-    std::shared_ptr<std::atomic_bool> subtitleRefinementCancelRequested;
-    QPointer<QFutureWatcher<SubtitleRefinementResult>> subtitleRefinementWatcher;
-    QString subtitleRefinementLastError;
-    QJsonObject subtitleRefinementLastValidation;
-    double subtitleRefinementLastCoverageEndSeconds = 0.0;
-    bool subtitleContinuationAfterRefinementPending = false;
-    double subtitleContinuationAfterRefinementStartSeconds = -1.0;
+    SubtitleSessionController subtitleSession;
     QPointer<QProgressDialog> subtitleGenerationProgress;
     QTimer* generatedSubtitleRefreshTimer = nullptr;
-    QVector<GeneratedSubtitleCue> generatedSubtitleCues;
-    QString generatedSubtitlePath;
-    QString generatedSubtitleMediaFingerprint;
-    QString subtitleGenerationLastError;
-    QString subtitleGenerationActiveTranslatedVttPath;
     QString translationPlaybackMode = QStringLiteral("quick-playback");
-    bool translationPlaybackModeWaited = false;
-    qint64 translationPlaybackModeWaitMs = 0;
-    bool translationPrePlaybackWaitActive = false;
-    bool translationPrePlaybackWaitCanceled = false;
-    bool translationPrePlaybackWaitTimedOut = false;
-    bool translationPrePlaybackWaitDegradedToQuick = false;
-    bool translationPrePlaybackWaitPlaybackAlreadyRunning = false;
-    QString translationPrePlaybackWaitResult;
-    double translationPrePlaybackWaitTargetSeconds = 600.0;
-    double translationPrePlaybackWaitCoverageAheadSeconds = 0.0;
-    double translationPrePlaybackWaitMaxProcessedSeconds = 0.0;
-    bool translationPrePlaybackWaitEnhancementStarted = false;
-    qint64 translationPrePlaybackWaitStartMs = 0;
-    qint64 translationPrePlaybackWaitTimeoutMs = 600000;
     QPointer<QProgressDialog> translationPrePlaybackWaitProgress;
     QTimer* translationPrePlaybackWaitTimer = nullptr;
-    int generatedSubtitleQuickFallbackCueCount = 0;
-    int generatedSubtitleRefinedMatchedCueCount = 0;
-    int generatedSubtitleEnhancedMatchedCueCount = 0;
-    bool generatedSubtitleEnhancedLoaded = false;
-    QString generatedSubtitleEnhancedRejectedReason;
-    bool generatedSubtitleCurrentCueFallbackSafe = true;
-    bool generatedSubtitleRefinedMerged = false;
-    bool generatedSubtitleEnhancedMerged = false;
-    bool highQualityEnhancementBusy = false;
-    QString highQualityEnhancementMediaPath;
-    QString highQualityEnhancementLastReason;
-    QJsonObject highQualityEnhancementLastDiagnostics;
-    QPointer<QFutureWatcher<QJsonObject>> highQualityEnhancementWatcher;
-    std::shared_ptr<std::atomic_bool> highQualityEnhancementCancelRequested;
-    qint64 highQualityVisualPrefetchLastCheckMs = 0;
-    double generatedSubtitleCoverageEndSeconds = 0.0;
-    double generatedSubtitleProcessedEndSeconds = 0.0;
-    QString generatedSubtitleLastText;
-    double generatedSubtitleLastCueStartSeconds = -1.0;
-    double generatedSubtitleLastCueEndSeconds = -1.0;
-    double generatedSubtitleLastShownAtSeconds = -1.0;
-    bool subtitleContinuationScheduled = false;
-    double subtitleContinuationStartSeconds = -1.0;
-    bool subtitleContinuationQueuedWhileBusy = false;
-    double subtitleContinuationQueuedStartSeconds = -1.0;
-    int subtitleContinuationRetryCount = 0;
     QWidget* viewerShell = nullptr;
     QVBoxLayout* viewerShellLayout = nullptr;
 
@@ -216,42 +162,12 @@ struct MainWindow::Private
     QList<int> sidePanelDragStartSizes;
     QPointer<QWidget> sidePanelCursorWidget;
     bool sidePanelDragOverrideCursor = false;
-    bool fullscreenLeft = true;
-    bool fullscreenRight = true;
-    bool fullscreenNav = true;
-    bool fullscreenTopBar = true;
-    bool fullscreenTimeline = true;
-    bool fullscreenPlaybackBar = true;
-    bool fullscreenStatusBar = true;
-    bool fullscreenCompareBar = false;
-    bool fullscreenViewerChrome = true;
-    bool fullscreenAIDock = true;
-    // Tracks the requested fullscreen mode during the native Qt transition.
-    // Windows can update isFullScreen() one event later than the key press.
-    bool fullscreenActive = false;
-    quint64 fullscreenTransitionGeneration = 0;
-    Qt::WindowStates fullscreenWindowState = Qt::WindowNoState;
-    bool fullscreenRestorePending = false;
-    // Do not present intermediate layouts or wake chrome during native entry.
-    bool fullscreenEntryPending = false;
-    bool fullscreenEntryUpdatesSuspended = false;
-    bool fullscreenChromeVisible = false;
-    quint64 fullscreenChromeApplyCount = 0;
-    QWidget* fullscreenOverlay = nullptr;
-    QVariantAnimation* fullscreenOverlayAnimation = nullptr;
-    qreal fullscreenOverlayProgress = 0.0;
-    bool fullscreenCursorHidden = false;
-    QList<int> fullscreenCenterSizes;
-    int fullscreenTimelineHeight = 0;
-    int fullscreenPlaybackBarHeight = 0;
+    std::unique_ptr<FullscreenController> fullscreen;
     bool annoToolsVisible = true;
     bool auxDocksRestoredAfterShow = false;
     bool splitterLayoutRestoredAfterShow = false;
     bool windowStateRestored = false;
     bool generatedSubtitleLayoutQueued = false;
-    QTimer* fullscreenChromeTimer = nullptr;
-    QTimer* fullscreenMousePollTimer = nullptr;
-    QPoint fullscreenLastCursorPos;
 };
 
 } // namespace cgplay

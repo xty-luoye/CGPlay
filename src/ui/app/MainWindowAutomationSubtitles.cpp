@@ -220,7 +220,7 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
 
     if (cancelAfterMs > 0) {
         const bool generationStarted = pumpUntil([this] {
-            return _p->subtitleGenerationBusy;
+            return _p->subtitleSession.state().subtitleGenerationBusy;
         }, 10000);
         if (generationStarted) {
             QThread::msleep(cancelAfterMs);
@@ -230,7 +230,7 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
         }
         const bool closeIgnoredWhileBusy = generationStarted && isVisible();
         const bool cancelFinished = pumpUntil([this] {
-            return !_p->subtitleGenerationBusy;
+            return !_p->subtitleSession.state().subtitleGenerationBusy;
         }, mockWithoutApi ? 10000 : 120000);
         addAssertion(
             QStringLiteral("Subtitle generation started before cancel"),
@@ -254,7 +254,7 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
             { QStringLiteral("started"), generationStarted },
             { QStringLiteral("closeIgnoredWhileBusy"), closeIgnoredWhileBusy },
             { QStringLiteral("finishedAfterCancel"), cancelFinished },
-            { QStringLiteral("busy"), _p->subtitleGenerationBusy },
+            { QStringLiteral("busy"), _p->subtitleSession.state().subtitleGenerationBusy },
             { QStringLiteral("translationButtonChecked"), translationButton ? translationButton->isChecked() : false }
         });
         report.insert(QStringLiteral("subtitle_overlay"), QJsonObject{
@@ -324,7 +324,7 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
     const bool generationFinished = subtitleFileReady && !generatedCues.isEmpty();
     const bool refinedFileReady = mockWithoutApi && generationFinished
         ? pumpUntil([this, refinedVttPath] {
-              return !_p->subtitleRefinementBusy &&
+              return !_p->subtitleSession.state().subtitleRefinementBusy &&
                   QFileInfo::exists(refinedVttPath) &&
                   !SubtitleGenerationService::readSubtitleFile(refinedVttPath).isEmpty();
           }, 10000)
@@ -352,18 +352,18 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
         const qint64 waitTimeoutMs =
             qApp->property("cgplay.subtitleHighQualityPrePlaybackWaitTimeoutMs").toLongLong();
         pumpUntil([this] {
-            return !_p->translationPrePlaybackWaitActive;
+            return !_p->subtitleSession.state().translationPrePlaybackWaitActive;
         }, static_cast<int>(std::min<qint64>(waitTimeoutMs + 3000, 30000)));
     }
     QJsonObject generation{
         { QStringLiteral("success"), generationFinished && !generatedCues.isEmpty() },
         { QStringLiteral("finished"), generationFinished },
-        { QStringLiteral("busy"), _p->subtitleGenerationBusy },
-        { QStringLiteral("refinementBusy"), _p->subtitleRefinementBusy },
-        { QStringLiteral("refinementLastError"), _p->subtitleRefinementLastError },
-        { QStringLiteral("refinementLastValidation"), _p->subtitleRefinementLastValidation },
-        { QStringLiteral("backgroundBusy"), _p->subtitleGenerationBusy },
-        { QStringLiteral("lastError"), _p->subtitleGenerationLastError },
+        { QStringLiteral("busy"), _p->subtitleSession.state().subtitleGenerationBusy },
+        { QStringLiteral("refinementBusy"), _p->subtitleSession.state().subtitleRefinementBusy },
+        { QStringLiteral("refinementLastError"), _p->subtitleSession.state().subtitleRefinementLastError },
+        { QStringLiteral("refinementLastValidation"), _p->subtitleSession.state().subtitleRefinementLastValidation },
+        { QStringLiteral("backgroundBusy"), _p->subtitleSession.state().subtitleGenerationBusy },
+        { QStringLiteral("lastError"), _p->subtitleSession.state().subtitleGenerationLastError },
         { QStringLiteral("sourceSrtPath"), sourceSrtPath },
         { QStringLiteral("translatedSrtPath"), translatedSrtPath },
         { QStringLiteral("translatedVttPath"), translatedVttPath },
@@ -432,7 +432,7 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
             ? static_cast<double>(_p->playbackCtrl->currentFrame()) / _p->playbackCtrl->fps()
             : 0.0;
         auto hasCurrentTranslatedCue = [this, currentSecondsForHqWait] {
-            for (const GeneratedSubtitleCue& cue : _p->generatedSubtitleCues) {
+            for (const GeneratedSubtitleCue& cue : _p->subtitleSession.state().generatedSubtitleCues) {
                 if (!cue.translatedText.trimmed().isEmpty() &&
                     cue.startSeconds <= currentSecondsForHqWait + 0.02 &&
                     cue.endSeconds + 0.02 >= currentSecondsForHqWait) {
@@ -443,15 +443,15 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
         };
         pumpUntil([this, hasCurrentTranslatedCue] {
             return hasCurrentTranslatedCue() ||
-                (!_p->subtitleGenerationBusy && !_p->subtitleContinuationScheduled);
+                (!_p->subtitleSession.state().subtitleGenerationBusy && !_p->subtitleSession.state().subtitleContinuationScheduled);
         }, mockWithoutApi ? 10000 : 120000);
-        if (!_p->highQualityEnhancementBusy &&
+        if (!_p->subtitleSession.state().highQualityEnhancementBusy &&
             (!QFileInfo::exists(enhancedVttPath) ||
              SubtitleGenerationService::readSubtitleFile(enhancedVttPath).isEmpty())) {
             _startCurrentMediaHighQualityEnhancement(QStringLiteral("smoke-current-media-high-quality"));
         }
         pumpUntil([this] {
-            return !_p->highQualityEnhancementBusy;
+            return !_p->subtitleSession.state().highQualityEnhancementBusy;
         }, mockWithoutApi ? 15000 : 180000);
         if (QFileInfo::exists(enhancedVttPath) &&
             !SubtitleGenerationService::readSubtitleFile(enhancedVttPath).isEmpty()) {
@@ -459,9 +459,9 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
             QCoreApplication::processEvents(QEventLoop::AllEvents, 250);
         }
         QCoreApplication::processEvents(QEventLoop::AllEvents, 250);
-        if (_p->highQualityEnhancementBusy) {
+        if (_p->subtitleSession.state().highQualityEnhancementBusy) {
             pumpUntil([this] {
-                return !_p->highQualityEnhancementBusy;
+                return !_p->subtitleSession.state().highQualityEnhancementBusy;
             }, mockWithoutApi ? 15000 : 180000);
             if (QFileInfo::exists(enhancedVttPath) &&
                 !SubtitleGenerationService::readSubtitleFile(enhancedVttPath).isEmpty()) {
@@ -963,7 +963,7 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
                    playbackStrategyDiagnostics.value(QStringLiteral("enhancedCueMatches")).toInt() > 0 &&
                    !playbackStrategyDiagnostics.value(QStringLiteral("wholeTrackReplacement")).toBool() &&
                    playbackStrategyDiagnostics.value(QStringLiteral("currentCueFallbackSafe")).toBool() &&
-                   _p->generatedSubtitlePath.endsWith(QStringLiteral(".zh.vtt")))),
+                   _p->subtitleSession.state().generatedSubtitlePath.endsWith(QStringLiteral(".zh.vtt")))),
             manualOnlineWorker.value(QStringLiteral("attempted")).toBool()
                 ? QStringLiteral("manual online smoke kept quick fallback safe without whole-track enhanced takeover")
                 : ((!QFileInfo::exists(enhancedVttPath) || enhancedCuesAfterScheduler.isEmpty())
@@ -972,8 +972,8 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
                       ? QStringLiteral("enhanced cache merged per cue while quick .zh stayed baseline")
                       : QStringLiteral("enhanced cache was not loaded for manual high-quality display"))),
             QJsonObject{
-                { QStringLiteral("generatedSubtitlePath"), _p->generatedSubtitlePath },
-                { QStringLiteral("cueCount"), _p->generatedSubtitleCues.size() },
+                { QStringLiteral("generatedSubtitlePath"), _p->subtitleSession.state().generatedSubtitlePath },
+                { QStringLiteral("cueCount"), _p->subtitleSession.state().generatedSubtitleCues.size() },
                 { QStringLiteral("strategy"), playbackStrategyDiagnostics }
             });
     } else {
@@ -1166,7 +1166,7 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
             QJsonObject{
                 { QStringLiteral("refinedVttPath"), refinedVttPath },
                 { QStringLiteral("refinedCueCount"), refinedCues.size() },
-                { QStringLiteral("validation"), _p->subtitleRefinementLastValidation }
+                { QStringLiteral("validation"), _p->subtitleSession.state().subtitleRefinementLastValidation }
             });
     }
     addAssertion(
@@ -1198,12 +1198,12 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
     bool overlayVisible = overlayLabel && overlayLabel->isVisible() && !overlayText.isEmpty();
     addAssertion(
         QStringLiteral("Player loads generated subtitle"),
-        !_p->generatedSubtitleCues.isEmpty() && !_p->generatedSubtitlePath.isEmpty(),
-        !_p->generatedSubtitleCues.isEmpty() ? QStringLiteral("generated subtitle track loaded")
+        !_p->subtitleSession.state().generatedSubtitleCues.isEmpty() && !_p->subtitleSession.state().generatedSubtitlePath.isEmpty(),
+        !_p->subtitleSession.state().generatedSubtitleCues.isEmpty() ? QStringLiteral("generated subtitle track loaded")
                                             : QStringLiteral("generated subtitle track not loaded"),
         QJsonObject{
-            { QStringLiteral("path"), _p->generatedSubtitlePath },
-            { QStringLiteral("cueCount"), _p->generatedSubtitleCues.size() }
+            { QStringLiteral("path"), _p->subtitleSession.state().generatedSubtitlePath },
+            { QStringLiteral("cueCount"), _p->subtitleSession.state().generatedSubtitleCues.size() }
         });
     const bool requestedFrameMayHideOverlay = frame > 0 && !generatedCueCoversRequestedFrame;
     addAssertion(
@@ -1250,7 +1250,7 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
             QString rawActiveSourceText;
             QString rawActiveTranslatedText;
             bool rawActiveDisplayable = false;
-            for (const auto& cue : _p->generatedSubtitleCues) {
+            for (const auto& cue : _p->subtitleSession.state().generatedSubtitleCues) {
                 const bool cueAtTime = seconds + 0.02 >= cue.startSeconds &&
                     seconds <= cue.endSeconds + 0.02;
                 const bool displayable = smokeCueHasDisplayableTranslation(cue);
@@ -1287,9 +1287,9 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
                     : QString());
             state.insert(
                 QStringLiteral("rawActiveCueSourceKind"),
-                _p->generatedSubtitlePath.contains(QStringLiteral(".enhanced.zh."), Qt::CaseInsensitive)
+                _p->subtitleSession.state().generatedSubtitlePath.contains(QStringLiteral(".enhanced.zh."), Qt::CaseInsensitive)
                     ? QStringLiteral("enhanced")
-                    : (_p->generatedSubtitlePath.contains(QStringLiteral(".refined.zh."), Qt::CaseInsensitive)
+                    : (_p->subtitleSession.state().generatedSubtitlePath.contains(QStringLiteral(".refined.zh."), Qt::CaseInsensitive)
                         ? QStringLiteral("refined")
                         : QStringLiteral("quick-baseline")));
             state.insert(QStringLiteral("nextCueStartSeconds"), nextStart);
@@ -1308,7 +1308,7 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
             const QJsonObject cueState = cueStateAtSeconds(currentSeconds);
             const bool hasExactCue = cueState.value(QStringLiteral("activeCueStartSeconds")).toDouble(-1.0) >= 0.0;
             const double translatedCoverageAheadSeconds =
-                translatedCoverageEnd(_p->generatedSubtitleCues) - currentSeconds;
+                translatedCoverageEnd(_p->subtitleSession.state().generatedSubtitleCues) - currentSeconds;
             const QJsonObject strategyDiagnostics =
                 _translationPlaybackStrategyDiagnostics(
                     _p->translationPlaybackMode == QStringLiteral("high-quality"));
@@ -1343,16 +1343,16 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
                 { QStringLiteral("overlayVisible"), sampleVisible },
                 { QStringLiteral("overlayText"), sampleText },
                 { QStringLiteral("hasExactCue"), hasExactCue },
-                { QStringLiteral("coverageEndSeconds"), _p->generatedSubtitleCoverageEndSeconds },
-                { QStringLiteral("sourceCoverageEndSeconds"), sourceCoverageEnd(_p->generatedSubtitleCues) },
-                { QStringLiteral("translatedCoverageEndSeconds"), translatedCoverageEnd(_p->generatedSubtitleCues) },
+                { QStringLiteral("coverageEndSeconds"), _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds },
+                { QStringLiteral("sourceCoverageEndSeconds"), sourceCoverageEnd(_p->subtitleSession.state().generatedSubtitleCues) },
+                { QStringLiteral("translatedCoverageEndSeconds"), translatedCoverageEnd(_p->subtitleSession.state().generatedSubtitleCues) },
                 { QStringLiteral("translatedCoverageAheadSeconds"), translatedCoverageAheadSeconds },
-                { QStringLiteral("processedEndSeconds"), _p->generatedSubtitleProcessedEndSeconds },
-                { QStringLiteral("subtitleGenerationBusy"), _p->subtitleGenerationBusy },
-                { QStringLiteral("subtitleContinuationScheduled"), _p->subtitleContinuationScheduled },
-                { QStringLiteral("subtitleContinuationQueuedWhileBusy"), _p->subtitleContinuationQueuedWhileBusy },
-                { QStringLiteral("cueCount"), _p->generatedSubtitleCues.size() },
-                { QStringLiteral("generatedSubtitlePath"), _p->generatedSubtitlePath },
+                { QStringLiteral("processedEndSeconds"), _p->subtitleSession.state().generatedSubtitleProcessedEndSeconds },
+                { QStringLiteral("subtitleGenerationBusy"), _p->subtitleSession.state().subtitleGenerationBusy },
+                { QStringLiteral("subtitleContinuationScheduled"), _p->subtitleSession.state().subtitleContinuationScheduled },
+                { QStringLiteral("subtitleContinuationQueuedWhileBusy"), _p->subtitleSession.state().subtitleContinuationQueuedWhileBusy },
+                { QStringLiteral("cueCount"), _p->subtitleSession.state().generatedSubtitleCues.size() },
+                { QStringLiteral("generatedSubtitlePath"), _p->subtitleSession.state().generatedSubtitlePath },
                 { QStringLiteral("translationPlaybackMode"), _p->translationPlaybackMode },
                 { QStringLiteral("translationPlaybackWaited"),
                   strategyDiagnostics.value(QStringLiteral("waited")).toBool() },
@@ -1370,8 +1370,8 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
                   strategyDiagnostics.value(QStringLiteral("wholeTrackReplacement")).toBool() },
                 { QStringLiteral("currentCueFallbackSafe"),
                   strategyDiagnostics.value(QStringLiteral("currentCueFallbackSafe")).toBool() },
-                { QStringLiteral("loadedQuickBaseline"), _p->generatedSubtitlePath.endsWith(QStringLiteral(".zh.vtt")) ||
-                      _p->generatedSubtitlePath.endsWith(QStringLiteral(".zh.srt")) },
+                { QStringLiteral("loadedQuickBaseline"), _p->subtitleSession.state().generatedSubtitlePath.endsWith(QStringLiteral(".zh.vtt")) ||
+                      _p->subtitleSession.state().generatedSubtitlePath.endsWith(QStringLiteral(".zh.srt")) },
                 { QStringLiteral("refinedLoaded"), strategyDiagnostics.value(QStringLiteral("refinedMerged")).toBool() },
                 { QStringLiteral("enhancedLoaded"), strategyDiagnostics.value(QStringLiteral("enhancedLoaded")).toBool() },
                 { QStringLiteral("enhancedCueMatches"),
@@ -1473,9 +1473,9 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
         !mockWithoutApi &&
         _p->playbackCtrl &&
         mediaOpened &&
-        !_p->generatedSubtitleCues.isEmpty()) {
-        const int initialCueCount = _p->generatedSubtitleCues.size();
-        const double coverageBefore = _p->generatedSubtitleCoverageEndSeconds;
+        !_p->subtitleSession.state().generatedSubtitleCues.isEmpty()) {
+        const int initialCueCount = _p->subtitleSession.state().generatedSubtitleCues.size();
+        const double coverageBefore = _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds;
         const double triggerSeconds = std::max(0.0, coverageBefore - 10.0);
         const int triggerFrame = std::clamp(
             static_cast<int>(triggerSeconds * smokeFps + 0.5),
@@ -1486,20 +1486,20 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
         _updateGeneratedSubtitleForFrame(_p->playbackCtrl->currentFrame());
         const int continuationTimeoutMs = mockWithoutApi ? 10000 : 180000;
         const bool continuationLoadedDuringWait = pumpUntil([this, initialCueCount, coverageBefore] {
-            return !_p->subtitleGenerationBusy &&
-                _p->generatedSubtitleCues.size() > initialCueCount &&
-                _p->generatedSubtitleCoverageEndSeconds > coverageBefore;
+            return !_p->subtitleSession.state().subtitleGenerationBusy &&
+                _p->subtitleSession.state().generatedSubtitleCues.size() > initialCueCount &&
+                _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds > coverageBefore;
         }, continuationTimeoutMs);
         const bool continuationLoaded =
             continuationLoadedDuringWait ||
-            (_p->generatedSubtitleCues.size() > initialCueCount &&
-             _p->generatedSubtitleCoverageEndSeconds > coverageBefore);
+            (_p->subtitleSession.state().generatedSubtitleCues.size() > initialCueCount &&
+             _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds > coverageBefore);
         continuation = QJsonObject{
             { QStringLiteral("initialCueCount"), initialCueCount },
-            { QStringLiteral("finalCueCount"), _p->generatedSubtitleCues.size() },
+            { QStringLiteral("finalCueCount"), _p->subtitleSession.state().generatedSubtitleCues.size() },
             { QStringLiteral("coverageBeforeSeconds"), coverageBefore },
-            { QStringLiteral("coverageAfterSeconds"), _p->generatedSubtitleCoverageEndSeconds },
-            { QStringLiteral("processedAfterSeconds"), _p->generatedSubtitleProcessedEndSeconds },
+            { QStringLiteral("coverageAfterSeconds"), _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds },
+            { QStringLiteral("processedAfterSeconds"), _p->subtitleSession.state().generatedSubtitleProcessedEndSeconds },
             { QStringLiteral("triggerFrame"), triggerFrame },
             { QStringLiteral("triggerSeconds"), triggerSeconds },
             { QStringLiteral("timeoutMs"), continuationTimeoutMs }
@@ -1510,8 +1510,8 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
             continuationLoaded ? QStringLiteral("next subtitle window loaded")
                                : QStringLiteral("next subtitle window was not loaded"),
             continuation);
-        if (continuationLoaded && !_p->generatedSubtitleCues.isEmpty()) {
-            const auto cue = _p->generatedSubtitleCues.last();
+        if (continuationLoaded && !_p->subtitleSession.state().generatedSubtitleCues.isEmpty()) {
+            const auto cue = _p->subtitleSession.state().generatedSubtitleCues.last();
             const int cueFrame = std::clamp(
                 static_cast<int>(cue.startSeconds * smokeFps + 0.5),
                 0,
@@ -1533,8 +1533,8 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
     if (playbackSampleDurationMs <= 0 &&
         _p->playbackCtrl &&
         mediaOpened &&
-        _p->generatedSubtitleCoverageEndSeconds > 0.0) {
-        const double guardSeconds = std::max(0.0, _p->generatedSubtitleCoverageEndSeconds - 4.0);
+        _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds > 0.0) {
+        const double guardSeconds = std::max(0.0, _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds - 4.0);
         const int guardFrame = std::clamp(
             static_cast<int>(guardSeconds * smokeFps + 0.5),
             0,
@@ -1558,7 +1558,7 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
                 { QStringLiteral("guardFrame"), guardFrame },
                 { QStringLiteral("currentFrame"), _p->playbackCtrl->currentFrame() },
                 { QStringLiteral("guardSeconds"), guardSeconds },
-                { QStringLiteral("coverageEndSeconds"), _p->generatedSubtitleCoverageEndSeconds },
+                { QStringLiteral("coverageEndSeconds"), _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds },
                 { QStringLiteral("translationVisible"), _p->playbackBar ? _p->playbackBar->translationVisible() : false },
                 { QStringLiteral("playbackState"), _p->playbackCtrl->playbackState() }
             });
@@ -1568,7 +1568,7 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
     double maxCueGapSeconds = 0.0;
     double maxCueGapStartSeconds = -1.0;
     double maxCueGapEndSeconds = -1.0;
-    QVector<GeneratedSubtitleCue> sortedGeneratedCues = _p->generatedSubtitleCues;
+    QVector<GeneratedSubtitleCue> sortedGeneratedCues = _p->subtitleSession.state().generatedSubtitleCues;
     std::sort(sortedGeneratedCues.begin(), sortedGeneratedCues.end(), [](const GeneratedSubtitleCue& a, const GeneratedSubtitleCue& b) {
         if (a.startSeconds == b.startSeconds) {
             return a.endSeconds < b.endSeconds;
@@ -1585,20 +1585,20 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
     }
 
     report.insert(QStringLiteral("subtitle_overlay"), QJsonObject{
-        { QStringLiteral("path"), _p->generatedSubtitlePath },
-        { QStringLiteral("cueCount"), _p->generatedSubtitleCues.size() },
+        { QStringLiteral("path"), _p->subtitleSession.state().generatedSubtitlePath },
+        { QStringLiteral("cueCount"), _p->subtitleSession.state().generatedSubtitleCues.size() },
         { QStringLiteral("visible"), overlayVisible },
         { QStringLiteral("text"), overlayText },
         { QStringLiteral("translationPlaybackMode"), _p->translationPlaybackMode },
-        { QStringLiteral("quickFallbackCueCount"), _p->generatedSubtitleQuickFallbackCueCount },
-        { QStringLiteral("refinedMerged"), _p->generatedSubtitleRefinedMerged },
-        { QStringLiteral("enhancedMerged"), _p->generatedSubtitleEnhancedMerged },
+        { QStringLiteral("quickFallbackCueCount"), _p->subtitleSession.state().generatedSubtitleQuickFallbackCueCount },
+        { QStringLiteral("refinedMerged"), _p->subtitleSession.state().generatedSubtitleRefinedMerged },
+        { QStringLiteral("enhancedMerged"), _p->subtitleSession.state().generatedSubtitleEnhancedMerged },
         { QStringLiteral("refinedTookOverTrack"), false },
         { QStringLiteral("enhancedTookOverTrack"), false },
-        { QStringLiteral("coverageEndSeconds"), _p->generatedSubtitleCoverageEndSeconds },
-        { QStringLiteral("sourceCoverageEndSeconds"), sourceCoverageEnd(_p->generatedSubtitleCues) },
-        { QStringLiteral("translatedCoverageEndSeconds"), translatedCoverageEnd(_p->generatedSubtitleCues) },
-        { QStringLiteral("processedEndSeconds"), _p->generatedSubtitleProcessedEndSeconds },
+        { QStringLiteral("coverageEndSeconds"), _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds },
+        { QStringLiteral("sourceCoverageEndSeconds"), sourceCoverageEnd(_p->subtitleSession.state().generatedSubtitleCues) },
+        { QStringLiteral("translatedCoverageEndSeconds"), translatedCoverageEnd(_p->subtitleSession.state().generatedSubtitleCues) },
+        { QStringLiteral("processedEndSeconds"), _p->subtitleSession.state().generatedSubtitleProcessedEndSeconds },
         { QStringLiteral("maxCueGapSeconds"), maxCueGapSeconds },
         { QStringLiteral("maxCueGapStartSeconds"), maxCueGapStartSeconds },
         { QStringLiteral("maxCueGapEndSeconds"), maxCueGapEndSeconds },
@@ -2017,8 +2017,8 @@ QJsonObject MainWindow::runSubtitleCacheDisplaySmokeChecks(
               currentMediaHighQuality.value(QStringLiteral("mediaFingerprint")) },
             { QStringLiteral("mediaIdentity"),
               currentMediaHighQuality.value(QStringLiteral("mediaIdentity")) },
-            { QStringLiteral("generatedSubtitlePath"), _p->generatedSubtitlePath },
-            { QStringLiteral("generatedSubtitleMediaFingerprint"), _p->generatedSubtitleMediaFingerprint }
+            { QStringLiteral("generatedSubtitlePath"), _p->subtitleSession.state().generatedSubtitlePath },
+            { QStringLiteral("generatedSubtitleMediaFingerprint"), _p->subtitleSession.state().generatedSubtitleMediaFingerprint }
         };
         frameReports.append(details);
         qInfo() << "[SubtitleCacheDisplaySmoke] Frame done" << targetFrame << overlayVisible << overlayText;
@@ -2363,12 +2363,12 @@ QJsonObject MainWindow::runSubtitleRefinedFallbackSmokeChecks(
     overlayLabel = _p->generatedSubtitleLabel.data();
     const QString freshScenarioText = overlayLabel ? overlayLabel->text().trimmed() : QString();
     const bool freshHoleyFallback = freshScenarioText == QStringLiteral("\u5feb\u901f\u56de\u9000\u76ee\u6807");
-    const bool cueCountPreserved = _p->generatedSubtitleCues.size() == quickCues.size();
+    const bool cueCountPreserved = _p->subtitleSession.state().generatedSubtitleCues.size() == quickCues.size();
     const bool earlyCueEnhanced =
-        !_p->generatedSubtitleCues.isEmpty() &&
-        _p->generatedSubtitleCues.first().translatedText.trimmed() == QStringLiteral("\u65b0\u7cbe\u4fee\u524d\u6bb5");
+        !_p->subtitleSession.state().generatedSubtitleCues.isEmpty() &&
+        _p->subtitleSession.state().generatedSubtitleCues.first().translatedText.trimmed() == QStringLiteral("\u65b0\u7cbe\u4fee\u524d\u6bb5");
     QString activeCueText;
-    for (const auto& cue : _p->generatedSubtitleCues) {
+    for (const auto& cue : _p->subtitleSession.state().generatedSubtitleCues) {
         if (targetSeconds + 0.02 >= cue.startSeconds &&
             targetSeconds <= cue.endSeconds + 0.02) {
             activeCueText = cue.translatedText.trimmed();
@@ -2377,9 +2377,9 @@ QJsonObject MainWindow::runSubtitleRefinedFallbackSmokeChecks(
     }
     const double quickCoverageEnd = quickCues.last().endSeconds;
     const bool coveragePreserved =
-        _p->generatedSubtitleCoverageEndSeconds + 0.01 >= quickCoverageEnd;
+        _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds + 0.01 >= quickCoverageEnd;
     const bool pathIsQuick =
-        QFileInfo(_p->generatedSubtitlePath).absoluteFilePath() ==
+        QFileInfo(_p->subtitleSession.state().generatedSubtitlePath).absoluteFilePath() ==
         QFileInfo(translatedVttPath).absoluteFilePath();
 
     const bool wroteEnhanced = writeSmokeSubtitleVtt(enhancedVttPath, enhancedCues);
@@ -2408,15 +2408,15 @@ QJsonObject MainWindow::runSubtitleRefinedFallbackSmokeChecks(
         enhancedStrategyDiagnostics.value(QStringLiteral("enhancedLoaded")).toBool();
     const int enhancedCueMatches =
         enhancedStrategyDiagnostics.value(QStringLiteral("enhancedCueMatches")).toInt();
-    const bool enhancedCueCountPreserved = _p->generatedSubtitleCues.size() == quickCues.size();
+    const bool enhancedCueCountPreserved = _p->subtitleSession.state().generatedSubtitleCues.size() == quickCues.size();
     const bool enhancedPathIsQuick =
-        QFileInfo(_p->generatedSubtitlePath).absoluteFilePath() ==
+        QFileInfo(_p->subtitleSession.state().generatedSubtitlePath).absoluteFilePath() ==
         QFileInfo(translatedVttPath).absoluteFilePath();
     const bool enhancedCurrentFallback =
         enhancedScenarioText == QStringLiteral("\u5feb\u901f\u56de\u9000\u76ee\u6807");
     const bool enhancedFirstCueMerged =
-        !_p->generatedSubtitleCues.isEmpty() &&
-        _p->generatedSubtitleCues.first().translatedText.trimmed() ==
+        !_p->subtitleSession.state().generatedSubtitleCues.isEmpty() &&
+        _p->subtitleSession.state().generatedSubtitleCues.first().translatedText.trimmed() ==
             QStringLiteral("\u589e\u5f3a\u663e\u793a\u524d\u6bb5");
     const bool enhancedWholeTrackReplacement =
         enhancedStrategyDiagnostics.value(QStringLiteral("wholeTrackReplacement")).toBool();
@@ -2430,27 +2430,27 @@ QJsonObject MainWindow::runSubtitleRefinedFallbackSmokeChecks(
         { QStringLiteral("targetFrame"), targetFrame },
         { QStringLiteral("targetSeconds"), targetSeconds },
         { QStringLiteral("quickCueCount"), quickCues.size() },
-        { QStringLiteral("loadedCueCount"), _p->generatedSubtitleCues.size() },
+        { QStringLiteral("loadedCueCount"), _p->subtitleSession.state().generatedSubtitleCues.size() },
         { QStringLiteral("oldScenarioOverlayText"), oldScenarioText },
         { QStringLiteral("freshHoleyScenarioOverlayText"), freshScenarioText },
         { QStringLiteral("labelVisible"), overlayLabel ? overlayLabel->isVisible() : false },
         { QStringLiteral("playbackBarTranslationVisible"), _p->playbackBar ? _p->playbackBar->translationVisible() : false },
         { QStringLiteral("translationStripVisible"), _p->translationStripVisible },
         { QStringLiteral("activeCueText"), activeCueText },
-        { QStringLiteral("firstLoadedCueText"), _p->generatedSubtitleCues.isEmpty()
+        { QStringLiteral("firstLoadedCueText"), _p->subtitleSession.state().generatedSubtitleCues.isEmpty()
               ? QString()
-              : _p->generatedSubtitleCues.first().translatedText.trimmed() },
-        { QStringLiteral("generatedSubtitlePath"), _p->generatedSubtitlePath },
-        { QStringLiteral("coverageEndSeconds"), _p->generatedSubtitleCoverageEndSeconds },
+              : _p->subtitleSession.state().generatedSubtitleCues.first().translatedText.trimmed() },
+        { QStringLiteral("generatedSubtitlePath"), _p->subtitleSession.state().generatedSubtitlePath },
+        { QStringLiteral("coverageEndSeconds"), _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds },
         { QStringLiteral("quickCoverageEndSeconds"), quickCoverageEnd },
         { QStringLiteral("earlyCueEnhanced"), earlyCueEnhanced }
     });
     report.insert(QStringLiteral("enhancedDisplay"), QJsonObject{
         { QStringLiteral("enhancedVttPath"), enhancedVttPath },
         { QStringLiteral("wroteEnhanced"), wroteEnhanced },
-        { QStringLiteral("loadedCueCount"), _p->generatedSubtitleCues.size() },
+        { QStringLiteral("loadedCueCount"), _p->subtitleSession.state().generatedSubtitleCues.size() },
         { QStringLiteral("overlayText"), enhancedScenarioText },
-        { QStringLiteral("generatedSubtitlePath"), _p->generatedSubtitlePath },
+        { QStringLiteral("generatedSubtitlePath"), _p->subtitleSession.state().generatedSubtitlePath },
         { QStringLiteral("enhancedLoaded"), enhancedLoaded },
         { QStringLiteral("enhancedCueMatches"), enhancedCueMatches },
         { QStringLiteral("quickFallbackCueCount"),
@@ -2501,9 +2501,9 @@ QJsonObject MainWindow::runSubtitleRefinedFallbackSmokeChecks(
             ? QStringLiteral("display coverage and path stayed quick-baseline")
             : QStringLiteral("coverage/path moved away from quick baseline"),
         QJsonObject{
-            { QStringLiteral("coverageEndSeconds"), _p->generatedSubtitleCoverageEndSeconds },
+            { QStringLiteral("coverageEndSeconds"), _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds },
             { QStringLiteral("quickCoverageEndSeconds"), quickCoverageEnd },
-            { QStringLiteral("path"), _p->generatedSubtitlePath }
+            { QStringLiteral("path"), _p->subtitleSession.state().generatedSubtitlePath }
         });
     addAssertion(
         QStringLiteral("Enhanced display merges only matching cue"),

@@ -41,6 +41,7 @@ private:
     QToolButton* _makeBtn(const QString& text, const QString& tip, int size, bool accent=false);
     void _updateTranslationModeButton();
     void _onStateChanged(int state);
+    void _refreshPlaybackOptions();
     void _queueVolumeValue(int sliderValue);
     void _applyPendingVolume();
     void _updateResponsiveLayout();
@@ -63,7 +64,6 @@ private:
     QTimer*      _volumeApplyTimer = nullptr;
     int          _pendingVolumeValue = 1000;
     QString      _translationMode = QStringLiteral("quick-playback");
-    double       _speedMultiplier = 1.0;
 };
 
 } // namespace cgplay

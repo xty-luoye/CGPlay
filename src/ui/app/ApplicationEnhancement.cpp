@@ -1197,7 +1197,7 @@ TranslationEnhancementScheduleRequest MainWindow::_buildTranslationEnhancementRe
     const QString modeId = TranslationPlaybackStrategy::normalizeModeId(_p->translationPlaybackMode);
     const double currentSeconds = generatedSubtitleCurrentSeconds(_p->playbackCtrl.get());
     const double quickCoverageEndSeconds =
-        generatedSubtitleTranslatedMaxEndSeconds(_p->generatedSubtitleCues);
+        generatedSubtitleTranslatedMaxEndSeconds(_p->subtitleSession.state().generatedSubtitleCues);
     const bool playbackAlreadyRunning =
         _p->playbackCtrl && _p->playbackCtrl->playbackState() != 0;
     const QString quickTranslatedVttPath = _p->currentPath.trimmed().isEmpty()
@@ -1258,18 +1258,18 @@ TranslationEnhancementScheduleRequest MainWindow::_buildTranslationEnhancementRe
     schedulerRequest.executeWorkers = executeWorkers;
     schedulerRequest.allowManualWhilePlayback = allowWhilePlayback;
     schedulerRequest.playbackAlreadyRunning = playbackAlreadyRunning;
-    schedulerRequest.quickGenerationBusy = _p->subtitleGenerationBusy;
-    schedulerRequest.continuationScheduled = _p->subtitleContinuationScheduled;
-    schedulerRequest.highQualityWaitActive = _p->translationPrePlaybackWaitActive;
+    schedulerRequest.quickGenerationBusy = _p->subtitleSession.state().subtitleGenerationBusy;
+    schedulerRequest.continuationScheduled = _p->subtitleSession.state().subtitleContinuationScheduled;
+    schedulerRequest.highQualityWaitActive = _p->subtitleSession.state().translationPrePlaybackWaitActive;
     schedulerRequest.currentSeconds = currentSeconds;
     schedulerRequest.quickCoverageEndSeconds = quickCoverageEndSeconds;
     schedulerRequest.highQualityTargetCoverageSeconds =
-        _p->translationPrePlaybackWaitTargetSeconds > 0.0
-        ? _p->translationPrePlaybackWaitTargetSeconds
+        _p->subtitleSession.state().translationPrePlaybackWaitTargetSeconds > 0.0
+        ? _p->subtitleSession.state().translationPrePlaybackWaitTargetSeconds
         : kHighQualityPrePlaybackTargetSeconds;
-    schedulerRequest.quickCueCount = _p->generatedSubtitleCues.size();
+    schedulerRequest.quickCueCount = _p->subtitleSession.state().generatedSubtitleCues.size();
     schedulerRequest.lowConfidenceQuickCueCount =
-        std::count_if(_p->generatedSubtitleCues.cbegin(), _p->generatedSubtitleCues.cend(), [](const GeneratedSubtitleCue& cue) {
+        std::count_if(_p->subtitleSession.state().generatedSubtitleCues.cbegin(), _p->subtitleSession.state().generatedSubtitleCues.cend(), [](const GeneratedSubtitleCue& cue) {
             const QString reason = cue.qualityReason.toLower();
             return cue.lowConfidence ||
                 reason.contains(QStringLiteral("english")) ||
@@ -1279,10 +1279,10 @@ TranslationEnhancementScheduleRequest MainWindow::_buildTranslationEnhancementRe
                 reason.contains(QStringLiteral("source-mismatch"));
         });
     schedulerRequest.lowConfidenceQuickCueRatio =
-        _p->generatedSubtitleCues.isEmpty()
+        _p->subtitleSession.state().generatedSubtitleCues.isEmpty()
         ? 0.0
         : static_cast<double>(schedulerRequest.lowConfidenceQuickCueCount) /
-              static_cast<double>(_p->generatedSubtitleCues.size());
+              static_cast<double>(_p->subtitleSession.state().generatedSubtitleCues.size());
     schedulerRequest.onlineMockMode =
         qApp && qApp->property("cgplay.subtitleGenerationMockOnlineWorker").toBool();
     schedulerRequest.ocrMockMode =
@@ -1695,16 +1695,16 @@ void MainWindow::_scheduleHighQualityVisualContinuation()
         !_p->playbackBar->translationVisible() ||
         !_p->playbackCtrl ||
         _p->currentPath.trimmed().isEmpty() ||
-        _p->translationPrePlaybackWaitActive ||
-        _p->highQualityEnhancementBusy) {
+        _p->subtitleSession.state().translationPrePlaybackWaitActive ||
+        _p->subtitleSession.state().highQualityEnhancementBusy) {
         return;
     }
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-    if (nowMs - _p->highQualityVisualPrefetchLastCheckMs <
+    if (nowMs - _p->subtitleSession.state().highQualityVisualPrefetchLastCheckMs <
         kHighQualityVisualPrefetchCheckIntervalMs) {
         return;
     }
-    _p->highQualityVisualPrefetchLastCheckMs = nowMs;
+    _p->subtitleSession.state().highQualityVisualPrefetchLastCheckMs = nowMs;
 
     const TranslationEnhancementScheduleRequest request =
         _buildTranslationEnhancementRequest(true, false, true);
@@ -1743,12 +1743,12 @@ void MainWindow::_startCurrentMediaHighQualityEnhancement(
         _p->currentPath.trimmed().isEmpty() ||
         (_p->playbackCtrl &&
          _p->playbackCtrl->playbackState() != 0 &&
-         _p->translationPrePlaybackWaitDegradedToQuick) ||
-        _p->highQualityEnhancementBusy) {
+         _p->subtitleSession.state().translationPrePlaybackWaitDegradedToQuick) ||
+        _p->subtitleSession.state().highQualityEnhancementBusy) {
         return;
     }
-    if (_p->translationPrePlaybackWaitActive &&
-        _p->translationPrePlaybackWaitEnhancementStarted) {
+    if (_p->subtitleSession.state().translationPrePlaybackWaitActive &&
+        _p->subtitleSession.state().translationPrePlaybackWaitEnhancementStarted) {
         return;
     }
     const QString mediaPath = QFileInfo(_p->currentPath).absoluteFilePath();
@@ -1757,7 +1757,7 @@ void MainWindow::_startCurrentMediaHighQualityEnhancement(
     const auto applyPreferredWindow = [this, preferredStartSeconds, reason](
         TranslationEnhancementScheduleRequest request) {
         const bool playbackBackgroundRequest =
-            !_p->translationPrePlaybackWaitActive &&
+            !_p->subtitleSession.state().translationPrePlaybackWaitActive &&
             _p->playbackCtrl &&
             _p->playbackCtrl->playbackState() != 0;
         const bool continuousBackgroundRequest =
@@ -1811,7 +1811,7 @@ void MainWindow::_startCurrentMediaHighQualityEnhancement(
         currentMedia.value(QStringLiteral("needReason")).toString(QStringLiteral("enhanced-missing"));
     const bool continuousBackgroundRequest =
         reason == QStringLiteral("continuous-visual-prefetch") ||
-        (!_p->translationPrePlaybackWaitActive &&
+        (!_p->subtitleSession.state().translationPrePlaybackWaitActive &&
          _p->playbackCtrl &&
          _p->playbackCtrl->playbackState() != 0);
     const QJsonObject visualScan = readGeneratedSubtitleProgress(
@@ -1824,9 +1824,9 @@ void MainWindow::_startCurrentMediaHighQualityEnhancement(
     const bool visualScanCoversTarget =
         visualScanEndSeconds >= 0.0 &&
         visualScanEndSeconds + 0.5 >= visualTargetEndSeconds;
-    _p->highQualityEnhancementLastDiagnostics = diagnostics;
-    _p->highQualityEnhancementMediaPath = mediaPath;
-    _p->highQualityEnhancementLastReason = needReason;
+    _p->subtitleSession.state().highQualityEnhancementLastDiagnostics = diagnostics;
+    _p->subtitleSession.state().highQualityEnhancementMediaPath = mediaPath;
+    _p->subtitleSession.state().highQualityEnhancementLastReason = needReason;
     if (currentMedia.value(QStringLiteral("enhancedReadyForCurrentMedia")).toBool() &&
         (!continuousBackgroundRequest || visualScanCoversTarget)) {
         _loadGeneratedSubtitleTrack();
@@ -1840,12 +1840,12 @@ void MainWindow::_startCurrentMediaHighQualityEnhancement(
     TranslationEnhancementScheduleRequest request = applyPreferredWindow(
         _buildTranslationEnhancementRequest(true, true, true));
     request.cancelRequested = std::make_shared<std::atomic_bool>(false);
-    _p->highQualityEnhancementCancelRequested = request.cancelRequested;
-    _p->highQualityEnhancementBusy = true;
-    if (_p->translationPrePlaybackWaitActive) {
-        _p->translationPrePlaybackWaitEnhancementStarted = true;
+    _p->subtitleSession.state().highQualityEnhancementCancelRequested = request.cancelRequested;
+    _p->subtitleSession.state().highQualityEnhancementBusy = true;
+    if (_p->subtitleSession.state().translationPrePlaybackWaitActive) {
+        _p->subtitleSession.state().translationPrePlaybackWaitEnhancementStarted = true;
     }
-    _p->highQualityEnhancementLastReason = reason.trimmed().isEmpty() ? needReason : reason;
+    _p->subtitleSession.state().highQualityEnhancementLastReason = reason.trimmed().isEmpty() ? needReason : reason;
     if (statusBar()) {
         statusBar()->showMessage(QString::fromUtf8(u8"高质量增强正在后台处理当前媒体；播放继续，失败会回退 quick。"), 4000);
     }
@@ -1854,7 +1854,7 @@ void MainWindow::_startCurrentMediaHighQualityEnhancement(
         return scheduler.evaluate(request);
     });
     auto* watcher = new QFutureWatcher<QJsonObject>(this);
-    _p->highQualityEnhancementWatcher = watcher;
+    _p->subtitleSession.state().highQualityEnhancementWatcher = watcher;
     connect(watcher, &QFutureWatcher<QJsonObject>::finished, this, [this,
                                                                     watcherPtr = QPointer<QFutureWatcher<QJsonObject>>(watcher),
                                                                     mediaPath,
@@ -1866,11 +1866,11 @@ void MainWindow::_startCurrentMediaHighQualityEnhancement(
         const QJsonObject result = watcherPtr->result();
         watcherPtr->deleteLater();
         const bool watcherIsCurrent =
-            _p->highQualityEnhancementWatcher.data() == watcherPtr.data();
+            _p->subtitleSession.state().highQualityEnhancementWatcher.data() == watcherPtr.data();
         if (watcherIsCurrent) {
-            _p->highQualityEnhancementBusy = false;
-            _p->highQualityEnhancementWatcher.clear();
-            _p->highQualityEnhancementCancelRequested.reset();
+            _p->subtitleSession.state().highQualityEnhancementBusy = false;
+            _p->subtitleSession.state().highQualityEnhancementWatcher.clear();
+            _p->subtitleSession.state().highQualityEnhancementCancelRequested.reset();
         }
         const QString currentMediaPath = QFileInfo(_p->currentPath).absoluteFilePath();
         const QString currentMediaFingerprint =
@@ -1903,8 +1903,8 @@ void MainWindow::_startCurrentMediaHighQualityEnhancement(
             }
             return;
         }
-        _p->highQualityEnhancementLastDiagnostics = result;
-        _p->highQualityEnhancementMediaPath = mediaPath;
+        _p->subtitleSession.state().highQualityEnhancementLastDiagnostics = result;
+        _p->subtitleSession.state().highQualityEnhancementMediaPath = mediaPath;
         if (qApp) {
             qApp->setProperty(
                 "cgplay.currentMediaHighQualityEnhancement",
@@ -1948,7 +1948,8 @@ void MainWindow::_startCurrentMediaHighQualityEnhancement(
                 !refreshAlreadyTried &&
                 qApp) {
                 qApp->setProperty(refreshProperty.toUtf8().constData(), mediaPath);
-                QTimer::singleShot(0, this, [this]() {
+                QTimer::singleShot(0, this, [this, mediaGenerationId]() {
+                    if (mediaGenerationId != _p->mediaGenerationId) return;
                     _startCurrentMediaHighQualityEnhancement(QStringLiteral("high-quality-refresh-after-quick-baseline-growth"));
                 });
             }
@@ -1965,16 +1966,16 @@ QJsonObject MainWindow::_translationPlaybackStrategyDiagnostics(bool explicitlyR
     TranslationEnhancementScheduler enhancementScheduler;
     const QString modeId = TranslationPlaybackStrategy::normalizeModeId(_p->translationPlaybackMode);
     const QString enhancedRejectedReason =
-        (!_p->generatedSubtitleEnhancedLoaded &&
+        (!_p->subtitleSession.state().generatedSubtitleEnhancedLoaded &&
          modeId != TranslationPlaybackStrategy::highQualityModeId() &&
-         _p->generatedSubtitleEnhancedRejectedReason.trimmed().isEmpty())
+         _p->subtitleSession.state().generatedSubtitleEnhancedRejectedReason.trimmed().isEmpty())
         ? QStringLiteral("disabled-in-quick-playback")
-        : _p->generatedSubtitleEnhancedRejectedReason;
+        : _p->subtitleSession.state().generatedSubtitleEnhancedRejectedReason;
     const double currentSeconds = generatedSubtitleCurrentSeconds(_p->playbackCtrl.get());
     const double quickCoverageEndSeconds =
-        generatedSubtitleTranslatedMaxEndSeconds(_p->generatedSubtitleCues);
+        generatedSubtitleTranslatedMaxEndSeconds(_p->subtitleSession.state().generatedSubtitleCues);
     const bool hasEnhancement =
-        _p->generatedSubtitleRefinedMerged || _p->generatedSubtitleEnhancedMerged;
+        _p->subtitleSession.state().generatedSubtitleRefinedMerged || _p->subtitleSession.state().generatedSubtitleEnhancedMerged;
     const double enhancedCoverageEndSeconds = hasEnhancement ? quickCoverageEndSeconds : 0.0;
     const bool playbackAlreadyRunning =
         _p->playbackCtrl && _p->playbackCtrl->playbackState() != 0;
@@ -1988,14 +1989,14 @@ QJsonObject MainWindow::_translationPlaybackStrategyDiagnostics(bool explicitlyR
     const QJsonObject enhancementSchedulerDiagnostics =
         enhancementScheduler.evaluate(_buildTranslationEnhancementRequest(explicitlyRequested, false, true));
     const bool lastHqResultMatchesCurrent =
-        !_p->highQualityEnhancementLastDiagnostics.isEmpty() &&
-        QFileInfo(_p->highQualityEnhancementMediaPath).absoluteFilePath() ==
+        !_p->subtitleSession.state().highQualityEnhancementLastDiagnostics.isEmpty() &&
+        QFileInfo(_p->subtitleSession.state().highQualityEnhancementMediaPath).absoluteFilePath() ==
             QFileInfo(_p->currentPath).absoluteFilePath();
     const QJsonObject evaluatedCurrentMediaHighQuality =
         enhancementSchedulerDiagnostics.value(QStringLiteral("currentMediaHighQuality")).toObject();
     const QJsonObject lastCurrentMediaHighQuality =
         lastHqResultMatchesCurrent
-        ? _p->highQualityEnhancementLastDiagnostics.value(QStringLiteral("currentMediaHighQuality")).toObject()
+        ? _p->subtitleSession.state().highQualityEnhancementLastDiagnostics.value(QStringLiteral("currentMediaHighQuality")).toObject()
         : QJsonObject{};
     const QJsonObject currentMediaHighQuality =
         !evaluatedCurrentMediaHighQuality.isEmpty()
@@ -2003,17 +2004,17 @@ QJsonObject MainWindow::_translationPlaybackStrategyDiagnostics(bool explicitlyR
         : lastCurrentMediaHighQuality;
     const QString lastActiveSource =
         lastHqResultMatchesCurrent
-        ? _p->highQualityEnhancementLastDiagnostics.value(QStringLiteral("activeSource")).toString()
+        ? _p->subtitleSession.state().highQualityEnhancementLastDiagnostics.value(QStringLiteral("activeSource")).toString()
         : QString();
     const QString displayActiveSource =
-        _p->generatedSubtitleEnhancedLoaded && !lastActiveSource.trimmed().isEmpty()
+        _p->subtitleSession.state().generatedSubtitleEnhancedLoaded && !lastActiveSource.trimmed().isEmpty()
         ? lastActiveSource
         : enhancementSchedulerDiagnostics.value(QStringLiteral("activeSource")).toString();
     const QString displayFallbackReason =
-        _p->generatedSubtitleEnhancedLoaded
-        ? _p->generatedSubtitleEnhancedRejectedReason
+        _p->subtitleSession.state().generatedSubtitleEnhancedLoaded
+        ? _p->subtitleSession.state().generatedSubtitleEnhancedRejectedReason
         : (lastHqResultMatchesCurrent
-              ? _p->highQualityEnhancementLastDiagnostics.value(QStringLiteral("fallbackReason")).toString(
+              ? _p->subtitleSession.state().highQualityEnhancementLastDiagnostics.value(QStringLiteral("fallbackReason")).toString(
                     currentMediaHighQuality.value(QStringLiteral("fallbackReason")).toString())
               : enhancementSchedulerDiagnostics.value(QStringLiteral("fallbackReason")).toString());
     return QJsonObject{
@@ -2023,44 +2024,44 @@ QJsonObject MainWindow::_translationPlaybackStrategyDiagnostics(bool explicitlyR
         { QStringLiteral("decision"), decision },
         { QStringLiteral("enhancementScheduler"), enhancementSchedulerDiagnostics },
         { QStringLiteral("currentMediaHighQuality"), currentMediaHighQuality },
-        { QStringLiteral("currentMediaHighQualityEnhancementBusy"), _p->highQualityEnhancementBusy },
+        { QStringLiteral("currentMediaHighQualityEnhancementBusy"), _p->subtitleSession.state().highQualityEnhancementBusy },
         { QStringLiteral("currentMediaHighQualityLastResult"),
-          lastHqResultMatchesCurrent ? _p->highQualityEnhancementLastDiagnostics : QJsonObject{} },
+          lastHqResultMatchesCurrent ? _p->subtitleSession.state().highQualityEnhancementLastDiagnostics : QJsonObject{} },
         { QStringLiteral("activeMode"), enhancementSchedulerDiagnostics.value(QStringLiteral("activeMode")).toString(modeId) },
         { QStringLiteral("activeSource"), displayActiveSource },
         { QStringLiteral("enhancementAttempted"),
           lastHqResultMatchesCurrent
-              ? _p->highQualityEnhancementLastDiagnostics.value(QStringLiteral("enhancementAttempted")).toBool()
+              ? _p->subtitleSession.state().highQualityEnhancementLastDiagnostics.value(QStringLiteral("enhancementAttempted")).toBool()
               : enhancementSchedulerDiagnostics.value(QStringLiteral("enhancementAttempted")).toBool() },
         { QStringLiteral("enhancementSucceeded"),
-          _p->generatedSubtitleEnhancedLoaded ||
+          _p->subtitleSession.state().generatedSubtitleEnhancedLoaded ||
               (lastHqResultMatchesCurrent &&
-               _p->highQualityEnhancementLastDiagnostics.value(QStringLiteral("enhancementSucceeded")).toBool()) },
+               _p->subtitleSession.state().highQualityEnhancementLastDiagnostics.value(QStringLiteral("enhancementSucceeded")).toBool()) },
         { QStringLiteral("fallbackReason"), displayFallbackReason },
         { QStringLiteral("changedCueCount"),
           lastHqResultMatchesCurrent
-              ? _p->highQualityEnhancementLastDiagnostics.value(QStringLiteral("changedCueCount")).toInt()
+              ? _p->subtitleSession.state().highQualityEnhancementLastDiagnostics.value(QStringLiteral("changedCueCount")).toInt()
               : enhancementSchedulerDiagnostics.value(QStringLiteral("changedCueCount")).toInt() },
         { QStringLiteral("providerConfigState"), enhancementSchedulerDiagnostics.value(QStringLiteral("providerConfigState")).toObject() },
-        { QStringLiteral("waited"), _p->translationPlaybackModeWaited },
-        { QStringLiteral("waitMs"), static_cast<double>(_p->translationPlaybackModeWaitMs) },
-        { QStringLiteral("prePlaybackWaitActive"), _p->translationPrePlaybackWaitActive },
-        { QStringLiteral("prePlaybackWaitResult"), _p->translationPrePlaybackWaitResult },
-        { QStringLiteral("prePlaybackWaitCanceled"), _p->translationPrePlaybackWaitCanceled },
-        { QStringLiteral("prePlaybackWaitTimedOut"), _p->translationPrePlaybackWaitTimedOut },
-        { QStringLiteral("prePlaybackWaitDegradedToQuick"), _p->translationPrePlaybackWaitDegradedToQuick },
+        { QStringLiteral("waited"), _p->subtitleSession.state().translationPlaybackModeWaited },
+        { QStringLiteral("waitMs"), static_cast<double>(_p->subtitleSession.state().translationPlaybackModeWaitMs) },
+        { QStringLiteral("prePlaybackWaitActive"), _p->subtitleSession.state().translationPrePlaybackWaitActive },
+        { QStringLiteral("prePlaybackWaitResult"), _p->subtitleSession.state().translationPrePlaybackWaitResult },
+        { QStringLiteral("prePlaybackWaitCanceled"), _p->subtitleSession.state().translationPrePlaybackWaitCanceled },
+        { QStringLiteral("prePlaybackWaitTimedOut"), _p->subtitleSession.state().translationPrePlaybackWaitTimedOut },
+        { QStringLiteral("prePlaybackWaitDegradedToQuick"), _p->subtitleSession.state().translationPrePlaybackWaitDegradedToQuick },
         { QStringLiteral("prePlaybackWaitCancelable"), true },
-        { QStringLiteral("prePlaybackWaitTargetSeconds"), _p->translationPrePlaybackWaitTargetSeconds },
+        { QStringLiteral("prePlaybackWaitTargetSeconds"), _p->subtitleSession.state().translationPrePlaybackWaitTargetSeconds },
         { QStringLiteral("prePlaybackWaitCoverageAheadSeconds"),
-          _p->translationPrePlaybackWaitCoverageAheadSeconds },
+          _p->subtitleSession.state().translationPrePlaybackWaitCoverageAheadSeconds },
         { QStringLiteral("prePlaybackWaitTimeoutMs"),
-          static_cast<double>(_p->translationPrePlaybackWaitTimeoutMs) },
+          static_cast<double>(_p->subtitleSession.state().translationPrePlaybackWaitTimeoutMs) },
         { QStringLiteral("prePlaybackWaitPlaybackAlreadyRunning"),
-          _p->translationPrePlaybackWaitPlaybackAlreadyRunning },
+          _p->subtitleSession.state().translationPrePlaybackWaitPlaybackAlreadyRunning },
         { QStringLiteral("hqCoverageSeconds"),
           currentMediaHighQuality.value(QStringLiteral("hqCoverageSeconds")).toDouble() },
         { QStringLiteral("targetCoverageSeconds"),
-          _p->translationPrePlaybackWaitTargetSeconds },
+          _p->subtitleSession.state().translationPrePlaybackWaitTargetSeconds },
         { QStringLiteral("activeHqSource"),
           currentMediaHighQuality.value(QStringLiteral("activeHqSource")).toString(displayActiveSource) },
         { QStringLiteral("hqTranslatedCueCount"),
@@ -2071,18 +2072,18 @@ QJsonObject MainWindow::_translationPlaybackStrategyDiagnostics(bool explicitlyR
           currentMediaHighQuality.value(QStringLiteral("repairAttemptCount")).toInt() },
         { QStringLiteral("qualityScore"),
           currentMediaHighQuality.value(QStringLiteral("qualityScore")).toVariant().toString() },
-        { QStringLiteral("quickFallbackCueCount"), _p->generatedSubtitleQuickFallbackCueCount },
-        { QStringLiteral("refinedMatchedCueCount"), _p->generatedSubtitleRefinedMatchedCueCount },
-        { QStringLiteral("enhancedMatchedCueCount"), _p->generatedSubtitleEnhancedMatchedCueCount },
-        { QStringLiteral("enhancedLoaded"), _p->generatedSubtitleEnhancedLoaded },
-        { QStringLiteral("enhancedCueMatches"), _p->generatedSubtitleEnhancedMatchedCueCount },
+        { QStringLiteral("quickFallbackCueCount"), _p->subtitleSession.state().generatedSubtitleQuickFallbackCueCount },
+        { QStringLiteral("refinedMatchedCueCount"), _p->subtitleSession.state().generatedSubtitleRefinedMatchedCueCount },
+        { QStringLiteral("enhancedMatchedCueCount"), _p->subtitleSession.state().generatedSubtitleEnhancedMatchedCueCount },
+        { QStringLiteral("enhancedLoaded"), _p->subtitleSession.state().generatedSubtitleEnhancedLoaded },
+        { QStringLiteral("enhancedCueMatches"), _p->subtitleSession.state().generatedSubtitleEnhancedMatchedCueCount },
         { QStringLiteral("enhancedRejectedReason"), enhancedRejectedReason },
-        { QStringLiteral("refinedMerged"), _p->generatedSubtitleRefinedMerged },
-        { QStringLiteral("enhancedMerged"), _p->generatedSubtitleEnhancedMerged },
+        { QStringLiteral("refinedMerged"), _p->subtitleSession.state().generatedSubtitleRefinedMerged },
+        { QStringLiteral("enhancedMerged"), _p->subtitleSession.state().generatedSubtitleEnhancedMerged },
         { QStringLiteral("refinedTookOverTrack"), false },
         { QStringLiteral("enhancedTookOverTrack"), false },
         { QStringLiteral("wholeTrackReplacement"), false },
-        { QStringLiteral("currentCueFallbackSafe"), _p->generatedSubtitleCurrentCueFallbackSafe },
+        { QStringLiteral("currentCueFallbackSafe"), _p->subtitleSession.state().generatedSubtitleCurrentCueFallbackSafe },
         { QStringLiteral("quickBaselineIsSourceOfTruth"), true },
         { QStringLiteral("playbackPausedForMode"), false },
         { QStringLiteral("quickPathBehaviorChanged"), false }
@@ -2106,7 +2107,7 @@ QJsonObject MainWindow::_translationGuardReportDiagnostics(
     int sourceOnlyCueCount = 0;
     bool hasExactTranslatedCue = false;
     const double currentSeconds = generatedSubtitleCurrentSeconds(_p->playbackCtrl.get());
-    for (const auto& cue : _p->generatedSubtitleCues) {
+    for (const auto& cue : _p->subtitleSession.state().generatedSubtitleCues) {
         const bool hasSource = !cue.sourceText.trimmed().isEmpty();
         const bool hasTranslation = generatedSubtitleCueHasDisplayableTranslation(cue);
         if (hasTranslation) {
@@ -2124,7 +2125,7 @@ QJsonObject MainWindow::_translationGuardReportDiagnostics(
     auto* overlayLabel = findChild<QLabel*>(QStringLiteral("GeneratedSubtitleOverlayLabel"));
     TranslationGuardSnapshot snapshot;
     snapshot.mediaPath = _p->currentPath;
-    snapshot.generatedSubtitlePath = _p->generatedSubtitlePath;
+    snapshot.generatedSubtitlePath = _p->subtitleSession.state().generatedSubtitlePath;
     snapshot.translatedVttPath = _p->currentPath.trimmed().isEmpty()
         ? QString()
         : SubtitleGenerationService::defaultTranslatedVttPath(_p->currentPath, QStringLiteral("zh-Hans"));
@@ -2139,32 +2140,32 @@ QJsonObject MainWindow::_translationGuardReportDiagnostics(
         : SubtitleGenerationService::defaultLowConfidenceRepairVttPath(_p->currentPath, QStringLiteral("zh-Hans"));
     snapshot.playbackMode = _p->translationPlaybackMode;
     snapshot.currentSeconds = currentSeconds;
-    snapshot.sourceCoverageEndSeconds = generatedSubtitleMaxEndSeconds(_p->generatedSubtitleCues);
-    snapshot.translatedCoverageEndSeconds = generatedSubtitleTranslatedMaxEndSeconds(_p->generatedSubtitleCues);
-    snapshot.displayCoverageEndSeconds = _p->generatedSubtitleCoverageEndSeconds;
-    snapshot.processedEndSeconds = _p->generatedSubtitleProcessedEndSeconds;
-    snapshot.sourceCueCount = _p->generatedSubtitleCues.size();
+    snapshot.sourceCoverageEndSeconds = generatedSubtitleMaxEndSeconds(_p->subtitleSession.state().generatedSubtitleCues);
+    snapshot.translatedCoverageEndSeconds = generatedSubtitleTranslatedMaxEndSeconds(_p->subtitleSession.state().generatedSubtitleCues);
+    snapshot.displayCoverageEndSeconds = _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds;
+    snapshot.processedEndSeconds = _p->subtitleSession.state().generatedSubtitleProcessedEndSeconds;
+    snapshot.sourceCueCount = _p->subtitleSession.state().generatedSubtitleCues.size();
     snapshot.translatedCueCount = translatedCueCount;
     snapshot.sourceOnlyCueCount = sourceOnlyCueCount;
-    snapshot.quickFallbackCueCount = _p->generatedSubtitleQuickFallbackCueCount;
-    snapshot.refinedMatchedCueCount = _p->generatedSubtitleRefinedMatchedCueCount;
-    snapshot.enhancedMatchedCueCount = _p->generatedSubtitleEnhancedMatchedCueCount;
-    snapshot.enhancedLoaded = _p->generatedSubtitleEnhancedLoaded;
+    snapshot.quickFallbackCueCount = _p->subtitleSession.state().generatedSubtitleQuickFallbackCueCount;
+    snapshot.refinedMatchedCueCount = _p->subtitleSession.state().generatedSubtitleRefinedMatchedCueCount;
+    snapshot.enhancedMatchedCueCount = _p->subtitleSession.state().generatedSubtitleEnhancedMatchedCueCount;
+    snapshot.enhancedLoaded = _p->subtitleSession.state().generatedSubtitleEnhancedLoaded;
     snapshot.enhancedRejectedReason =
-        (!_p->generatedSubtitleEnhancedLoaded &&
+        (!_p->subtitleSession.state().generatedSubtitleEnhancedLoaded &&
          _p->translationPlaybackMode != TranslationPlaybackStrategy::highQualityModeId() &&
-         _p->generatedSubtitleEnhancedRejectedReason.trimmed().isEmpty())
+         _p->subtitleSession.state().generatedSubtitleEnhancedRejectedReason.trimmed().isEmpty())
         ? QStringLiteral("disabled-in-quick-playback")
-        : _p->generatedSubtitleEnhancedRejectedReason;
-    snapshot.currentCueFallbackSafe = _p->generatedSubtitleCurrentCueFallbackSafe;
-    snapshot.generatedSubtitleBusy = _p->subtitleGenerationBusy;
-    snapshot.continuationScheduled = _p->subtitleContinuationScheduled;
-    snapshot.continuationQueuedWhileBusy = _p->subtitleContinuationQueuedWhileBusy;
+        : _p->subtitleSession.state().generatedSubtitleEnhancedRejectedReason;
+    snapshot.currentCueFallbackSafe = _p->subtitleSession.state().generatedSubtitleCurrentCueFallbackSafe;
+    snapshot.generatedSubtitleBusy = _p->subtitleSession.state().subtitleGenerationBusy;
+    snapshot.continuationScheduled = _p->subtitleSession.state().subtitleContinuationScheduled;
+    snapshot.continuationQueuedWhileBusy = _p->subtitleSession.state().subtitleContinuationQueuedWhileBusy;
     snapshot.hasExactTranslatedCue = hasExactTranslatedCue;
     snapshot.overlayVisible = overlayLabel && overlayLabel->isVisible();
     snapshot.overlayText = overlayLabel ? overlayLabel->text().trimmed() : QString();
-    snapshot.refinedMerged = _p->generatedSubtitleRefinedMerged;
-    snapshot.enhancedMerged = _p->generatedSubtitleEnhancedMerged;
+    snapshot.refinedMerged = _p->subtitleSession.state().generatedSubtitleRefinedMerged;
+    snapshot.enhancedMerged = _p->subtitleSession.state().generatedSubtitleEnhancedMerged;
     snapshot.refinedWholeTrackTakeover = false;
     snapshot.enhancedWholeTrackTakeover = false;
     snapshot.serviceDiagnostics = resolvedServiceDiagnostics;
@@ -2236,18 +2237,18 @@ void MainWindow::_onPlaybackTranslationToggled(bool visible)
             false,
             true,
             true);
-        _p->subtitleContinuationScheduled = false;
-        _p->subtitleContinuationStartSeconds = -1.0;
-        _p->subtitleContinuationQueuedWhileBusy = false;
-        _p->subtitleContinuationQueuedStartSeconds = -1.0;
+        _p->subtitleSession.state().subtitleContinuationScheduled = false;
+        _p->subtitleSession.state().subtitleContinuationStartSeconds = -1.0;
+        _p->subtitleSession.state().subtitleContinuationQueuedWhileBusy = false;
+        _p->subtitleSession.state().subtitleContinuationQueuedStartSeconds = -1.0;
         _setTranslationStripVisible(false, false);
         if (_p->generatedSubtitleLabel) {
             _p->generatedSubtitleLabel->hide();
         }
-        _p->generatedSubtitleLastText.clear();
-        _p->generatedSubtitleLastCueStartSeconds = -1.0;
-        _p->generatedSubtitleLastCueEndSeconds = -1.0;
-        _p->generatedSubtitleLastShownAtSeconds = -1.0;
+        _p->subtitleSession.state().generatedSubtitleLastText.clear();
+        _p->subtitleSession.state().generatedSubtitleLastCueStartSeconds = -1.0;
+        _p->subtitleSession.state().generatedSubtitleLastCueEndSeconds = -1.0;
+        _p->subtitleSession.state().generatedSubtitleLastShownAtSeconds = -1.0;
         if (_p->generatedSubtitleRefreshTimer) {
             _p->generatedSubtitleRefreshTimer->stop();
         }
@@ -2272,10 +2273,10 @@ void MainWindow::_onPlaybackTranslationToggled(bool visible)
     if (_p->windowSettings) {
         _p->windowSettings->setValue(QStringLiteral("ai/subtitles/playbackMode"), _p->translationPlaybackMode);
     }
-    if (_p->generatedSubtitleCues.isEmpty()) {
+    if (_p->subtitleSession.state().generatedSubtitleCues.isEmpty()) {
         _loadGeneratedSubtitleTrack();
     }
-    if (!_p->generatedSubtitleCues.isEmpty()) {
+    if (!_p->subtitleSession.state().generatedSubtitleCues.isEmpty()) {
         if (_p->translationPlaybackMode == TranslationPlaybackStrategy::highQualityModeId()) {
             _startCurrentMediaHighQualityEnhancement(QStringLiteral("toggle-visible-current-media"));
         }
@@ -2285,7 +2286,7 @@ void MainWindow::_onPlaybackTranslationToggled(bool visible)
             : 0.0;
         QString unusableReason;
         if (!generatedSubtitleTrackUsable(
-                _p->generatedSubtitleCues,
+                _p->subtitleSession.state().generatedSubtitleCues,
                 currentSeconds,
                 _p->playbackCtrl && _p->playbackCtrl->totalFrames() > 0
                     ? _p->playbackCtrl->totalFrames() / fps
@@ -2295,19 +2296,19 @@ void MainWindow::_onPlaybackTranslationToggled(bool visible)
             qInfo() << "[SubtitleGeneration] Cached subtitles do not cover current playback time; regenerating current window"
                     << "current=" << currentSeconds
                     << "reason=" << unusableReason
-                    << "cueCount=" << _p->generatedSubtitleCues.size()
+                    << "cueCount=" << _p->subtitleSession.state().generatedSubtitleCues.size()
                     << "translatedCoverageEnd="
-                    << generatedSubtitleTranslatedMaxEndSeconds(_p->generatedSubtitleCues)
-                    << "sourceCoverageEnd=" << generatedSubtitleMaxEndSeconds(_p->generatedSubtitleCues);
-            _p->generatedSubtitleCues.clear();
-            _p->generatedSubtitlePath.clear();
-            _p->generatedSubtitleMediaFingerprint.clear();
-            _p->generatedSubtitleCoverageEndSeconds = 0.0;
-            _p->generatedSubtitleProcessedEndSeconds = 0.0;
-            _p->generatedSubtitleLastText.clear();
-            _p->generatedSubtitleLastCueStartSeconds = -1.0;
-            _p->generatedSubtitleLastCueEndSeconds = -1.0;
-            _p->generatedSubtitleLastShownAtSeconds = -1.0;
+                    << generatedSubtitleTranslatedMaxEndSeconds(_p->subtitleSession.state().generatedSubtitleCues)
+                    << "sourceCoverageEnd=" << generatedSubtitleMaxEndSeconds(_p->subtitleSession.state().generatedSubtitleCues);
+            _p->subtitleSession.state().generatedSubtitleCues.clear();
+            _p->subtitleSession.state().generatedSubtitlePath.clear();
+            _p->subtitleSession.state().generatedSubtitleMediaFingerprint.clear();
+            _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds = 0.0;
+            _p->subtitleSession.state().generatedSubtitleProcessedEndSeconds = 0.0;
+            _p->subtitleSession.state().generatedSubtitleLastText.clear();
+            _p->subtitleSession.state().generatedSubtitleLastCueStartSeconds = -1.0;
+            _p->subtitleSession.state().generatedSubtitleLastCueEndSeconds = -1.0;
+            _p->subtitleSession.state().generatedSubtitleLastShownAtSeconds = -1.0;
             _generateSubtitlesForCurrentMedia(currentSeconds, false);
             return;
         }
@@ -2325,13 +2326,13 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
         }
         return;
     }
-    if (_p->subtitleGenerationBusy) {
+    if (_p->subtitleSession.state().subtitleGenerationBusy) {
         return;
     }
-    _p->subtitleContinuationScheduled = false;
-    _p->subtitleContinuationStartSeconds = -1.0;
-    _p->subtitleContinuationQueuedWhileBusy = false;
-    _p->subtitleContinuationQueuedStartSeconds = -1.0;
+    _p->subtitleSession.state().subtitleContinuationScheduled = false;
+    _p->subtitleSession.state().subtitleContinuationStartSeconds = -1.0;
+    _p->subtitleSession.state().subtitleContinuationQueuedWhileBusy = false;
+    _p->subtitleSession.state().subtitleContinuationQueuedStartSeconds = -1.0;
 
     auto* providerManager = ServiceLocator::getService<IAIProviderManager>();
     if (!providerManager) {
@@ -2341,21 +2342,21 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
         return;
     }
 
-    _p->subtitleGenerationBusy = true;
-    _p->subtitleGenerationLastError.clear();
+    _p->subtitleSession.state().subtitleGenerationBusy = true;
+    _p->subtitleSession.state().subtitleGenerationLastError.clear();
     if (!background) {
-        _p->translationPlaybackModeWaited = false;
-        _p->translationPlaybackModeWaitMs = 0;
-        _p->translationPrePlaybackWaitResult.clear();
-        _p->translationPrePlaybackWaitTimedOut = false;
-        _p->translationPrePlaybackWaitCanceled = false;
-        _p->translationPrePlaybackWaitDegradedToQuick = false;
-        _p->translationPrePlaybackWaitPlaybackAlreadyRunning = false;
-        _p->generatedSubtitleQuickFallbackCueCount = 0;
-        _p->generatedSubtitleRefinedMatchedCueCount = 0;
-        _p->generatedSubtitleEnhancedMatchedCueCount = 0;
-        _p->generatedSubtitleRefinedMerged = false;
-        _p->generatedSubtitleEnhancedMerged = false;
+        _p->subtitleSession.state().translationPlaybackModeWaited = false;
+        _p->subtitleSession.state().translationPlaybackModeWaitMs = 0;
+        _p->subtitleSession.state().translationPrePlaybackWaitResult.clear();
+        _p->subtitleSession.state().translationPrePlaybackWaitTimedOut = false;
+        _p->subtitleSession.state().translationPrePlaybackWaitCanceled = false;
+        _p->subtitleSession.state().translationPrePlaybackWaitDegradedToQuick = false;
+        _p->subtitleSession.state().translationPrePlaybackWaitPlaybackAlreadyRunning = false;
+        _p->subtitleSession.state().generatedSubtitleQuickFallbackCueCount = 0;
+        _p->subtitleSession.state().generatedSubtitleRefinedMatchedCueCount = 0;
+        _p->subtitleSession.state().generatedSubtitleEnhancedMatchedCueCount = 0;
+        _p->subtitleSession.state().generatedSubtitleRefinedMerged = false;
+        _p->subtitleSession.state().generatedSubtitleEnhancedMerged = false;
         if (_p->translationPlaybackMode == TranslationPlaybackStrategy::highQualityModeId()) {
             _startHighQualityPrePlaybackWait();
         }
@@ -2368,8 +2369,8 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
             if (!_p->playbackBar || !_p->playbackBar->translationVisible() || _p->currentPath.trimmed().isEmpty()) {
                 return;
             }
-            const QString partialPath = !_p->subtitleGenerationActiveTranslatedVttPath.trimmed().isEmpty()
-                ? _p->subtitleGenerationActiveTranslatedVttPath
+            const QString partialPath = !_p->subtitleSession.state().subtitleGenerationActiveTranslatedVttPath.trimmed().isEmpty()
+                ? _p->subtitleSession.state().subtitleGenerationActiveTranslatedVttPath
                 : SubtitleGenerationService::defaultTranslatedVttPath(
                     _p->currentPath,
                     QStringLiteral("zh-Hans"));
@@ -2388,18 +2389,18 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
                            << partialMismatchReason;
                 return;
             }
-            mergeGeneratedSubtitleCues(&_p->generatedSubtitleCues, partialCues);
-            if (_p->generatedSubtitleCues.isEmpty()) {
+            mergeGeneratedSubtitleCues(&_p->subtitleSession.state().generatedSubtitleCues, partialCues);
+            if (_p->subtitleSession.state().generatedSubtitleCues.isEmpty()) {
                 return;
             }
-            _p->generatedSubtitlePath = QFileInfo(partialPath).absoluteFilePath();
-            _p->generatedSubtitleMediaFingerprint =
+            _p->subtitleSession.state().generatedSubtitlePath = QFileInfo(partialPath).absoluteFilePath();
+            _p->subtitleSession.state().generatedSubtitleMediaFingerprint =
                 SubtitleGenerationService::mediaFingerprint(_p->currentPath);
-            _p->generatedSubtitleCoverageEndSeconds =
-                generatedSubtitleTranslatedMaxEndSeconds(_p->generatedSubtitleCues);
-            _p->generatedSubtitleProcessedEndSeconds = std::max(
-                _p->generatedSubtitleProcessedEndSeconds,
-                _p->generatedSubtitleCoverageEndSeconds);
+            _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds =
+                generatedSubtitleTranslatedMaxEndSeconds(_p->subtitleSession.state().generatedSubtitleCues);
+            _p->subtitleSession.state().generatedSubtitleProcessedEndSeconds = std::max(
+                _p->subtitleSession.state().generatedSubtitleProcessedEndSeconds,
+                _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds);
             const QString finalTranslatedSrtPath = SubtitleGenerationService::defaultTranslatedSrtPath(
                 _p->currentPath,
                 QStringLiteral("zh-Hans"));
@@ -2409,7 +2410,7 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
             writeGeneratedTranslatedSubtitleSidecars(
                 finalTranslatedSrtPath,
                 finalTranslatedVttPath,
-                _p->generatedSubtitleCues,
+                _p->subtitleSession.state().generatedSubtitleCues,
                 QStringLiteral("partial-refresh"));
             writeGeneratedSubtitleMediaIdentitySidecars(
                 { finalTranslatedSrtPath, finalTranslatedVttPath },
@@ -2421,7 +2422,7 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
         });
     }
     _p->generatedSubtitleRefreshTimer->start();
-    if (_p->generatedSubtitleLabel && (!background || _p->generatedSubtitleCues.isEmpty())) {
+    if (_p->generatedSubtitleLabel && (!background || _p->subtitleSession.state().generatedSubtitleCues.isEmpty())) {
         _p->generatedSubtitleLabel->hide();
         _p->generatedSubtitleLabel->clear();
     }
@@ -2465,12 +2466,12 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
                 .arg(QCoreApplication::applicationPid())
                 .arg(QDateTime::currentMSecsSinceEpoch()));
     }
-    _p->subtitleGenerationActiveTranslatedVttPath = SubtitleGenerationService::defaultTranslatedVttPath(
+    _p->subtitleSession.state().subtitleGenerationActiveTranslatedVttPath = SubtitleGenerationService::defaultTranslatedVttPath(
         request.mediaPath,
         request.targetLanguage,
         request.outputDirectory);
     request.cancelRequested = std::make_shared<std::atomic_bool>(false);
-    _p->subtitleGenerationCancelRequested = request.cancelRequested;
+    _p->subtitleSession.state().subtitleGenerationCancelRequested = request.cancelRequested;
     if (_p->playbackCtrl) {
         const double fps = _p->playbackCtrl->fps() > 0.0 ? _p->playbackCtrl->fps() : 24.0;
         const double currentSeconds = std::max(0, _p->playbackCtrl->currentFrame()) / fps;
@@ -2486,7 +2487,7 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
         if (background) {
             request.priorityStartSeconds = std::max(
                 request.startSeconds,
-                generatedSubtitleTranslatedMaxEndSeconds(_p->generatedSubtitleCues));
+                generatedSubtitleTranslatedMaxEndSeconds(_p->subtitleSession.state().generatedSubtitleCues));
         }
     }
     if (request.mockWithoutApi && _p->playbackCtrl) {
@@ -2502,7 +2503,7 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
         return service.generate(request);
     });
     auto* watcher = new QFutureWatcher<SubtitleGenerationResult>(this);
-    _p->subtitleGenerationWatcher = watcher;
+    _p->subtitleSession.state().subtitleGenerationWatcher = watcher;
     _p->subtitleGenerationProgress = progressDlg;
     const quint64 requestedMediaGenerationId = _p->mediaGenerationId;
     const QString requestedMediaPath = QFileInfo(request.mediaPath).absoluteFilePath();
@@ -2551,16 +2552,16 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
             requestedMediaPath != currentMediaPath ||
             requestedMediaFingerprint != currentMediaFingerprint;
         const bool watcherIsCurrent =
-            _p->subtitleGenerationWatcher.data() == watcherPtr.data();
+            _p->subtitleSession.state().subtitleGenerationWatcher.data() == watcherPtr.data();
         if (watcherIsCurrent) {
-            _p->subtitleGenerationBusy = false;
-            _p->subtitleGenerationCancelRequested.reset();
-            _p->subtitleGenerationWatcher.clear();
+            _p->subtitleSession.state().subtitleGenerationBusy = false;
+            _p->subtitleSession.state().subtitleGenerationCancelRequested.reset();
+            _p->subtitleSession.state().subtitleGenerationWatcher.clear();
             _p->subtitleGenerationProgress.clear();
             if (_p->generatedSubtitleRefreshTimer) {
                 _p->generatedSubtitleRefreshTimer->stop();
             }
-            _p->subtitleGenerationActiveTranslatedVttPath.clear();
+            _p->subtitleSession.state().subtitleGenerationActiveTranslatedVttPath.clear();
         }
         watcherPtr->deleteLater();
         if (progressPtr) {
@@ -2597,46 +2598,46 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
 
         if (!result.success) {
             const bool rateLimited = subtitleGenerationErrorLooksRateLimited(result.errorMessage);
-            bool hasExistingSubtitles = !_p->generatedSubtitleCues.isEmpty();
+            bool hasExistingSubtitles = !_p->subtitleSession.state().generatedSubtitleCues.isEmpty();
             if (background && !result.translatedVttPath.trimmed().isEmpty()) {
                 const QVector<GeneratedSubtitleCue> partialCues =
                     SubtitleGenerationService::readSubtitleFile(result.translatedVttPath);
                 if (!partialCues.isEmpty()) {
-                    mergeGeneratedSubtitleCues(&_p->generatedSubtitleCues, partialCues);
-                    hasExistingSubtitles = !_p->generatedSubtitleCues.isEmpty();
+                    mergeGeneratedSubtitleCues(&_p->subtitleSession.state().generatedSubtitleCues, partialCues);
+                    hasExistingSubtitles = !_p->subtitleSession.state().generatedSubtitleCues.isEmpty();
                     if (hasExistingSubtitles) {
                         writeGeneratedTranslatedSubtitleSidecars(
                             finalTranslatedSrtPath,
                             finalTranslatedVttPath,
-                            _p->generatedSubtitleCues,
+                            _p->subtitleSession.state().generatedSubtitleCues,
                             QStringLiteral("background-failure-partial"));
                         writeGeneratedSubtitleMediaIdentitySidecars(
                             { finalTranslatedSrtPath, finalTranslatedVttPath },
                             _p->currentPath,
                             0.0,
                             QStringLiteral("background-failure-partial"));
-                        _p->generatedSubtitlePath = QFileInfo(finalTranslatedVttPath).absoluteFilePath();
-                        _p->generatedSubtitleMediaFingerprint =
+                        _p->subtitleSession.state().generatedSubtitlePath = QFileInfo(finalTranslatedVttPath).absoluteFilePath();
+                        _p->subtitleSession.state().generatedSubtitleMediaFingerprint =
                             SubtitleGenerationService::mediaFingerprint(_p->currentPath);
-                        _p->generatedSubtitleCoverageEndSeconds =
-                            generatedSubtitleTranslatedMaxEndSeconds(_p->generatedSubtitleCues);
-                        _p->generatedSubtitleProcessedEndSeconds = std::max(
-                            _p->generatedSubtitleProcessedEndSeconds,
-                            _p->generatedSubtitleCoverageEndSeconds);
+                        _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds =
+                            generatedSubtitleTranslatedMaxEndSeconds(_p->subtitleSession.state().generatedSubtitleCues);
+                        _p->subtitleSession.state().generatedSubtitleProcessedEndSeconds = std::max(
+                            _p->subtitleSession.state().generatedSubtitleProcessedEndSeconds,
+                            _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds);
                         if (_p->playbackBar) {
                             _p->playbackBar->setTranslationVisible(true);
                         }
                         _updateGeneratedSubtitleForFrame(_p->playbackCtrl ? _p->playbackCtrl->currentFrame() : 0);
                         qInfo() << "[SubtitleGeneration] Merged partial subtitles from failed background continuation"
                                 << "partialCueCount=" << partialCues.size()
-                                << "translatedCoverageEnd=" << _p->generatedSubtitleCoverageEndSeconds
-                                << "sourceCoverageEnd=" << generatedSubtitleMaxEndSeconds(_p->generatedSubtitleCues)
+                                << "translatedCoverageEnd=" << _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds
+                                << "sourceCoverageEnd=" << generatedSubtitleMaxEndSeconds(_p->subtitleSession.state().generatedSubtitleCues)
                                 << "error=" << result.errorMessage;
                     }
                 }
             }
             if (!background || !hasExistingSubtitles) {
-                _p->subtitleGenerationLastError = result.errorMessage.trimmed();
+                _p->subtitleSession.state().subtitleGenerationLastError = result.errorMessage.trimmed();
             }
             if (!hasExistingSubtitles) {
                 if (_p->playbackBar) {
@@ -2666,7 +2667,7 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
                     hasExistingSubtitles &&
                     _p->playbackBar &&
                     _p->playbackBar->translationVisible() &&
-                    _p->subtitleContinuationRetryCount < 4;
+                    _p->subtitleSession.state().subtitleContinuationRetryCount < 4;
                 if (statusBar()) {
                     statusBar()->showMessage(
                         rateLimited
@@ -2679,12 +2680,13 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
                 if ((rateLimited || canRetryBackground) && _p->playbackBar && _p->playbackBar->translationVisible()) {
                     const int retryDelayMs = rateLimited
                         ? 25000
-                        : std::min(45000, 7000 + _p->subtitleContinuationRetryCount * 9000);
-                    _p->subtitleContinuationRetryCount += 1;
-                    QTimer::singleShot(retryDelayMs, this, [this, requestedStartSeconds]() {
+                        : std::min(45000, 7000 + _p->subtitleSession.state().subtitleContinuationRetryCount * 9000);
+                    _p->subtitleSession.state().subtitleContinuationRetryCount += 1;
+                    QTimer::singleShot(retryDelayMs, this, [this, requestedStartSeconds, requestedMediaGenerationId]() {
+                        if (requestedMediaGenerationId != _p->mediaGenerationId) return;
                         if (_p->playbackBar &&
                             _p->playbackBar->translationVisible() &&
-                            !_p->subtitleGenerationBusy) {
+                            !_p->subtitleSession.state().subtitleGenerationBusy) {
                             _generateSubtitlesForCurrentMedia(requestedStartSeconds, true);
                         }
                     });
@@ -2700,8 +2702,8 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
             return;
         }
 
-        _p->subtitleGenerationLastError.clear();
-        _p->subtitleContinuationRetryCount = 0;
+        _p->subtitleSession.state().subtitleGenerationLastError.clear();
+        _p->subtitleSession.state().subtitleContinuationRetryCount = 0;
         _setTranslationStripVisible(false, false);
         if (_p->playbackBar) {
             _p->playbackBar->setTranslationVisible(true);
@@ -2711,18 +2713,18 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
             qApp->setProperty("cgplay.subtitleGenerationSmokeContinuationDone", true);
         }
         if (background) {
-            mergeGeneratedSubtitleCues(&_p->generatedSubtitleCues, result.cues);
+            mergeGeneratedSubtitleCues(&_p->subtitleSession.state().generatedSubtitleCues, result.cues);
         } else {
-            _p->generatedSubtitleCues = result.cues;
-            for (auto& cue : _p->generatedSubtitleCues) {
+            _p->subtitleSession.state().generatedSubtitleCues = result.cues;
+            for (auto& cue : _p->subtitleSession.state().generatedSubtitleCues) {
                 repairGeneratedSubtitleCueText(&cue);
             }
         }
-        if (!_p->generatedSubtitleCues.isEmpty()) {
-            writeGeneratedSubtitleTrack(finalSourceSrtPath, _p->generatedSubtitleCues, false, false);
-            writeGeneratedSubtitleTrack(finalSourceVttPath, _p->generatedSubtitleCues, false, true);
-            writeGeneratedSubtitleTrack(finalTranslatedSrtPath, _p->generatedSubtitleCues, true, false);
-            writeGeneratedSubtitleTrack(finalTranslatedVttPath, _p->generatedSubtitleCues, true, true);
+        if (!_p->subtitleSession.state().generatedSubtitleCues.isEmpty()) {
+            writeGeneratedSubtitleTrack(finalSourceSrtPath, _p->subtitleSession.state().generatedSubtitleCues, false, false);
+            writeGeneratedSubtitleTrack(finalSourceVttPath, _p->subtitleSession.state().generatedSubtitleCues, false, true);
+            writeGeneratedSubtitleTrack(finalTranslatedSrtPath, _p->subtitleSession.state().generatedSubtitleCues, true, false);
+            writeGeneratedSubtitleTrack(finalTranslatedVttPath, _p->subtitleSession.state().generatedSubtitleCues, true, true);
             writeGeneratedSubtitleMediaIdentitySidecars(
                 { finalSourceSrtPath, finalSourceVttPath, finalTranslatedSrtPath, finalTranslatedVttPath },
                 _p->currentPath,
@@ -2731,29 +2733,29 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
             if (requestedMockWithoutApi) {
                 _scheduleGeneratedSubtitleRefinement(
                     _p->currentPath,
-                    _p->generatedSubtitleCues,
+                    _p->subtitleSession.state().generatedSubtitleCues,
                     true);
             }
         }
-        _p->generatedSubtitleCoverageEndSeconds =
-            generatedSubtitleTranslatedMaxEndSeconds(_p->generatedSubtitleCues);
+        _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds =
+            generatedSubtitleTranslatedMaxEndSeconds(_p->subtitleSession.state().generatedSubtitleCues);
         _updateHighQualityPrePlaybackWait(background
             ? QStringLiteral("background-finished")
             : QStringLiteral("initial-finished"));
-        if (!_p->generatedSubtitleRefinedMerged && !_p->generatedSubtitleEnhancedMerged) {
-            _p->generatedSubtitleQuickFallbackCueCount = _p->generatedSubtitleCues.size();
+        if (!_p->subtitleSession.state().generatedSubtitleRefinedMerged && !_p->subtitleSession.state().generatedSubtitleEnhancedMerged) {
+            _p->subtitleSession.state().generatedSubtitleQuickFallbackCueCount = _p->subtitleSession.state().generatedSubtitleCues.size();
         }
-        _p->generatedSubtitleProcessedEndSeconds = std::max(
-            _p->generatedSubtitleProcessedEndSeconds,
+        _p->subtitleSession.state().generatedSubtitleProcessedEndSeconds = std::max(
+            _p->subtitleSession.state().generatedSubtitleProcessedEndSeconds,
             result.sourceCoverageEndSeconds > 0.0
                 ? result.sourceCoverageEndSeconds
                 : (result.processedEndSeconds > 0.0
                     ? result.processedEndSeconds
                     : requestedStartSeconds + requestedDurationSeconds));
-        _p->generatedSubtitlePath = QFileInfo(finalTranslatedVttPath).absoluteFilePath();
-        _p->generatedSubtitleMediaFingerprint =
+        _p->subtitleSession.state().generatedSubtitlePath = QFileInfo(finalTranslatedVttPath).absoluteFilePath();
+        _p->subtitleSession.state().generatedSubtitleMediaFingerprint =
             SubtitleGenerationService::mediaFingerprint(_p->currentPath);
-        if (_p->generatedSubtitleCues.isEmpty()) {
+        if (_p->subtitleSession.state().generatedSubtitleCues.isEmpty()) {
             _loadGeneratedSubtitleTrack();
         } else {
             _publishTranslationPlaybackStrategyDiagnostics(
@@ -2767,53 +2769,53 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
         }
         if (statusBar()) {
             statusBar()->showMessage(
-                QStringLiteral("字幕已生成：%1 条").arg(_p->generatedSubtitleCues.size()),
+                QStringLiteral("字幕已生成：%1 条").arg(_p->subtitleSession.state().generatedSubtitleCues.size()),
                 4000);
         }
         if (_p->playbackBar && _p->playbackBar->translationVisible()) {
             const bool smokeStopsAfterOneContinuation = false;
             if (!smokeStopsAfterOneContinuation) {
                 const bool hasQueuedContinuation =
-                    _p->subtitleContinuationQueuedWhileBusy &&
-                    _p->subtitleContinuationQueuedStartSeconds >= 0.0;
+                    _p->subtitleSession.state().subtitleContinuationQueuedWhileBusy &&
+                    _p->subtitleSession.state().subtitleContinuationQueuedStartSeconds >= 0.0;
                 const double nextStartSeconds = hasQueuedContinuation
-                    ? _p->subtitleContinuationQueuedStartSeconds
-                    : std::max(0.0, _p->generatedSubtitleCoverageEndSeconds - kSubtitleContinuationOverlapSeconds);
-                _p->subtitleContinuationQueuedWhileBusy = false;
-                _p->subtitleContinuationQueuedStartSeconds = -1.0;
+                    ? _p->subtitleSession.state().subtitleContinuationQueuedStartSeconds
+                    : std::max(0.0, _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds - kSubtitleContinuationOverlapSeconds);
+                _p->subtitleSession.state().subtitleContinuationQueuedWhileBusy = false;
+                _p->subtitleSession.state().subtitleContinuationQueuedStartSeconds = -1.0;
                 const double currentSeconds = generatedSubtitleCurrentSeconds(_p->playbackCtrl.get());
                 const bool dedicatedWorkspaceRefinement =
                     hasDedicatedSubtitleRefinementWorkspace(_p->userSettings);
                 const bool canRunDedicatedRefinementInBackground =
                     dedicatedWorkspaceRefinement &&
-                    !_p->subtitleRefinementBusy &&
-                    _p->generatedSubtitleCoverageEndSeconds >
-                        _p->subtitleRefinementLastCoverageEndSeconds + 45.0;
+                    !_p->subtitleSession.state().subtitleRefinementBusy &&
+                    _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds >
+                        _p->subtitleSession.state().subtitleRefinementLastCoverageEndSeconds + 45.0;
                 const bool canGiveRefinementTimeSlice =
                     !dedicatedWorkspaceRefinement &&
-                    !_p->subtitleRefinementBusy &&
-                    !_p->subtitleGenerationBusy &&
-                    _p->generatedSubtitleCoverageEndSeconds - currentSeconds >= kSubtitlePrefetchLeadSeconds &&
-                    _p->generatedSubtitleCoverageEndSeconds >
-                        _p->subtitleRefinementLastCoverageEndSeconds + 45.0;
+                    !_p->subtitleSession.state().subtitleRefinementBusy &&
+                    !_p->subtitleSession.state().subtitleGenerationBusy &&
+                    _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds - currentSeconds >= kSubtitlePrefetchLeadSeconds &&
+                    _p->subtitleSession.state().generatedSubtitleCoverageEndSeconds >
+                        _p->subtitleSession.state().subtitleRefinementLastCoverageEndSeconds + 45.0;
                 if (canRunDedicatedRefinementInBackground) {
                     _scheduleGeneratedSubtitleContinuation(
                         nextStartSeconds,
                         0);
                     _scheduleGeneratedSubtitleRefinement(
                         _p->currentPath,
-                        _p->generatedSubtitleCues,
+                        _p->subtitleSession.state().generatedSubtitleCues,
                         false);
                 } else if (canGiveRefinementTimeSlice) {
-                    _p->subtitleContinuationAfterRefinementPending = true;
-                    _p->subtitleContinuationAfterRefinementStartSeconds = nextStartSeconds;
+                    _p->subtitleSession.state().subtitleContinuationAfterRefinementPending = true;
+                    _p->subtitleSession.state().subtitleContinuationAfterRefinementStartSeconds = nextStartSeconds;
                     _scheduleGeneratedSubtitleRefinement(
                         _p->currentPath,
-                        _p->generatedSubtitleCues,
+                        _p->subtitleSession.state().generatedSubtitleCues,
                         false);
-                    if (!_p->subtitleRefinementBusy) {
-                        _p->subtitleContinuationAfterRefinementPending = false;
-                        _p->subtitleContinuationAfterRefinementStartSeconds = -1.0;
+                    if (!_p->subtitleSession.state().subtitleRefinementBusy) {
+                        _p->subtitleSession.state().subtitleContinuationAfterRefinementPending = false;
+                        _p->subtitleSession.state().subtitleContinuationAfterRefinementStartSeconds = -1.0;
                         _scheduleGeneratedSubtitleContinuation(
                             nextStartSeconds,
                             0);
@@ -2824,10 +2826,10 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
                         0);
                 }
             }
-        } else if (!_p->generatedSubtitleCues.isEmpty()) {
+        } else if (!_p->subtitleSession.state().generatedSubtitleCues.isEmpty()) {
             _scheduleGeneratedSubtitleRefinement(
                 _p->currentPath,
-                _p->generatedSubtitleCues,
+                _p->subtitleSession.state().generatedSubtitleCues,
                 requestedMockWithoutApi);
         }
     });

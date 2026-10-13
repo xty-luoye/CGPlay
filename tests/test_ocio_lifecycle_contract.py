@@ -21,7 +21,24 @@ class OcioLifecycleContractTests(unittest.TestCase):
         self.assertIn("exrOverrideActive", manager)
         self.assertIn("void OcioManager::clearExrSceneLinearDefaults()", manager)
         self.assertIn("clearExrSceneLinearDefaults()", media)
-        self.assertIn("incomingSuffix != QStringLiteral(\"exr\")", media)
+        reset = media.split("void MainWindow::_resetMediaSession", 1)[1].split("void MainWindow::_closeCurrentMedia", 1)[0]
+        self.assertIn("clearExrSceneLinearDefaults()", reset)
+        self.assertIn("++_p->mediaGenerationId", reset)
+        self.assertIn("generation != _p->mediaGenerationId", media)
+        self.assertIn("_p->currentPath != path", media)
+        self.assertIn("!_p->playbackCtrl->isValid()", media)
+        self.assertIn("_resetMediaSession({}, {});", media)
+
+    def test_subtitle_delayed_work_is_media_scoped(self) -> None:
+        subtitles = self.read("src/ui/app/ApplicationSubtitles.cpp")
+        enhancement = self.read("src/ui/app/ApplicationEnhancement.cpp")
+        self.assertIn("QTimer::singleShot(std::max(0, delayMs), this, [this, generation]", subtitles)
+        self.assertIn("QTimer::singleShot(kSubtitleRefinementIdleRetryMs, this, [this, mediaPath, generation]", subtitles)
+        self.assertIn("QTimer::singleShot(2000, this, [this, mediaPath, requestedGeneration]", subtitles)
+        self.assertIn("subtitleRefinementWatcher != watcherPtr", subtitles)
+        self.assertIn("if (requestedGeneration != _p->mediaGenerationId) return;", subtitles)
+        self.assertIn("if (mediaGenerationId != _p->mediaGenerationId) return;", enhancement)
+        self.assertIn("if (requestedMediaGenerationId != _p->mediaGenerationId) return;", enhancement)
 
 
 if __name__ == "__main__":

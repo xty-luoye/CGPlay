@@ -70,36 +70,36 @@ class ApplicationSplitContracts(unittest.TestCase):
                 self.assertIn(f"MainWindow::{method}", text, f"{method} moved out of {filename}")
 
     def test_fullscreen_content_margins_are_removed_and_restored(self):
-        media = (APP_DIR / "ApplicationMedia.cpp").read_text(encoding="utf-8")
+        media = (APP_DIR / "FullscreenController.cpp").read_text(encoding="utf-8")
         self.assertIn("QMargins{} : QMargins{16, 0, 16, 8}", media)
-        self.assertIn("setContentHostMargins(_p->horzSplitter, true);", media)
-        self.assertIn("setContentHostMargins(_p->horzSplitter, false);", media)
+        self.assertIn("setContentHostMargins(_window->_p->horzSplitter, true);", media)
+        self.assertIn("setContentHostMargins(_window->_p->horzSplitter, false);", media)
         self.assertIn("findChildren<QDockWidget*>()", media)
         self.assertIn("const QSignalBlocker blocker(dock);", media)
-        self.assertIn("restoreDockWidgetsAfterFullscreen(this);", media)
+        self.assertIn("restoreDockWidgetsAfterFullscreen(_window);", media)
         self.assertIn("horizontal->setHandleWidth(fullscreen ? 0 : 8)", media)
         self.assertIn("vertical->setHandleWidth(fullscreen ? 0 : 1)", media)
-        self.assertIn("setFullscreenSplitterHandles(_p->horzSplitter, _p->centerSplitter, true);", media)
-        self.assertIn("setFullscreenSplitterHandles(_p->horzSplitter, _p->centerSplitter, false);", media)
-        self.assertIn("_p->fullscreenCenterSizes = _p->centerSplitter", media)
-        self.assertIn("_p->fullscreenTimelineHeight = _p->timeline->height();", media)
-        self.assertIn("_p->fullscreenPlaybackBarHeight = _p->playbackBar->height();", media)
-        self.assertIn("_p->fullscreenMousePollTimer->setInterval(50);", media)
+        self.assertIn("setFullscreenSplitterHandles(_window->_p->horzSplitter, _window->_p->centerSplitter, true);", media)
+        self.assertIn("setFullscreenSplitterHandles(_window->_p->horzSplitter, _window->_p->centerSplitter, false);", media)
+        self.assertIn("_state.fullscreenCenterSizes = _window->_p->centerSplitter", media)
+        self.assertIn("_state.fullscreenTimelineHeight = _window->_p->timeline->height();", media)
+        self.assertIn("_state.fullscreenPlaybackBarHeight = _window->_p->playbackBar->height();", media)
+        self.assertIn("_state.fullscreenMousePollTimer->setInterval(50);", media)
         self.assertIn("const QPoint cursorPos = systemCursorPosition();", media)
         self.assertIn("::GetCursorPos(&point)", media)
         self.assertIn("const bool cursorNearBottom", media)
-        self.assertIn("QTimer::singleShot(0, this, [this]()", media)
-        self.assertIn("_setFullScreenChromeVisible(false, true);", media)
+        self.assertIn("QTimer::singleShot(0, this, [this, transitionGeneration]", media)
+        self.assertIn("setChromeVisible(false, true);", media)
         self.assertIn("QTimer::singleShot(150, this", media)
-        self.assertIn("_showFullScreenChromeTemporarily();", media)
-        self.assertIn("_p->fullscreenMousePollTimer->stop();", media)
-        self.assertIn("const bool fullscreen = _p->fullscreenActive || isFullScreen();", media)
-        self.assertIn("_p->fullscreenActive = false;", media)
-        self.assertIn("_p->fullscreenActive = true;", media)
+        self.assertIn("showChromeTemporarily();", media)
+        self.assertIn("_state.fullscreenMousePollTimer->stop();", media)
+        self.assertIn("const bool fullscreen = _state.fullscreenActive || _window->isFullScreen();", media)
+        self.assertIn("_state.fullscreenActive = false;", media)
+        self.assertIn("_state.fullscreenActive = true;", media)
 
     def test_fullscreen_shortcuts_are_handled_at_application_boundary(self):
         source = (APP_DIR / "ApplicationInput.cpp").read_text(encoding="utf-8")
-        self.assertIn("const bool fullscreenActive = _p->fullscreenActive || isFullScreen();", source)
+        self.assertIn("const bool fullscreenActive = _p->fullscreen->state().fullscreenActive || isFullScreen();", source)
         self.assertIn('descriptor.id != QStringLiteral("view.fullscreen")', source)
         self.assertNotIn("Qt::Key_F11", source.split("bool MainWindow::eventFilter", 1)[1].split("bool MainWindow::nativeEvent", 1)[0])
         self.assertIn("_toggleFullScreen();", source)
@@ -118,29 +118,29 @@ class ApplicationSplitContracts(unittest.TestCase):
         self.assertIn('"mediaFrameEvents"', source)
 
     def test_fullscreen_entry_defers_presentation_until_layout_settles(self):
-        media = (APP_DIR / "ApplicationMedia.cpp").read_text(encoding="utf-8")
-        toggle = media.split("void MainWindow::_toggleFullScreen()", 1)[1].split(
-            "void MainWindow::_showFullScreenChromeTemporarily()", 1)[0]
-        entry = toggle.split("_p->fullscreenActive = true;", 1)[1]
+        media = (APP_DIR / "FullscreenController.cpp").read_text(encoding="utf-8")
+        toggle = media.split("void FullscreenController::toggle()", 1)[1].split(
+            "void FullscreenController::showChromeTemporarily()", 1)[0]
+        entry = toggle.split("_state.fullscreenActive = true;", 1)[1]
         self.assertLess(entry.index("setUpdatesEnabled(false)"), entry.index("showFullScreen()"))
         self.assertNotIn("QTimer::singleShot(150", entry)
         commit = entry.split("showFullScreen();", 1)[1]
         self.assertIn("QTimer::singleShot(0, this", commit)
-        self.assertIn("_p->fullscreenTransitionGeneration != transitionGeneration", commit)
+        self.assertIn("_state.fullscreenTransitionGeneration != transitionGeneration", commit)
         self.assertLess(commit.index("layout()->activate()"), commit.index("vp->setFrameView(true)"))
         self.assertLess(commit.index("vp->setFrameView(true)"), commit.index("setUpdatesEnabled(true)"))
         self.assertLess(commit.index("setUpdatesEnabled(true)"), commit.index("fullscreenMousePollTimer->start()"))
-        show_chrome = media.split("void MainWindow::_showFullScreenChromeTemporarily()", 1)[1].split(
-            "void MainWindow::_hideFullScreenChrome()", 1)[0]
-        self.assertIn("!isFullScreen() || _p->fullscreenEntryPending", show_chrome)
-        exit_entry = toggle.split("_p->fullscreenActive = false;", 1)[0]
-        self.assertIn("_p->fullscreenEntryPending = false;", exit_entry)
+        show_chrome = media.split("void FullscreenController::showChromeTemporarily()", 1)[1].split(
+            "void FullscreenController::hideChrome()", 1)[0]
+        self.assertIn("!_window->isFullScreen() || _state.fullscreenEntryPending", show_chrome)
+        exit_entry = toggle.split("_state.fullscreenActive = false;", 1)[0]
+        self.assertIn("_state.fullscreenEntryPending = false;", exit_entry)
         self.assertIn("setUpdatesEnabled(false);", exit_entry)
 
     def test_fullscreen_chrome_does_not_synchronously_repaint_gl_ancestors(self):
-        media = (APP_DIR / "ApplicationMedia.cpp").read_text(encoding="utf-8")
-        chrome = media.split("void MainWindow::_setFullScreenChromeVisible", 1)[1].split(
-            "void MainWindow::_setFullScreenCursorHidden", 1)[0]
+        media = (APP_DIR / "FullscreenController.cpp").read_text(encoding="utf-8")
+        chrome = media.split("void FullscreenController::setChromeVisible", 1)[1].split(
+            "void FullscreenController::setCursorHidden", 1)[0]
         self.assertNotIn("->repaint()", chrome)
         self.assertNotIn("->setSizes(", chrome)
         self.assertNotIn("->repaint()", chrome)

@@ -11,7 +11,7 @@ class MainWindowAutomationSplitContracts(unittest.TestCase):
     def test_translation_units_stay_below_owner_limit(self):
         sources = sorted(APP_DIR.glob("MainWindowAutomation*.cpp"))
         self.assertEqual(
-            ["MainWindowAutomation.cpp", "MainWindowAutomationFullscreen.cpp", "MainWindowAutomationMedia.cpp", "MainWindowAutomationSettings.cpp", "MainWindowAutomationSubtitles.cpp"],
+            ["MainWindowAutomation.cpp", "MainWindowAutomationCoverage.cpp", "MainWindowAutomationFullscreen.cpp", "MainWindowAutomationMedia.cpp", "MainWindowAutomationSettings.cpp", "MainWindowAutomationState.cpp", "MainWindowAutomationSubtitles.cpp"],
             [source.name for source in sources],
         )
         for source in sources:
@@ -26,6 +26,8 @@ class MainWindowAutomationSplitContracts(unittest.TestCase):
         expected_owners = {
             "captureRuntimeAnnotationState": "MainWindowAutomation.cpp",
             "runPlayerSmokeChecks": "MainWindowAutomation.cpp",
+            "_automationCoverage": "MainWindowAutomationCoverage.cpp",
+            "_runMediaStateSmokeChecks": "MainWindowAutomationState.cpp",
             "_runFullscreenSmokeChecks": "MainWindowAutomationFullscreen.cpp",
             "_runMediaOpenSmokeCheck": "MainWindowAutomationMedia.cpp",
             "_runSettingsSmokeChecks": "MainWindowAutomationSettings.cpp",
@@ -77,6 +79,8 @@ class MainWindowAutomationSplitContracts(unittest.TestCase):
             "ui/app/MainWindowAutomation.cpp",
             "ui/app/MainWindowAutomationFullscreen.cpp",
             "ui/app/MainWindowAutomationMedia.cpp",
+            "ui/app/MainWindowAutomationCoverage.cpp",
+            "ui/app/MainWindowAutomationState.cpp",
             "ui/app/MainWindowAutomationSettings.cpp",
             "ui/app/MainWindowAutomationSubtitles.cpp",
         ):

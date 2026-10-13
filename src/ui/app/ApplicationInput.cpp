@@ -107,15 +107,10 @@ void MainWindow::closeEvent(QCloseEvent* event)
     if (_p->updateDownloadState) {
         _p->updateDownloadState->cancelled.store(true);
     }
-    if (_p->subtitleRefinementCancelRequested) {
-        _p->subtitleRefinementCancelRequested->store(true);
-    }
-    if (_p->highQualityEnhancementCancelRequested) {
-        _p->highQualityEnhancementCancelRequested->store(true);
-    }
-    if (_p->subtitleGenerationBusy) {
-        if (_p->subtitleGenerationCancelRequested) {
-            _p->subtitleGenerationCancelRequested->store(true);
+    _p->subtitleSession.cancelTasks();
+    if (_p->subtitleSession.state().subtitleGenerationBusy) {
+        if (_p->subtitleSession.state().subtitleGenerationCancelRequested) {
+            _p->subtitleSession.state().subtitleGenerationCancelRequested->store(true);
         }
         if (_p->subtitleGenerationProgress) {
             _p->subtitleGenerationProgress->close();
@@ -132,7 +127,7 @@ void MainWindow::closeEvent(QCloseEvent* event)
     // still alive.  This releases tlRender and cancels timeline thumbnails
     // even when another window or a background task keeps the process alive.
     _closeCurrentMedia();
-    _setFullScreenCursorHidden(false);
+    if (_p->fullscreen) _p->fullscreen->shutdown();
     _saveState();
     event->accept();
 }
@@ -421,7 +416,7 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
         clearSidePanelCursor();
     }
 
-    const bool fullscreenActive = _p->fullscreenActive || isFullScreen();
+    const bool fullscreenActive = _p->fullscreen->state().fullscreenActive || isFullScreen();
     if (fullscreenActive && event->type() == QEvent::Resize && _p->viewer && obj == _p->viewer->viewport())
         _layoutFullScreenOverlay();
     if (fullscreenActive && eventBelongsToMainWindow &&

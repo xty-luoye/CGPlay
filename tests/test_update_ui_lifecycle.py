@@ -7,7 +7,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ART = ROOT / "tests/artifacts/fullscreen_ai_20261008/update_ui"
+ART = Path(os.environ.get("CGPLAY_TEST_ARTIFACT_DIR", str(ROOT / "tests/artifacts/fullscreen_ai_20261008/update_ui")))
 QT = Path(os.environ.get("CGPLAY_TEST_QT_ROOT", "C:/QtClean/6.5.3/msvc2019_64"))
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -154,7 +154,7 @@ class UpdateUILifecycleTests(unittest.TestCase):
             "void MainWindow::_presentUpdateResult", 1)[0]
         window_input = (ROOT / "src/ui/app/ApplicationInput.cpp").read_text(encoding="utf-8")
         close = window_input.split("void MainWindow::closeEvent(QCloseEvent* event)\n{", 1)[1].split(
-            "    if (_p->subtitleRefinementCancelRequested)", 1)[0]
+            "    _p->subtitleSession.cancelTasks();", 1)[0]
         runner = FIXTURE.replace("// PRODUCTION_CHECK_UPDATES", check).replace("// PRODUCTION_CLOSE_UPDATES", close)
         (source / "runner.cpp").write_text(runner, encoding="utf-8")
         (source / "CMakeLists.txt").write_text(

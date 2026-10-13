@@ -3,97 +3,11 @@
 #include "common/jobs/JobSystem.h"
 
 #include <numeric>
-#include <QVariantAnimation>
 
-#ifdef Q_OS_WIN
-#include <qt_windows.h>
-#endif
 
 namespace cgplay {
 
-namespace {
 
-constexpr auto kFullscreenDockVisibility = "cgplay.fullscreenWasVisible";
-
-void keepFullscreenComposition(QWidget* window)
-{
-#ifdef Q_OS_WIN
-    // Qt documents WS_BORDER as the workaround for Windows fullscreen
-    // OpenGL composition. Without it, frames can swap while the desktop
-    // keeps presenting the same image. Apply before painting resumes;
-    // showNormal() restores the style Qt saved on fullscreen entry.
-    // https://doc.qt.io/qt-6.5/windows-issues.html#fullscreen-opengl-based-windows
-    const auto hwnd = reinterpret_cast<HWND>(window->winId());
-    const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
-    if (!(style & WS_BORDER)) {
-        SetLastError(ERROR_SUCCESS);
-        if (!SetWindowLongPtr(hwnd, GWL_STYLE, style | WS_BORDER) &&
-            GetLastError() != ERROR_SUCCESS) {
-            qWarning() << "Cannot enable fullscreen OpenGL composition:" << GetLastError();
-            return;
-        }
-        if (!SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
-                          SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE |
-                          SWP_NOZORDER | SWP_NOACTIVATE)) {
-            qWarning() << "Cannot refresh fullscreen OpenGL composition:" << GetLastError();
-        }
-    }
-#else
-    Q_UNUSED(window);
-#endif
-}
-
-void setContentHostMargins(QSplitter* splitter, bool fullscreen)
-{
-    QWidget* contentHost = splitter ? splitter->parentWidget() : nullptr;
-    QLayout* contentLayout = contentHost ? contentHost->layout() : nullptr;
-    if (contentLayout) {
-        contentLayout->setContentsMargins(fullscreen ? QMargins{} : QMargins{16, 0, 16, 8});
-    }
-}
-
-void hideDockWidgetsForFullscreen(QWidget* owner)
-{
-    if (!owner) return;
-    for (QDockWidget* dock : owner->findChildren<QDockWidget*>()) {
-        if (!dock->property(kFullscreenDockVisibility).isValid()) {
-            dock->setProperty(kFullscreenDockVisibility, dock->isVisible());
-        }
-        const QSignalBlocker blocker(dock);
-        dock->hide();
-    }
-}
-
-void restoreDockWidgetsAfterFullscreen(QWidget* owner)
-{
-    if (!owner) return;
-    for (QDockWidget* dock : owner->findChildren<QDockWidget*>()) {
-        const QVariant wasVisible = dock->property(kFullscreenDockVisibility);
-        if (!wasVisible.isValid()) continue;
-        dock->setProperty(kFullscreenDockVisibility, QVariant{});
-        const QSignalBlocker blocker(dock);
-        dock->setVisible(wasVisible.toBool());
-    }
-}
-
-void setFullscreenSplitterHandles(QSplitter* horizontal, QSplitter* vertical, bool fullscreen)
-{
-    if (horizontal) horizontal->setHandleWidth(fullscreen ? 0 : 8);
-    if (vertical) vertical->setHandleWidth(fullscreen ? 0 : 1);
-}
-
-QPoint systemCursorPosition()
-{
-#ifdef Q_OS_WIN
-    POINT point{};
-    if (::GetCursorPos(&point)) {
-        return QPoint(point.x, point.y);
-    }
-#endif
-    return QCursor::pos();
-}
-
-} // namespace
 
 void MainWindow::openFile(const QString& path)
 {
@@ -155,34 +69,7 @@ void MainWindow::_openFileWithMediaInfo(
     const QFileInfo incomingInfo(path);
     const QString incomingSuffix = incomingInfo.suffix().toLower();
 
-    if (incomingSuffix != QStringLiteral("exr") && _p->ocioManager) {
-        _p->ocioManager->clearExrSceneLinearDefaults();
-    }
-
-    _p->currentPath = path;
-    _p->currentMediaFingerprint = SubtitleGenerationService::mediaFingerprint(path, mediaInfo.durationSeconds);
-    _p->mediaGenerationId += 1;
-    if (_p->subtitleGenerationCancelRequested) {
-        _p->subtitleGenerationCancelRequested->store(true);
-    }
-    if (_p->highQualityEnhancementCancelRequested) {
-        _p->highQualityEnhancementCancelRequested->store(true);
-    }
-    _p->subtitleGenerationBusy = false;
-    _p->subtitleGenerationWatcher.clear();
-    _p->subtitleGenerationActiveTranslatedVttPath.clear();
-    _p->highQualityEnhancementBusy = false;
-    _p->highQualityEnhancementWatcher.clear();
-    _p->highQualityEnhancementCancelRequested.reset();
-    _p->highQualityEnhancementMediaPath.clear();
-    _p->highQualityEnhancementLastDiagnostics = QJsonObject{
-        { QStringLiteral("clearedForMediaSwitch"), true },
-        { QStringLiteral("mediaFingerprint"), _p->currentMediaFingerprint },
-        { QStringLiteral("mediaPath"), QFileInfo(path).absoluteFilePath() }
-    };
-    if (qApp) {
-        qApp->setProperty("cgplay.currentMediaHighQualityEnhancement", QString());
-    }
+    _resetMediaSession(path, SubtitleGenerationService::mediaFingerprint(path, mediaInfo.durationSeconds));
     _p->cacheManager->clear();
     if (auto* annotationService = resolveAnnotationService(_p->annotationService, _annoMgr.get())) {
         annotationService->clearAnnotations();
@@ -241,35 +128,18 @@ void MainWindow::_openFileWithMediaInfo(
     }
     // Apply after the timeline/player exists so tlRender's GPU viewport
     // receives the ACES options for the newly opened EXR item.
-    if (incomingSuffix == QStringLiteral("exr") && _p->ocioManager) {
+    if (incomingSuffix == QStringLiteral("exr") && _p->ocioManager && _p->playbackCtrl->isValid()) {
         _p->ocioManager->applyExrSceneLinearDefaults();
         // Playback creates the tlRender video item asynchronously. Rebind
         // once after that item exists so its GPU display shader receives the
         // exact ACES 1.2 options instead of retaining the pre-open defaults.
-        QTimer::singleShot(250, this, [manager = _p->ocioManager] {
-            if (manager) manager->applyExrSceneLinearDefaults();
+        const quint64 generation = _p->mediaGenerationId;
+        QTimer::singleShot(250, this, [this, generation, path] {
+            if (generation != _p->mediaGenerationId || _p->currentPath != path ||
+                !_p->playbackCtrl->isValid()) return;
+            _p->ocioManager->applyExrSceneLinearDefaults();
         });
     }
-    _p->generatedSubtitleCues.clear();
-    _p->generatedSubtitlePath.clear();
-    _p->generatedSubtitleMediaFingerprint.clear();
-    _p->generatedSubtitleCoverageEndSeconds = 0.0;
-    _p->generatedSubtitleProcessedEndSeconds = 0.0;
-    _p->generatedSubtitleLastText.clear();
-    _p->generatedSubtitleLastCueStartSeconds = -1.0;
-    _p->generatedSubtitleLastCueEndSeconds = -1.0;
-    _p->generatedSubtitleLastShownAtSeconds = -1.0;
-    _p->subtitleContinuationScheduled = false;
-    _p->subtitleContinuationStartSeconds = -1.0;
-    _p->subtitleContinuationQueuedWhileBusy = false;
-    _p->subtitleContinuationQueuedStartSeconds = -1.0;
-    _p->subtitleContinuationRetryCount = 0;
-    _p->highQualityVisualPrefetchLastCheckMs = 0;
-    if (_p->generatedSubtitleLabel) {
-        _p->generatedSubtitleLabel->hide();
-        _p->generatedSubtitleLabel->clear();
-    }
-
     const QString codecText = formatCodecText(mediaInfo);
     const QString resText = mediaInfo.resolutionText();
     const QString bitrateUnit = _p->performanceService
@@ -291,6 +161,40 @@ void MainWindow::_openFileWithMediaInfo(
     CGPLAY_LOG().fileOpened(path, _p->playbackCtrl->totalFrames(), _p->playbackCtrl->fps(), 0, 0, codecText);
 }
 
+void MainWindow::_resetMediaSession(const QString& path, const QString& fingerprint)
+{
+    // Commit a new media identity before touching callbacks or progress UI.
+    ++_p->mediaGenerationId;
+    _p->currentPath = path;
+    _p->currentMediaFingerprint = fingerprint;
+    _p->subtitleSession.cancelTasks();
+    if (_p->generatedSubtitleRefreshTimer) _p->generatedSubtitleRefreshTimer->stop();
+    if (_p->translationPrePlaybackWaitTimer) _p->translationPrePlaybackWaitTimer->stop();
+    for (const auto& progress : {_p->subtitleGenerationProgress, _p->translationPrePlaybackWaitProgress}) {
+        if (progress) {
+            const QSignalBlocker blocker(progress);
+            progress->close();
+        }
+    }
+    _p->subtitleGenerationProgress.clear();
+    _p->translationPrePlaybackWaitProgress.clear();
+    _p->subtitleSession.reset();
+    if (!path.isEmpty()) {
+        _p->subtitleSession.state().highQualityEnhancementLastDiagnostics = QJsonObject{
+            {QStringLiteral("clearedForMediaSwitch"), true},
+            {QStringLiteral("mediaFingerprint"), fingerprint},
+            {QStringLiteral("mediaPath"), QFileInfo(path).absoluteFilePath()}};
+    }
+    if (_p->generatedSubtitleLabel) {
+        _p->generatedSubtitleLabel->hide();
+        _p->generatedSubtitleLabel->clear();
+    }
+    if (qApp) qApp->setProperty("cgplay.currentMediaHighQualityEnhancement", QString());
+    // Also resets a previous EXR's manual-override suppression when switching
+    // to another EXR, and restores color state on close, not only video open.
+    if (_p->ocioManager) _p->ocioManager->clearExrSceneLinearDefaults();
+}
+
 void MainWindow::_closeCurrentMedia()
 {
     _p->autoPlayPending = false;
@@ -299,37 +203,7 @@ void MainWindow::_closeCurrentMedia()
         _p->mediaProbeJob->cancel();
         _p->mediaProbeJob.clear();
     }
-    _p->currentPath.clear();
-    _p->currentMediaFingerprint.clear();
-    _p->mediaGenerationId += 1;
-    _p->generatedSubtitleCues.clear();
-    _p->generatedSubtitlePath.clear();
-    _p->generatedSubtitleMediaFingerprint.clear();
-    _p->generatedSubtitleMediaFingerprint.clear();
-    _p->generatedSubtitleCoverageEndSeconds = 0.0;
-    _p->generatedSubtitleProcessedEndSeconds = 0.0;
-    _p->generatedSubtitleLastText.clear();
-    _p->generatedSubtitleLastCueStartSeconds = -1.0;
-    _p->generatedSubtitleLastCueEndSeconds = -1.0;
-    _p->generatedSubtitleLastShownAtSeconds = -1.0;
-    _p->subtitleContinuationScheduled = false;
-    _p->subtitleContinuationStartSeconds = -1.0;
-    _p->subtitleContinuationQueuedWhileBusy = false;
-    _p->subtitleContinuationQueuedStartSeconds = -1.0;
-    _p->subtitleContinuationRetryCount = 0;
-    _p->highQualityVisualPrefetchLastCheckMs = 0;
-    if (_p->highQualityEnhancementCancelRequested) {
-        _p->highQualityEnhancementCancelRequested->store(true);
-    }
-    _p->highQualityEnhancementBusy = false;
-    _p->highQualityEnhancementWatcher.clear();
-    _p->highQualityEnhancementCancelRequested.reset();
-    _p->highQualityEnhancementMediaPath.clear();
-    _p->highQualityEnhancementLastDiagnostics = QJsonObject();
-    if (_p->generatedSubtitleLabel) {
-        _p->generatedSubtitleLabel->hide();
-        _p->generatedSubtitleLabel->clear();
-    }
+    _resetMediaSession({}, {});
     if (auto* annotationService = resolveAnnotationService(_p->annotationService, _annoMgr.get())) {
         annotationService->clearAnnotations();
         annotationService->selectAnnotation(QString());
@@ -455,280 +329,32 @@ void MainWindow::_onAnnotationModeToggled(bool active) { _annoMode = active; }
 
 void MainWindow::_toggleFullScreen()
 {
-    const bool fullscreen = _p->fullscreenActive || isFullScreen();
-    const quint64 transitionGeneration = ++_p->fullscreenTransitionGeneration;
-    if (fullscreen) {
-        // Batch exit as well as entry: reattaching each control must not
-        // allocate/present an intermediate OpenGL framebuffer.
-        _p->fullscreenEntryPending = false;
-        if (!_p->fullscreenEntryUpdatesSuspended && updatesEnabled()) {
-            _p->fullscreenEntryUpdatesSuspended = true;
-            setUpdatesEnabled(false);
-        }
-        _p->fullscreenActive = false;
-        if (_p->fullscreenOverlayAnimation) _p->fullscreenOverlayAnimation->stop();
-        if (_p->fullscreenOverlay) {
-            _p->fullscreenOverlay->hide();
-            // Only raster controls change parent. The OpenGL surface and
-            // player remain attached throughout the transition.
-            _p->centerSplitter->insertWidget(1, _p->timeline);
-            _p->centerSplitter->insertWidget(2, _p->playbackBar);
-        }
-        _p->fullscreenOverlayProgress = 0.0;
-        _p->fullscreenChromeVisible = false;
-        _p->fullscreenRestorePending = true;
-        if (_p->fullscreenChromeTimer) {
-            _p->fullscreenChromeTimer->stop();
-        }
-        if (_p->fullscreenMousePollTimer) {
-            _p->fullscreenMousePollTimer->stop();
-        }
-        _setFullScreenCursorHidden(false);
-        _p->topBar->setVisible(_p->fullscreenTopBar);
-        _p->playlist->setVisible(_p->fullscreenLeft);
-        if (_p->reviewPanel) _p->reviewPanel->setVisible(_p->fullscreenRight);
-        restoreDockWidgetsAfterFullscreen(this);
-        _p->navRail->hide();
-        if (_p->fullscreenTimelineHeight > 0) {
-            _p->timeline->setFixedHeight(_p->fullscreenTimelineHeight);
-        }
-        if (_p->fullscreenPlaybackBarHeight > 0) {
-            _p->playbackBar->setFixedHeight(_p->fullscreenPlaybackBarHeight);
-        }
-        _p->timeline->setVisible(_p->fullscreenTimeline);
-        _p->playbackBar->setVisible(_p->fullscreenPlaybackBar);
-        _p->compareBar->setVisible(_p->fullscreenCompareBar);
-        _p->viewer->setChromeVisible(_p->fullscreenViewerChrome);
-        if (statusBar()) {
-            statusBar()->setVisible(_p->fullscreenStatusBar);
-        }
-        if (_p->annoToolbar) {
-            _p->annoToolbar->setVisible(_p->annoToolsVisible);
-            _onAnnotationModeToggled(_p->annoToolsVisible);
-        } else {
-            _onAnnotationModeToggled(false);
-        }
-        setContentHostMargins(_p->horzSplitter, false);
-        setFullscreenSplitterHandles(_p->horzSplitter, _p->centerSplitter, false);
-        if (_p->centerSplitter) {
-            _p->centerSplitter->setCollapsible(1, false);
-            _p->centerSplitter->setCollapsible(2, false);
-        }
-        const bool restoreMaximized = _p->fullscreenWindowState.testFlag(Qt::WindowMaximized);
-        showNormal();
-        const QList<int> centerSizes = _p->fullscreenCenterSizes;
-        QTimer::singleShot(0, this, [this, centerSizes, transitionGeneration, restoreMaximized]() {
-            if (_p->fullscreenTransitionGeneration != transitionGeneration ||
-                _p->fullscreenActive || isFullScreen()) return;
-            if (_p->centerSplitter && centerSizes.size() == _p->centerSplitter->count()) {
-                _p->centerSplitter->setSizes(centerSizes);
-            }
-            // Geometry restoration can clear Qt's maximized state. Apply it
-            // after restoring normal geometry and splitter layout.
-            if (restoreMaximized) showMaximized();
-            if (layout()) layout()->activate();
-            if (_p->viewer->layout()) _p->viewer->layout()->activate();
-            if (auto* vp = _p->viewer->viewport()) vp->setFrameView(true);
-            if (_p->fullscreenEntryUpdatesSuspended) {
-                _p->fullscreenEntryUpdatesSuspended = false;
-                setUpdatesEnabled(true);
-            }
-        });
-        // Windows may deliver the old normal-geometry state after the queued
-        // layout pass. Reconcile once after that transition, never polling.
-        QTimer::singleShot(150, this, [this, transitionGeneration, restoreMaximized]() {
-            if (_p->fullscreenTransitionGeneration != transitionGeneration ||
-                _p->fullscreenActive || isFullScreen()) return;
-            _p->fullscreenRestorePending = false;
-            if (restoreMaximized && !isMaximized()) showMaximized();
-        });
-    } else {
-        // A new entry before the previous exit settles must inherit its
-        // intended window state, rather than a temporary normal geometry.
-        const bool restoreInFlight = _p->fullscreenRestorePending;
-        if (!restoreInFlight) _p->fullscreenWindowState = windowState();
-        _p->fullscreenRestorePending = false;
-        _p->fullscreenActive = true;
-        if (!_p->fullscreenMousePollTimer) {
-            _p->fullscreenMousePollTimer = new QTimer(this);
-            _p->fullscreenMousePollTimer->setInterval(50);
-            connect(_p->fullscreenMousePollTimer, &QTimer::timeout, this, [this]() {
-                if (!isFullScreen() || _p->fullscreenEntryPending) {
-                    return;
-                }
-                const QPoint cursorPos = systemCursorPosition();
-                const QRect windowRect(mapToGlobal(QPoint(0, 0)), size());
-                const int activationHeight = std::clamp(height() / 5, 96, 220);
-                const bool cursorNearBottom = windowRect.contains(cursorPos) &&
-                    cursorPos.y() >= windowRect.bottom() - activationHeight;
-                if (cursorPos != _p->fullscreenLastCursorPos || cursorNearBottom) {
-                    _p->fullscreenLastCursorPos = cursorPos;
-                    _showFullScreenChromeTemporarily();
-                }
-            });
-        }
-        _p->fullscreenLeft  = _p->playlist->isVisible();
-        _p->fullscreenRight = _p->reviewPanel ? _p->reviewPanel->isVisible() : false;
-        _p->fullscreenNav = false;
-        _p->fullscreenTopBar = _p->topBar->isVisible();
-        _p->fullscreenTimeline = _p->timeline->isVisible();
-        _p->fullscreenPlaybackBar = _p->playbackBar->isVisible();
-        _p->fullscreenStatusBar = statusBar() ? statusBar()->isVisible() : true;
-        _p->fullscreenCompareBar = _p->compareBar->isVisible();
-        _p->fullscreenAIDock = _p->aiDock ? _p->aiDock->isVisible() : false;
-        _p->fullscreenViewerChrome = true;
-        if (!restoreInFlight)
-            _p->fullscreenCenterSizes = _p->centerSplitter ? _p->centerSplitter->sizes() : QList<int>{};
-        _p->fullscreenTimelineHeight = _p->timeline->height();
-        _p->fullscreenPlaybackBarHeight = _p->playbackBar->height();
-        _p->annoToolsVisible = _p->annoToolbar ? _p->annoToolbar->isVisible() : false;
-        // Keep intermediate native/chrome layouts out of the compositor.
-        // Suspend painting only for this queued layout transaction, not for
-        // a wall-clock delay that visibly freezes an already playing movie.
-        _p->fullscreenEntryPending = true;
-        _p->fullscreenEntryUpdatesSuspended = _p->fullscreenEntryUpdatesSuspended || updatesEnabled();
-        if (_p->fullscreenEntryUpdatesSuspended) setUpdatesEnabled(false);
-        _p->fullscreenLastCursorPos = systemCursorPosition();
-        _p->fullscreenMousePollTimer->stop();
-        setContentHostMargins(_p->horzSplitter, true);
-        setFullscreenSplitterHandles(_p->horzSplitter, _p->centerSplitter, true);
-        _setFullScreenChromeVisible(false, true);
-        showFullScreen();
-        // Commit one final layout at screen size. Chrome has already left
-        // the splitter, so later pointer movement cannot resize the GL FBO.
-        QTimer::singleShot(0, this, [this, transitionGeneration]() {
-            if (_p->fullscreenTransitionGeneration != transitionGeneration) return;
-            const bool entered = _p->fullscreenActive && isFullScreen();
-            if (entered) {
-                // Native frame refresh emits resize events. A cancelled
-                // entry must not queue those events after a newer exit.
-                keepFullscreenComposition(this);
-                if (layout()) layout()->activate();
-                if (_p->viewer->layout()) _p->viewer->layout()->activate();
-                if (auto* vp = _p->viewer->viewport()) vp->setFrameView(true);
-                _layoutFullScreenOverlay();
-                _p->viewer->viewport()->setFocus(Qt::OtherFocusReason);
-            }
-            _p->fullscreenEntryPending = false;
-            if (_p->fullscreenEntryUpdatesSuspended) {
-                _p->fullscreenEntryUpdatesSuspended = false;
-                setUpdatesEnabled(true);
-            }
-            if (entered && _p->fullscreenMousePollTimer) {
-                _p->fullscreenLastCursorPos = systemCursorPosition();
-                _p->fullscreenMousePollTimer->start();
-            }
-        });
-    }
-
+    if (_p->fullscreen) _p->fullscreen->toggle();
 }
 
 void MainWindow::_showFullScreenChromeTemporarily()
 {
-    if (!isFullScreen() || _p->fullscreenEntryPending) {
-        return;
-    }
-    _setFullScreenChromeVisible(true);
-    if (_p->fullscreenChromeTimer) {
-        _p->fullscreenChromeTimer->start(2000);
-    }
+    if (_p->fullscreen) _p->fullscreen->showChromeTemporarily();
 }
 
 void MainWindow::_hideFullScreenChrome()
 {
-    if (!isFullScreen()) {
-        return;
-    }
-    // Never slide an active seek/volume drag or an open control popup away.
-    if (QApplication::mouseButtons() != Qt::NoButton || QApplication::activePopupWidget()) {
-        if (_p->fullscreenChromeTimer) _p->fullscreenChromeTimer->start(2000);
-        return;
-    }
-    _setFullScreenChromeVisible(false);
+    if (_p->fullscreen) _p->fullscreen->hideChrome();
 }
 
 void MainWindow::_layoutFullScreenOverlay()
 {
-    if (!_p->fullscreenActive || !_p->fullscreenOverlay || !_p->viewer) return;
-    auto* viewport = _p->viewer->viewport();
-    if (!viewport) return;
-    const QPoint origin = viewport->mapTo(centralWidget(), QPoint());
-    const int controlsHeight = (_p->fullscreenTimeline ? _p->fullscreenTimelineHeight : 0) +
-        (_p->fullscreenPlaybackBar ? _p->fullscreenPlaybackBarHeight : 0);
-    // Slide the controls over the bottom edge; the viewport geometry stays fixed.
-    const int offset = qRound(controlsHeight * _p->fullscreenOverlayProgress);
-    _p->fullscreenOverlay->setGeometry(origin.x(), origin.y() + viewport->height() - offset,
-        viewport->width(), controlsHeight);
-    _p->fullscreenOverlay->raise();
+    if (_p->fullscreen) _p->fullscreen->layoutOverlay();
 }
 
 void MainWindow::_setFullScreenChromeVisible(bool visible, bool forceApply)
 {
-    if (!forceApply && (!isFullScreen() || !_p->fullscreenOverlay)) return;
-    if (!forceApply && _p->fullscreenChromeVisible == visible) return;
-    ++_p->fullscreenChromeApplyCount;
-    _p->fullscreenChromeVisible = visible;
-    if (forceApply) {
-        _p->topBar->hide();
-        _p->navRail->hide();
-        _p->playlist->hide();
-        if (_p->reviewPanel) _p->reviewPanel->hide();
-        hideDockWidgetsForFullscreen(this);
-        _p->compareBar->hide();
-        _p->viewer->setChromeVisible(false);
-        if (statusBar()) statusBar()->hide();
-        if (_p->annoToolbar) _p->annoToolbar->hide();
-        if (!_p->fullscreenOverlay) {
-            _p->fullscreenOverlay = new QWidget(centralWidget());
-            _p->fullscreenOverlay->setObjectName(QStringLiteral("FullscreenControlsOverlay"));
-            _p->fullscreenOverlay->setFocusPolicy(Qt::NoFocus);
-            auto* controls = new QVBoxLayout(_p->fullscreenOverlay);
-            controls->setContentsMargins(0, 0, 0, 0);
-            controls->setSpacing(0);
-            _p->fullscreenOverlayAnimation = new QVariantAnimation(this);
-            _p->fullscreenOverlayAnimation->setEasingCurve(QEasingCurve::OutCubic);
-            connect(_p->fullscreenOverlayAnimation, &QVariantAnimation::valueChanged, this,
-                [this](const QVariant& value) {
-                    _p->fullscreenOverlayProgress = value.toReal();
-                    _layoutFullScreenOverlay();
-                });
-            connect(_p->fullscreenOverlayAnimation, &QVariantAnimation::finished, this, [this] {
-                if (!_p->fullscreenChromeVisible) _p->fullscreenOverlay->hide();
-            });
-        }
-        _p->fullscreenOverlayAnimation->stop();
-        _p->fullscreenOverlay->hide();
-        _p->fullscreenOverlayProgress = 0.0;
-        _p->fullscreenOverlay->layout()->addWidget(_p->timeline);
-        _p->fullscreenOverlay->layout()->addWidget(_p->playbackBar);
-        _p->timeline->setFixedHeight(_p->fullscreenTimelineHeight);
-        _p->playbackBar->setFixedHeight(_p->fullscreenPlaybackBarHeight);
-        _p->timeline->setVisible(_p->fullscreenTimeline);
-        _p->playbackBar->setVisible(_p->fullscreenPlaybackBar);
-        _layoutFullScreenOverlay();
-    } else {
-        _p->fullscreenOverlayAnimation->stop();
-        _p->fullscreenOverlay->show();
-        _layoutFullScreenOverlay();
-        _p->fullscreenOverlayAnimation->setDuration(140);
-        _p->fullscreenOverlayAnimation->setStartValue(_p->fullscreenOverlayProgress);
-        _p->fullscreenOverlayAnimation->setEndValue(visible ? 1.0 : 0.0);
-        _p->fullscreenOverlayAnimation->start();
-    }
-    _setFullScreenCursorHidden(!visible);
+    if (_p->fullscreen) _p->fullscreen->setChromeVisible(visible, forceApply);
 }
 
 void MainWindow::_setFullScreenCursorHidden(bool hidden)
 {
-    if (_p->fullscreenCursorHidden == hidden) {
-        return;
-    }
-    _p->fullscreenCursorHidden = hidden;
-    if (hidden) {
-        QApplication::setOverrideCursor(Qt::BlankCursor);
-    } else {
-        QApplication::restoreOverrideCursor();
-    }
+    if (_p->fullscreen) _p->fullscreen->setCursorHidden(hidden);
 }
 
 void MainWindow::showEvent(QShowEvent* event)
@@ -954,7 +580,7 @@ void MainWindow::_setTranslationStripVisible(bool visible, bool refreshRuntime)
     if (_p->generatedSubtitleLabel) {
         if (visible) {
             _p->generatedSubtitleLabel->hide();
-        } else if (!_p->generatedSubtitleCues.isEmpty()) {
+        } else if (!_p->subtitleSession.state().generatedSubtitleCues.isEmpty()) {
             _updateGeneratedSubtitleForFrame(_p->playbackCtrl ? _p->playbackCtrl->currentFrame() : 0);
         }
     }

@@ -1,3 +1,4 @@
+#include "playback/api/Timecode.h"
 #include "ViewerWidget.h"
 
 #include "TlViewport.h"
@@ -289,23 +290,6 @@ QIcon _fullscreenIcon()
     });
 }
 
-QString _timecodeFromFrame(int frame, double fps)
-{
-    if (fps <= 0.0) {
-        fps = 24.0;
-    }
-    const int fpsInt = std::max(1, static_cast<int>(fps + 0.5));
-    const int ff = frame % fpsInt;
-    const int totalSeconds = frame / fpsInt;
-    const int ss = totalSeconds % 60;
-    const int mm = (totalSeconds / 60) % 60;
-    const int hh = totalSeconds / 3600;
-    return QStringLiteral("%1:%2:%3:%4")
-        .arg(hh, 2, 10, QChar('0'))
-        .arg(mm, 2, 10, QChar('0'))
-        .arg(ss, 2, 10, QChar('0'))
-        .arg(ff, 2, 10, QChar('0'));
-}
 
 QToolButton* _makeButton(QWidget* parent, const QString& text, const QString& tooltip, bool checkable = false)
 {
@@ -941,7 +925,7 @@ void ViewerWidget::_connectPlayback()
             }
 
             if (_p->timecodeLabel) {
-                _p->timecodeLabel->setText(_timecodeFromFrame(_p->playback->currentFrame(), _p->playback->fps()));
+                _p->timecodeLabel->setText(formatFrameTimecode(_p->playback->currentFrame(), _p->playback->fps()));
                 _p->timecodeLabel->setVisible(_p->timecodeVisible);
             }
             _refreshOverlayGeometry();
@@ -976,7 +960,7 @@ void ViewerWidget::_connectPlayback()
                 return;
             }
             if (_p->timecodeVisible) {
-                const QString timecode = _timecodeFromFrame(frame, _p->playback->fps());
+                const QString timecode = formatFrameTimecode(frame, _p->playback->fps());
                 if (_p->timecodeLabel->text() != timecode) {
                     _p->timecodeLabel->setText(timecode);
                 }

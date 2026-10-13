@@ -1,59 +1,206 @@
 {
   "version": 1,
-  "policy": {"requireEveryRegisteredCommand": true, "requireEveryDefaultShortcut": true, "allowManual": false},
+  "policy": {
+    "requireEveryRegisteredCommand": true,
+    "requireEveryDefaultShortcut": true,
+    "allowManual": false
+  },
   "commands": {
-    "playback.toggle": {"test": "player-smoke:Space", "shortcutTest": "player-smoke:Space"},
-    "playback.previousFrame": {"test": "player-smoke:Left", "shortcutTest": "player-smoke:Left"},
-    "playback.nextFrame": {"test": "player-smoke:Right", "shortcutTest": "player-smoke:Right"},
-    "playback.gotoStart": {"test": "player-smoke:Home", "shortcutTest": "player-smoke:Home"},
-    "playback.gotoEnd": {"test": "player-smoke:End", "shortcutTest": "player-smoke:End"},
-    "playback.reverse": {"test": "player-smoke:J", "shortcutTest": "player-smoke:J"},
-    "playback.stop": {"test": "player-smoke:K", "shortcutTest": "player-smoke:K"},
-    "playback.forward": {"test": "player-smoke:L", "shortcutTest": "player-smoke:L"},
-    "playback.seekBackward10": {"test": "player-smoke:Shift+Left", "shortcutTest": "player-smoke:Shift+Left"},
-    "playback.seekForward10": {"test": "player-smoke:Shift+Right", "shortcutTest": "player-smoke:Shift+Right"},
-    "playback.setInPoint": {"test": "player-smoke:I", "shortcutTest": "player-smoke:I"},
-    "playback.setOutPoint": {"test": "player-smoke:O", "shortcutTest": "player-smoke:O"},
-    "playback.clearInPoint": {"test": "player-smoke:Alt+I", "shortcutTest": "player-smoke:Alt+I"},
-    "playback.clearOutPoint": {"test": "player-smoke:Alt+O", "shortcutTest": "player-smoke:Alt+O"},
-    "playback.setSpeed": {"test": "player-smoke:Playback speed control"},
-    "playback.loop": {"test": "player-smoke:Playback loop control"},
-    "audio.toggleMute": {"test": "player-smoke:M", "shortcutTest": "player-smoke:M"},
-    "audio.openVolume": {"test": "player-smoke:Playback volume control"},
-    "view.fitToWindow": {"test": "player-smoke:F", "shortcutTest": "player-smoke:F"},
-    "view.zoom1to1": {"test": "player-smoke:1", "shortcutTest": "player-smoke:1"},
-    "view.zoomIn": {"test": "player-smoke:+", "shortcutTest": "player-smoke:+"},
-    "view.zoomOut": {"test": "player-smoke:-", "shortcutTest": "player-smoke:-"},
-    "view.fullscreen": {"test": "player-smoke:Esc exits fullscreen; F11 exits fullscreen; Fullscreen rapid transitions; Fullscreen chrome coalescing; Fullscreen first frame and delayed zoom stability; Fullscreen explicit zoom after entry; Fullscreen entry restores repainting; Fullscreen playing transition responsiveness; Fullscreen controls overlay without resizing video; Fullscreen controls hide without resizing video; Fullscreen overlay restores windowed controls; Fullscreen overlay timeline seek; Fullscreen exit cancels controls animation; Windows fullscreen composition style; Windows fullscreen restores native border style; Fullscreen exit after native composition commit", "shortcutTest": "player-smoke:F11; Fullscreen custom shortcut; Fullscreen repeat key guard; Fullscreen foreign-window isolation; Fullscreen Space pauses and resumes playback; Fullscreen playback shortcut respects text input; Fullscreen playback custom and cleared shortcut"},
-    "translation.toggle": {"test": "player-smoke:Translation toggle", "shortcutTest": "player-smoke:Ctrl+Shift+T"},
-    "translation.mode": {"test": "player-smoke:Translation mode control"},
-    "annotation.create": {"test": "player-smoke:Annotation create"},
-    "annotation.delete": {"test": "player-smoke:Delete shortcut", "shortcutTest": "player-smoke:Delete shortcut"},
-    "annotation.undo": {"test": "player-smoke:Ctrl+Z", "shortcutTest": "player-smoke:Ctrl+Z"},
-    "annotation.redo": {"test": "player-smoke:Ctrl+Y", "shortcutTest": "player-smoke:Ctrl+Y"},
-    "annotation.tool.select": {"test": "player-smoke:Alt+S", "shortcutTest": "player-smoke:Alt+S"},
-    "annotation.tool.arrow": {"test": "player-smoke:Alt+A", "shortcutTest": "player-smoke:Alt+A"},
-    "annotation.tool.rectangle": {"test": "player-smoke:Alt+R", "shortcutTest": "player-smoke:Alt+R"},
-    "annotation.tool.circle": {"test": "player-smoke:Alt+C", "shortcutTest": "player-smoke:Alt+C"},
-    "annotation.tool.text": {"test": "player-smoke:Alt+T", "shortcutTest": "player-smoke:Alt+T"},
-    "annotation.tool.freeDraw": {"test": "player-smoke:Alt+D", "shortcutTest": "player-smoke:Alt+D"},
-    "compare.modeA": {"test": "player-smoke:Compare A", "shortcutTest": "player-smoke:Compare A"},
-    "compare.toggleB": {"test": "player-smoke:Compare B", "shortcutTest": "player-smoke:Compare B"},
-    "compare.wipe": {"test": "player-smoke:Compare W", "shortcutTest": "player-smoke:Compare W"},
-    "compare.overlay": {"test": "player-smoke:Compare N", "shortcutTest": "player-smoke:Compare N"},
-    "compare.difference": {"test": "player-smoke:Compare D", "shortcutTest": "player-smoke:Compare D"},
-    "compare.horizontal": {"test": "player-smoke:Compare H", "shortcutTest": "player-smoke:Compare H"},
-    "compare.vertical": {"test": "player-smoke:Compare V", "shortcutTest": "player-smoke:Compare V"},
-    "compare.tile": {"test": "player-smoke:Compare T", "shortcutTest": "player-smoke:Compare T"},
-    "compare.autoClearB": {"test": "player-smoke:Ctrl+Shift+C", "shortcutTest": "player-smoke:Ctrl+Shift+C"},
-    "codex.captureFrame": {"test": "player-smoke:Codex frame capture"},
-    "codex.browserSnapshot": {"test": "test_codex_owner_split_contracts.py"},
-    "export.render": {"test": "test_export.py+test_export_h264.py+test_export_h265.py+test_export_prores.py+test_export_exr.py"},
-    "workspace.save": {"test": "player-smoke:Workspace save"},
-    "workspace.reset": {"test": "player-smoke:Workspace reset"},
-    "ocio.enable": {"test": "player-smoke:OCIO enable"},
-    "ocio.alpha": {"test": "player-smoke:OCIO alpha"},
-    "ocio.settings": {"test": "test_plugin_lifecycle_contracts.py"}
+    "playback.toggle": {
+      "test": "player-smoke:Space",
+      "shortcutTest": "player-smoke:Space"
+    },
+    "playback.previousFrame": {
+      "test": "player-smoke:Left",
+      "shortcutTest": "player-smoke:Left"
+    },
+    "playback.nextFrame": {
+      "test": "player-smoke:Right",
+      "shortcutTest": "player-smoke:Right"
+    },
+    "playback.gotoStart": {
+      "test": "player-smoke:Home",
+      "shortcutTest": "player-smoke:Home"
+    },
+    "playback.gotoEnd": {
+      "test": "player-smoke:End",
+      "shortcutTest": "player-smoke:End"
+    },
+    "playback.reverse": {
+      "test": "player-smoke:J",
+      "shortcutTest": "player-smoke:J"
+    },
+    "playback.stop": {
+      "test": "player-smoke:K",
+      "shortcutTest": "player-smoke:K"
+    },
+    "playback.forward": {
+      "test": "player-smoke:L",
+      "shortcutTest": "player-smoke:L"
+    },
+    "playback.seekBackward10": {
+      "test": "player-smoke:Shift+Left",
+      "shortcutTest": "player-smoke:Shift+Left"
+    },
+    "playback.seekForward10": {
+      "test": "player-smoke:Shift+Right",
+      "shortcutTest": "player-smoke:Shift+Right"
+    },
+    "playback.setInPoint": {
+      "test": "player-smoke:I",
+      "shortcutTest": "player-smoke:I"
+    },
+    "playback.setOutPoint": {
+      "test": "player-smoke:O",
+      "shortcutTest": "player-smoke:O"
+    },
+    "playback.clearInPoint": {
+      "test": "player-smoke:Alt+I",
+      "shortcutTest": "player-smoke:Alt+I"
+    },
+    "playback.clearOutPoint": {
+      "test": "player-smoke:Alt+O",
+      "shortcutTest": "player-smoke:Alt+O"
+    },
+    "playback.setSpeed": {
+      "test": "player-smoke:Playback speed control; state-switch:Speed preference survives media switch; Speed multiplier follows new media rate"
+    },
+    "playback.loop": {
+      "test": "player-smoke:Playback loop control; state-switch:Loop preference survives media switch; Controls share service loop state"
+    },
+    "audio.toggleMute": {
+      "test": "player-smoke:M",
+      "shortcutTest": "player-smoke:M"
+    },
+    "audio.openVolume": {
+      "test": "player-smoke:Playback volume control"
+    },
+    "view.fitToWindow": {
+      "test": "player-smoke:F",
+      "shortcutTest": "player-smoke:F"
+    },
+    "view.zoom1to1": {
+      "test": "player-smoke:1",
+      "shortcutTest": "player-smoke:1"
+    },
+    "view.zoomIn": {
+      "test": "player-smoke:+",
+      "shortcutTest": "player-smoke:+"
+    },
+    "view.zoomOut": {
+      "test": "player-smoke:-",
+      "shortcutTest": "player-smoke:-"
+    },
+    "view.fullscreen": {
+      "test": "player-smoke:Esc exits fullscreen; F11 exits fullscreen; Fullscreen rapid transitions; Fullscreen chrome coalescing; Fullscreen first frame and delayed zoom stability; Fullscreen explicit zoom after entry; Fullscreen entry restores repainting; Fullscreen playing transition responsiveness; Fullscreen controls overlay without resizing video; Fullscreen controls hide without resizing video; Fullscreen overlay restores windowed controls; Fullscreen overlay timeline seek; Fullscreen exit cancels controls animation; Windows fullscreen composition style; Windows fullscreen restores native border style; Fullscreen exit after native composition commit",
+      "shortcutTest": "player-smoke:F11; Fullscreen custom shortcut; Fullscreen repeat key guard; Fullscreen foreign-window isolation; Fullscreen Space pauses and resumes playback; Fullscreen playback shortcut respects text input; Fullscreen playback custom and cleared shortcut"
+    },
+    "translation.toggle": {
+      "test": "player-smoke:Translation toggle",
+      "shortcutTest": "player-smoke:Ctrl+Shift+T"
+    },
+    "translation.mode": {
+      "test": "player-smoke:Translation mode control"
+    },
+    "annotation.create": {
+      "test": "player-smoke:Annotation create"
+    },
+    "annotation.delete": {
+      "test": "player-smoke:Delete shortcut",
+      "shortcutTest": "player-smoke:Delete shortcut"
+    },
+    "annotation.undo": {
+      "test": "player-smoke:Ctrl+Z",
+      "shortcutTest": "player-smoke:Ctrl+Z"
+    },
+    "annotation.redo": {
+      "test": "player-smoke:Ctrl+Y",
+      "shortcutTest": "player-smoke:Ctrl+Y"
+    },
+    "annotation.tool.select": {
+      "test": "player-smoke:Alt+S",
+      "shortcutTest": "player-smoke:Alt+S"
+    },
+    "annotation.tool.arrow": {
+      "test": "player-smoke:Alt+A",
+      "shortcutTest": "player-smoke:Alt+A"
+    },
+    "annotation.tool.rectangle": {
+      "test": "player-smoke:Alt+R",
+      "shortcutTest": "player-smoke:Alt+R"
+    },
+    "annotation.tool.circle": {
+      "test": "player-smoke:Alt+C",
+      "shortcutTest": "player-smoke:Alt+C"
+    },
+    "annotation.tool.text": {
+      "test": "player-smoke:Alt+T",
+      "shortcutTest": "player-smoke:Alt+T"
+    },
+    "annotation.tool.freeDraw": {
+      "test": "player-smoke:Alt+D",
+      "shortcutTest": "player-smoke:Alt+D"
+    },
+    "compare.modeA": {
+      "test": "player-smoke:Compare A",
+      "shortcutTest": "player-smoke:Compare A"
+    },
+    "compare.toggleB": {
+      "test": "player-smoke:Compare B",
+      "shortcutTest": "player-smoke:Compare B"
+    },
+    "compare.wipe": {
+      "test": "player-smoke:Compare W",
+      "shortcutTest": "player-smoke:Compare W"
+    },
+    "compare.overlay": {
+      "test": "player-smoke:Compare N",
+      "shortcutTest": "player-smoke:Compare N"
+    },
+    "compare.difference": {
+      "test": "player-smoke:Compare D",
+      "shortcutTest": "player-smoke:Compare D"
+    },
+    "compare.horizontal": {
+      "test": "player-smoke:Compare H",
+      "shortcutTest": "player-smoke:Compare H"
+    },
+    "compare.vertical": {
+      "test": "player-smoke:Compare V",
+      "shortcutTest": "player-smoke:Compare V"
+    },
+    "compare.tile": {
+      "test": "player-smoke:Compare T",
+      "shortcutTest": "player-smoke:Compare T"
+    },
+    "compare.autoClearB": {
+      "test": "player-smoke:Ctrl+Shift+C",
+      "shortcutTest": "player-smoke:Ctrl+Shift+C"
+    },
+    "codex.captureFrame": {
+      "test": "player-smoke:Codex frame capture"
+    },
+    "codex.browserSnapshot": {
+      "test": "test_codex_owner_split_contracts.py"
+    },
+    "export.render": {
+      "test": "test_export.py+test_export_h264.py+test_export_h265.py+test_export_prores.py+test_export_exr.py"
+    },
+    "workspace.save": {
+      "test": "player-smoke:Workspace save"
+    },
+    "workspace.reset": {
+      "test": "player-smoke:Workspace reset"
+    },
+    "ocio.enable": {
+      "test": "player-smoke:OCIO enable; state-switch:EXR delayed callback respects media switch; EXR close invalidates delayed callback; Video color unaffected by stale EXR state"
+    },
+    "ocio.alpha": {
+      "test": "player-smoke:OCIO alpha"
+    },
+    "ocio.settings": {
+      "test": "test_plugin_lifecycle_contracts.py"
+    }
   },
   "featureTests": {
     "settings.lifecycle": "player-smoke:Settings lazy construction and local theme+Settings reuse and close cleanup",
@@ -76,5 +223,19 @@
     "updates.downloadReuse": "update_ui_cache_contracts (offline Qt confirmation and cached installer reuse)",
     "updates.integrity": "update_service_contracts (offline HTTP/version/digest/cancellation/launcher)"
   },
-  "environmentCapabilities": ["physical-audio-output-device", "system-audio-driver-routing"]
+  "environmentCapabilities": [
+    "physical-audio-output-device",
+    "system-audio-driver-routing"
+  ],
+  "stateRegression": {
+    "runner": "tests/run_state_regression.py",
+    "groups": [
+      "state-switch",
+      "sequence-time",
+      "fullscreen"
+    ],
+    "unit": "tests/state_contracts/state_contracts.cpp",
+    "policy": "background only, zero visible platform windows, real player state and fixed-frame image comparison",
+    "delayedCallbacks": "state-switch:Old subtitle timer cannot consume new session request; Current subtitle timer still completes; EXR delayed callback respects media switch; EXR close invalidates delayed callback"
+  }
 }
