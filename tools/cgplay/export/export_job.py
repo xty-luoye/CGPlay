@@ -188,7 +188,9 @@ def _render_annotations(frame: np.ndarray, fidx: int, annotations: list):
             frame[:] = bgr
 
 # ─── Main Export ─────────────────────────────────────────────────────────
-def export_frames(input_path, settings, progress_callback=None, start_frame=None, end_frame=None, annotations=None):
+def export_frames(input_path, settings, progress_callback=None, start_frame=None, end_frame=None, annotations=None, frame_numbering="source"):
+    if frame_numbering not in ("source", "relative"):
+        raise ValueError(f"Unknown frame numbering: {frame_numbering}")
     setup_logging(settings.log_file)
     logger = logging.getLogger(__name__)
     logger.info(f"Export: {input_path} -> {settings.output_path}")
@@ -197,17 +199,18 @@ def export_frames(input_path, settings, progress_callback=None, start_frame=None
     if _is_video(input_path):
         return _export_video_file(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations)
     else:
-        try: return _export_image_sequence(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations)
+        try: return _export_image_sequence(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations, frame_numbering)
         except ValueError as e:
             if "no frame" in str(e).lower():
                 return _export_video_file(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations)
             raise
 
-def _export_image_sequence(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations=None):
+def _export_image_sequence(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations=None, frame_numbering="source"):
     if progress_callback: progress_callback(0, "Scanning...")
     reader = ImageReader()
     frames = reader.scan_sequence(input_path)
-    start, end, frame_paths = reader.get_sequence_range(frames, start_frame, end_frame)
+    start, end, frame_paths = reader.get_sequence_range(
+        frames, start_frame, end_frame, frame_numbering=frame_numbering)
     total = len(frame_paths)
     if total == 0: raise ValueError("No frames found")
     annotations = _normalize_annotations(annotations, (number for number, _ in frame_paths))
@@ -219,7 +222,11 @@ def _export_image_sequence(input_path, settings, logger, progress_callback, star
     exporter = _open_exporter(settings, logger)
     try:
         for i, (frame_number, path) in enumerate(frame_paths):
-            frame = reader.read_frame(path)
+            if i == 0:
+                frame = first
+                first = None
+            else:
+                frame = reader.read_frame(path)
             _render_annotations(frame, frame_number, annotations)
             exporter.write_frame(frame)
             if progress_callback: progress_callback(int(5+90*(i+1)/total), f"Encoding... {i+1}/{total}")

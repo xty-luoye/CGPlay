@@ -1,4 +1,4 @@
-﻿// CGPlay OtioExporter.cpp
+// CGPlay OtioExporter.cpp
 
 #include "OtioExporter.h"
 #include "playlist/PlaylistModel.h"
@@ -25,7 +25,11 @@ namespace opentime = opentime::OPENTIME_VERSION;
 bool OtioExporter::exportToFile(const QString& otioPath, PlaylistModel* model,
                                  const QString& timelineName)
 {
-    if (!model || model->rowCount() == 0) return false;
+    _errorString.clear();
+    if (!model || model->rowCount() == 0) {
+        _errorString = QStringLiteral("播放列表为空，无法导出 OTIO。");
+        return false;
+    }
 
     std::vector<ShotItem> shots;
     for (int i = 0; i < model->rowCount(); ++i)
@@ -38,7 +42,20 @@ bool OtioExporter::exportShotsToFile(const QString& otioPath,
                                       const std::vector<ShotItem>& shots,
                                       const QString& timelineName)
 {
-    if (shots.empty()) return false;
+    _errorString.clear();
+    if (shots.empty()) {
+        _errorString = QStringLiteral("播放列表为空，无法导出 OTIO。");
+        return false;
+    }
+    // Reject incomplete rows before constructing or writing any output. A
+    // freshly imported row only has placeholder frame/FPS values until probed.
+    for (const auto& shot : shots) {
+        if (!shot.isMetadataReady()) {
+            _errorString = QStringLiteral("媒体信息尚未读取完成或读取失败，无法导出 OTIO：%1。请等待读取完成，或移除无法读取的条目后重试。")
+                .arg(shot.name.isEmpty() ? shot.path : shot.name);
+            return false;
+        }
+    }
 
     // Determine global FPS from first valid shot
     double globalFps = 24.0;
@@ -48,11 +65,11 @@ bool OtioExporter::exportShotsToFile(const QString& otioPath,
 
     opentime::RationalTime globalStart(0.0, globalFps);
 
-    // Timeline has protected destructor — must heap-allocate
-    // (intentionally leaked: one-shot serialization, process exits after)
+    // OTIO owns child objects; retain the root for this export and release the
+    // entire graph afterwards, including when serialization fails.
     QString tName = timelineName.isEmpty() ? "CGPlay Timeline" : timelineName;
-    auto* timeline = new OTIO::Timeline(tName.toStdString(),
-                                         std::make_optional(globalStart));
+    OTIO::SerializableObject::Retainer<OTIO::Timeline> timeline(
+        new OTIO::Timeline(tName.toStdString(), std::make_optional(globalStart)));
 
     // Stack
     auto* stack = new OTIO::Stack("Stack");
@@ -113,13 +130,11 @@ bool OtioExporter::exportShotsToFile(const QString& otioPath,
     stack->append_child(videoTrack);
     timeline->set_tracks(stack);
 
-    // Serialize: pass raw pointer to std::any
-    std::any timelineAny = static_cast<OTIO::SerializableObject*>(timeline);
     OTIO::ErrorStatus error;
-    bool ok = OTIO::serialize_json_to_file(timelineAny, otioPath.toStdString(),
-                                            nullptr, &error, 4);
+    const bool ok = timeline->to_json_file(otioPath.toStdString(), &error, nullptr, 4);
 
     if (!ok) {
+        _errorString = QString::fromStdString(error.full_description);
         qWarning() << "[OtioExporter] Failed to serialize:"
                     << QString::fromStdString(error.full_description);
     }

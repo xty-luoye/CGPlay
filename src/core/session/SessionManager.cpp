@@ -29,6 +29,9 @@
 #include <QStandardPaths>
 #include <QApplication>
 #include <QTimer>
+#include <QStatusBar>
+#include <QDebug>
+#include <algorithm>
 
 namespace cgplay {
 
@@ -55,6 +58,35 @@ SessionManager::SessionManager(MainWindow* mainWindow,
     , _annoMgr(std::move(annoMgr))
     , _ocioMgr(std::move(ocioMgr))
 {
+    connect(_mainWindow, &MainWindow::mediaOpenRequested, this, [this](const QString&) {
+        if (!_openingRestoreMedia) _cancelRestore();
+    });
+    connect(_mainWindow, &MainWindow::mediaOpenFailed, this,
+        [this](const QString& path, const QString& error) {
+            if (_pendingRestore && _pendingRestore->mediaPath == path) _failRestore(error);
+        });
+    connect(_mainWindow, &MainWindow::mediaPlayerOpening, this, [this](const QString& path) {
+        if (!_pendingRestore) return;
+        if (_pendingRestore->mediaPath != path) {
+            _cancelRestore();
+            return;
+        }
+        _pendingRestore->playerOpening = true;
+    });
+    if (auto* playback = _mainWindow->playbackController()) {
+        connect(playback->signalProxy(), &PlaybackServiceSignals::fileOpened, this,
+            [this](const QString& path) {
+                if (!_pendingRestore || !_pendingRestore->playerOpening || _pendingRestore->mediaPath != path) return;
+                const quint64 generation = _pendingRestore->generation;
+                // Finish after the media-open stack has applied source defaults,
+                // installed the viewer, and decided whether to auto-play.
+                QTimer::singleShot(0, this, [this, generation] { _finishRestore(generation); });
+            });
+        connect(playback->signalProxy(), &PlaybackServiceSignals::fileOpenFailed, this,
+            [this](const QString& path, const QString& error) {
+                if (_pendingRestore && _pendingRestore->playerOpening && _pendingRestore->mediaPath == path) _failRestore(error);
+            });
+    }
     if (auto* eventBus = ServiceLocator::getService<IEventBus>()) {
         connect(this, &SessionManager::sessionLoaded, this, [eventBus](const QString& path) {
             eventBus->publish(SessionLoadedEvent{ path });
@@ -70,6 +102,7 @@ SessionManager::~SessionManager()
 // ─── 保存 ──────────────────────────────────────────────────────────────────
 bool SessionManager::save(const QString& path)
 {
+    if (_pendingRestore) return false;
     QString filePath = path.isEmpty() ? _sessionPath : path;
     if (filePath.isEmpty()) return saveAs();
 
@@ -88,6 +121,7 @@ bool SessionManager::save(const QString& path)
 
     _sessionPath = filePath;
     _setDirty(false);
+    _preserveRecovery = false;
     clearRecovery();  // 手动保存后清除恢复文件
 
     Q_EMIT sessionSaved(filePath);
@@ -131,16 +165,12 @@ bool SessionManager::load(const QString& path)
         return false;
     }
 
-    if (!_deserialize(doc.object())) {
+    if (!_beginRestore(doc.object(), path, false)) {
         QMessageBox::warning(_mainWindow, tr("Load Failed"),
             tr("The project file version is incompatible or the format is invalid."));
         return false;
     }
 
-    _sessionPath = path;
-    _setDirty(false);
-
-    Q_EMIT sessionLoaded(path);
     return true;
 }
 
@@ -151,6 +181,7 @@ void SessionManager::enableAutoSave(int intervalMs)
     _autoSaveTimer = new QTimer(this);
     _autoSaveTimer->setInterval(intervalMs);
     connect(_autoSaveTimer, &QTimer::timeout, this, [this] {
+        if (_pendingRestore || _preserveRecovery) return;
         if (_dirty && hasSession()) {
             save();  // 保存到当前工程文件 → 同时清除恢复文件
         } else if (_dirty) {
@@ -178,6 +209,7 @@ QString SessionManager::recoveryPath() const
 
 void SessionManager::saveRecovery()
 {
+    if (_pendingRestore || _preserveRecovery) return;
     QJsonObject root = _serialize();
 
     const QString path = recoveryPath();
@@ -203,22 +235,19 @@ bool SessionManager::loadRecovery()
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) return false;
 
-    QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    QJsonParseError error;
+    QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &error);
     file.close();
-
-    if (!_deserialize(doc.object())) {
-        clearRecovery();  // 损坏的恢复文件直接删除
-        return false;
-    }
-
-    clearRecovery();       // 恢复成功后清除，避免下次重复提示
-    _sessionPath.clear();  // 恢复的会话没有路径
-    _setDirty(true);       // 标记为已修改，方便用户保存
-    return true;
+    // A failed or interrupted recovery must survive both auto-save and the
+    // window's unconditional clearRecovery() during shutdown.
+    _preserveRecovery = true;
+    if (error.error != QJsonParseError::NoError || !doc.isObject()) return false;
+    return _beginRestore(doc.object(), {}, true);
 }
 
 void SessionManager::clearRecovery()
 {
+    if (_preserveRecovery || _pendingRestore) return;
     const QString path = recoveryPath();
     if (QFile::exists(path)) QFile::remove(path);
 }
@@ -226,6 +255,8 @@ void SessionManager::clearRecovery()
 // ─── 新建会话 ──────────────────────────────────────────────────────────────
 void SessionManager::newSession()
 {
+    _cancelRestore();
+    _preserveRecovery = false;
     _sessionPath.clear();
     _setDirty(false);
     clearRecovery();  // 新建工程后清除旧恢复文件
@@ -318,44 +349,86 @@ QJsonObject SessionManager::_serialize() const
     return root;
 }
 
-// ─── Private: 反序列化 ─────────────────────────────────────────────────────
+bool SessionManager::_beginRestore(const QJsonObject& root, const QString& path, bool recovery)
+{
+    if (root["version"].toInt(-1) < 1) return false;
+    _cancelRestore();
+    const QString mediaPath = root["media"].toObject()["current_path"].toString();
+    _pendingRestore = PendingRestore{root, mediaPath, path, ++_restoreGeneration, recovery};
+    if (recovery) _preserveRecovery = true;
+    // Install stored sequence FPS before openFile() chooses its override.
+    auto* playlist = _mainWindow->playlistPanel();
+    if (playlist && playlist->model() && root.contains("playlist")) {
+        playlist->model()->fromJson(root["playlist"].toObject());
+    }
+    if (mediaPath.isEmpty()) {
+        _finishRestore(_pendingRestore->generation);
+    } else {
+        _openingRestoreMedia = true;
+        _mainWindow->openFile(mediaPath);
+        _openingRestoreMedia = false;
+    }
+    return true; // Accepted; sessionLoaded is emitted only after media readiness.
+}
+
+void SessionManager::_cancelRestore()
+{
+    ++_restoreGeneration;
+    _pendingRestore.reset();
+}
+
+void SessionManager::_failRestore(const QString& error)
+{
+    if (!_pendingRestore) return;
+    const QString path = _pendingRestore->sessionPath;
+    _cancelRestore();
+    qWarning() << "[Session] Restore failed; recovery snapshot retained:" << error;
+    if (_mainWindow->statusBar()) {
+        _mainWindow->statusBar()->showMessage(tr("Session restore failed: %1").arg(error), 10000);
+    }
+    Q_EMIT sessionLoadFailed(path, error);
+}
+
+void SessionManager::_finishRestore(quint64 generation)
+{
+    if (!_pendingRestore || _pendingRestore->generation != generation) return;
+    auto* playback = _mainWindow->playbackController();
+    if (!_pendingRestore->mediaPath.isEmpty() && (!playback || !playback->isValid() ||
+        playback->currentPath() != _pendingRestore->mediaPath)) {
+        _failRestore(tr("The requested media is not ready."));
+        return;
+    }
+    const PendingRestore restored = *_pendingRestore;
+    if (!_deserialize(restored.root)) {
+        _failRestore(tr("Invalid session data."));
+        return;
+    }
+    if (!_pendingRestore || _pendingRestore->generation != generation) return;
+    _pendingRestore.reset();
+    _sessionPath = restored.sessionPath;
+    _setDirty(restored.recovery);
+    _preserveRecovery = false;
+    if (restored.recovery) clearRecovery();
+    Q_EMIT sessionLoaded(restored.sessionPath);
+}
+
+// ─── Private: apply state only after the requested media is ready ─────────
 bool SessionManager::_deserialize(const QJsonObject& root)
 {
-    int version = root["version"].toInt(-1);
-    if (version < 1) return false;  // 不支持旧版本
-
-    // ── Media ────────────────────────────────────────────────────────────
-    QJsonObject media = root["media"].toObject();
-    QString mediaPath = media["current_path"].toString();
-    int currentFrame  = media["current_frame"].toInt(0);
-
-    if (!mediaPath.isEmpty()) {
-        _mainWindow->openFile(mediaPath);
-    }
-
-    // ── Playlist ─────────────────────────────────────────────────────────
-    {
-        auto* pl = _mainWindow->playlistPanel();
-        if (pl && pl->model() && root.contains("playlist")) {
-            pl->model()->fromJson(root["playlist"].toObject());
-        }
-    }
+    if (root["version"].toInt(-1) < 1) return false;
+    const int currentFrame = root["media"].toObject()["current_frame"].toInt(0);
 
     // ── Playback ─────────────────────────────────────────────────────────
     auto* pb = _mainWindow->playbackController();
-    if (pb && root.contains("playback")) {
+    if (pb && !root["media"].toObject()["current_path"].toString().isEmpty()) {
+        pb->pause();
+        pb->clearInOutPoints();
         QJsonObject pbo = root["playback"].toObject();
         int inPt  = pbo["in_point"].toInt(-1);
         int outPt = pbo["out_point"].toInt(-1);
         if (inPt >= 0)  pb->setInPoint(inPt);
         if (outPt >= 0) pb->setOutPoint(outPt);
-    }
-
-    // 跳到指定帧（在打开文件后 + 等待一帧确保播放器就绪）
-    if (pb && currentFrame > 0) {
-        QTimer::singleShot(100, this, [pb, currentFrame] {
-            pb->seekToFrame(currentFrame);
-        });
+        pb->seekToFrame(std::clamp(currentFrame, 0, std::max(0, pb->totalFrames() - 1)));
     }
 
     // ── Compare ──────────────────────────────────────────────────────────

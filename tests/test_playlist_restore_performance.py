@@ -11,7 +11,8 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT = ROOT / "tests/artifacts/player_optimize_20260912/playlist_restore"
+ARTIFACT = Path(os.environ.get("CGPLAY_PLAYLIST_TEST_ARTIFACT",
+    str(ROOT / "tests/artifacts/player_optimize_20260912/playlist_restore")))
 MODEL_ROOT = ROOT
 BASELINE = False
 QT = Path(os.environ.get("CGPLAY_TEST_QT_ROOT", "C:/QtClean/6.5.3/msvc2019_64"))
@@ -42,7 +43,7 @@ RUNNER = r'''
 #endif
 
 using namespace cgplay;
-static std::atomic<int> probes{0}, images{0}, syncIcons{0}, uiDecodes{0};
+static std::atomic<int> probes{0}, images{0}, syncIcons{0}, uiDecodes{0}, uiProbes{0};
 static std::atomic<int> canceled{0}, badMetadata{0}, active{0}, delayMs{100};
 static QJsonObject report;
 #define CHECK(x) do { if (!(x)) { report["failure"] = #x; report["line"] = __LINE__; return false; } } while (false)
@@ -52,7 +53,9 @@ int MediaInfo::effectiveFrameCount() const { return frameCount > 0 ? frameCount 
 bool MediaProbe::isStillImagePath(const QString& path) { return path.endsWith(".png"); }
 bool MediaProbe::isVideoPath(const QString& path) { return path.endsWith(".mp4"); }
 MediaInfo MediaProbe::probe(const QString& path, double fpsOverride, JobContext*) {
+    if (!QFileInfo::exists(path)) { MediaInfo info; info.error = "File not found"; return info; }
     ++probes;
+    if (QThread::currentThread() == qApp->thread()) ++uiProbes;
     QThread::msleep(5);
     MediaInfo info;
     info.path = path; info.name = "fresh-" + QFileInfo(path).baseName();
@@ -112,10 +115,11 @@ static bool restore(const QString& a, const QString& b, const QString& missing) 
     QElapsedTimer timer; timer.start();
     model.fromJson(session({a, a, b, missing}));
     report["restoreMs"] = timer.elapsed();
-    CHECK(probes == 3);
     CHECK(images == 0 && syncIcons == 0);
-    CHECK(timer.elapsed() < 250); // Three 5ms probes, no 350ms thumbnail decodes.
+    CHECK(timer.elapsed() < 250); // Saved rows return before background metadata/thumbnail work.
     CHECK(model.shotCount() == 4 && model.currentIndex() == 0);
+    CHECK(model.shotAt(0).width == 1 && model.shotAt(0).name == "saved-name");
+    CHECK(waitUntil([&] { return model.shotAt(2).width == 640; }));
     CHECK(model.shotAt(0).width == 640 && model.shotAt(0).height == 360);
     CHECK(model.shotAt(0).fps == 30 && model.shotAt(0).frameCount() == 96);
     CHECK(model.shotAt(0).name == "fresh-a");
@@ -126,7 +130,7 @@ static bool restore(const QString& a, const QString& b, const QString& missing) 
     QObject::connect(&heartbeat, &QTimer::timeout, [&] { ++heartbeats; }); heartbeat.start();
     CHECK(waitUntil([&] { return !model.shotAt(0).thumbnail.isNull() &&
         !model.shotAt(1).thumbnail.isNull() && !model.shotAt(2).thumbnail.isNull(); }));
-    CHECK(images == 2 && probes == 3 && uiDecodes == 0 && badMetadata == 0);
+    CHECK(images == 2 && probes == 2 && uiProbes == 0 && uiDecodes == 0 && badMetadata == 0);
     CHECK(model.shotAt(3).thumbnail.isNull());
     CHECK(heartbeats >= 10);
     CHECK(colorAt(model, 0) == Qt::red && colorAt(model, 1) == Qt::red);
@@ -174,7 +178,7 @@ static bool rebuild(const QString& a) {
     OcioManager::PreviewTransformSettings settings; settings.enabled = true;
     model.rebuildThumbnails(settings);
     CHECK(waitUntil([&] { return !model.shotAt(1).thumbnail.isNull(); }));
-    CHECK(images == 2 && probes == 2);
+    CHECK(images == 2 && probes == 1 && uiProbes == 0);
     CHECK(colorAt(model, 0) == Qt::green && colorAt(model, 1) == Qt::green);
     model.rebuildThumbnails(settings);
     pump(100);
@@ -210,6 +214,7 @@ int main(int argc, char** argv) {
     report["visiblePlatformWindows"] = visible;
     report["probeCalls"] = probes.load(); report["decodeCalls"] = images.load();
     report["uiDecodeCalls"] = uiDecodes.load(); report["syncIconCalls"] = syncIcons.load();
+    report["uiProbeCalls"] = uiProbes.load();
     report["canceled"] = canceled.load(); report["badMetadata"] = badMetadata.load();
     const auto json = QJsonDocument(report).toJson(QJsonDocument::Compact);
     std::puts(json.constData());

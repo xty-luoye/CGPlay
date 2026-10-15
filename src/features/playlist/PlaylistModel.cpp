@@ -1,4 +1,4 @@
-﻿// CGPlay PlaylistModel.cpp
+// CGPlay PlaylistModel.cpp
 
 #include "PlaylistModel.h"
 #include "common/jobs/JobSystem.h"
@@ -22,6 +22,7 @@ namespace cgplay {
 namespace {
 
 constexpr int kThumbnailStartDelayMs = 500;
+constexpr int kMaxThumbnailJobs = 2;
 
 bool previewSettingsEqual(
     const OcioManager::PreviewTransformSettings& a,
@@ -43,6 +44,7 @@ PlaylistModel::PlaylistModel(QObject* parent)
 
 PlaylistModel::~PlaylistModel()
 {
+    _cancelMetadataJobs();
     _cancelThumbnailJobs();
 }
 
@@ -138,8 +140,26 @@ void PlaylistModel::addPath(const QString& path)
 
 void PlaylistModel::addPath(const QString& path, double fpsOverride)
 {
-    ShotItem item = _buildShotItem(path, _previewSettings, fpsOverride);
+    // Insert immediately so selection and caller-visible row order stay stable.
+    // Only metadata discovery moves to the worker; all model/QPixmap work stays here.
+    MediaInfo pending;
+    pending.fps = fpsOverride > 0.0 ? fpsOverride : 24.0;
+    ShotItem item = _buildShotItem(path, _previewSettings, fpsOverride, &pending);
     if (!item.isValid()) return;
+    item.fps = fpsOverride > 0.0 ? fpsOverride : 0.0;
+    item._metadataReady = path.startsWith(QStringLiteral(":/cgplay/"));
+
+    beginInsertRows({}, static_cast<int>(_shots.size()), static_cast<int>(_shots.size()));
+    _shots.push_back(std::move(item));
+    endInsertRows();
+    _queueMetadata(static_cast<int>(_shots.size()) - 1, fpsOverride);
+}
+
+void PlaylistModel::addPath(const QString& path, const MediaInfo& mediaInfo, double fpsOverride)
+{
+    ShotItem item = _buildShotItem(path, _previewSettings, fpsOverride, &mediaInfo);
+    if (!item.isValid()) return;
+    item._metadataReady = mediaInfo.error.isEmpty();
 
     beginInsertRows({}, static_cast<int>(_shots.size()), static_cast<int>(_shots.size()));
     _shots.push_back(std::move(item));
@@ -147,15 +167,24 @@ void PlaylistModel::addPath(const QString& path, double fpsOverride)
     _queueThumbnail(path);
 }
 
-void PlaylistModel::addPath(const QString& path, const MediaInfo& mediaInfo, double fpsOverride)
+void PlaylistModel::updateMetadata(int row, const MediaInfo& mediaInfo, double fpsOverride)
 {
-    ShotItem item = _buildShotItem(path, _previewSettings, fpsOverride, &mediaInfo);
-    if (!item.isValid()) return;
-
-    beginInsertRows({}, static_cast<int>(_shots.size()), static_cast<int>(_shots.size()));
-    _shots.push_back(std::move(item));
-    endInsertRows();
-    _queueThumbnail(path);
+    if (row < 0 || row >= static_cast<int>(_shots.size())) return;
+    ShotItem& shot = _shots[static_cast<size_t>(row)];
+    const quint64 token = shot._metadataToken;
+    const ShotItem updated = _buildShotItem(shot.path, _previewSettings, fpsOverride, &mediaInfo);
+    shot._metadataToken = 0;
+    shot._metadataReady = mediaInfo.error.isEmpty();
+    shot.name = updated.name;
+    shot.format = updated.format;
+    shot.width = updated.width;
+    shot.height = updated.height;
+    shot.fps = updated.fps;
+    shot.firstFrame = updated.firstFrame;
+    shot.lastFrame = updated.lastFrame;
+    _cancelUnusedMetadataRequest(token);
+    Q_EMIT dataChanged(index(row), index(row));
+    _queueThumbnail(updated.path);
 }
 
 void PlaylistModel::addPaths(const QStringList& paths)
@@ -191,6 +220,8 @@ void PlaylistModel::rebuildThumbnails(const OcioManager::PreviewTransformSetting
 void PlaylistModel::addShot(ShotItem shot)
 {
     if (!shot.isValid()) return;
+    shot._metadataToken = 0;
+    shot._metadataReady = true;
     beginInsertRows({}, static_cast<int>(_shots.size()), static_cast<int>(_shots.size()));
     _shots.push_back(std::move(shot));
     endInsertRows();
@@ -199,15 +230,28 @@ void PlaylistModel::addShot(ShotItem shot)
 void PlaylistModel::removeShotAt(int index)
 {
     if (index < 0 || index >= static_cast<int>(_shots.size())) return;
+    const QString path = _shots[index].path;
+    const quint64 token = _shots[index]._metadataToken;
     beginRemoveRows({}, index, index);
     _shots.erase(_shots.begin() + index);
     endRemoveRows();
     if (_currentIndex >= static_cast<int>(_shots.size()))
         _currentIndex = static_cast<int>(_shots.size()) - 1;
+    _cancelUnusedMetadataRequest(token);
+    if (std::none_of(_shots.begin(), _shots.end(), [&path](const ShotItem& s) { return s.path == path; })) {
+        _thumbnailQueue.removeAll(path);
+        for (const auto& job : _thumbnailJobs) {
+            if (job && job->property("cgplay.thumbnailPath").toString() == path) {
+                job->setProperty("cgplay.thumbnailCanceled", true);
+                job->cancel();
+            }
+        }
+    }
 }
 
 void PlaylistModel::clear()
 {
+    _cancelMetadataJobs();
     _cancelThumbnailJobs();
     beginResetModel();
     _shots.clear();
@@ -296,7 +340,7 @@ ShotItem PlaylistModel::_buildShotItem(
         : media.firstFrame + std::max(1, media.effectiveFrameCount()) - 1;
     item.width = media.width;
     item.height = media.height;
-    item.fps = media.fps > 0.0 ? media.fps : 24.0;
+    item.fps = fpsOverride > 0.0 ? fpsOverride : (media.fps > 0.0 ? media.fps : 24.0);
 
     const QString lowerPath = path.toLower();
     if (lowerPath.startsWith(":/cgplay/")) {
@@ -307,6 +351,100 @@ ShotItem PlaylistModel::_buildShotItem(
     }
 
     return item;
+}
+
+void PlaylistModel::_queueMetadata(int row, double fpsOverride)
+{
+    if (row < 0 || row >= static_cast<int>(_shots.size())) return;
+    ShotItem& shot = _shots[static_cast<size_t>(row)];
+    if (shot.path.isEmpty() || shot.path.startsWith(QStringLiteral(":/cgplay/"))) return;
+    if (_metadataJob && _activeMetadata.token &&
+        _activeMetadataGeneration == _metadataGeneration &&
+        _activeMetadata.path == shot.path && _activeMetadata.fpsOverride == fpsOverride) {
+        shot._metadataToken = _activeMetadata.token;
+        return;
+    }
+    for (const auto& request : _metadataQueue) {
+        if (request.path == shot.path && request.fpsOverride == fpsOverride) {
+            shot._metadataToken = request.token;
+            return;
+        }
+    }
+    MetadataRequest request{++_nextMetadataToken, shot.path, fpsOverride};
+    shot._metadataToken = request.token;
+    _metadataQueue.enqueue(request);
+    _startNextMetadata();
+}
+
+void PlaylistModel::_startNextMetadata()
+{
+    // Canceled work still occupies this slot until its worker acknowledges it.
+    if (_metadataJob || _metadataQueue.isEmpty()) return;
+    const MetadataRequest request = _metadataQueue.dequeue();
+    const quint64 generation = _metadataGeneration;
+    const auto media = std::make_shared<MediaInfo>();
+    auto* job = JobRunner::start(QStringLiteral("playlist.metadata"), this, 8000,
+        [request, media](JobContext& context) {
+            *media = MediaProbe::probe(request.path, request.fpsOverride, &context);
+            if (context.isCancellationRequested()) return JobOutcome::canceled();
+            if (context.hasTimedOut()) return JobOutcome::timedOut();
+            return media->error.isEmpty()
+                ? JobOutcome::success()
+                : JobOutcome::failure(QStringLiteral("metadata-failed"), media->error);
+        });
+    _metadataJob = job;
+    _activeMetadata = request;
+    _activeMetadataGeneration = generation;
+    connect(job, &JobHandle::finished, this,
+        [this, job, request, generation, media](const JobOutcome& outcome) {
+            if (_metadataJob == job) {
+                _metadataJob.clear();
+                _activeMetadata = {};
+            }
+            job->deleteLater();
+            if (generation == _metadataGeneration) {
+                for (int row = 0; row < static_cast<int>(_shots.size()); ++row) {
+                    ShotItem& shot = _shots[static_cast<size_t>(row)];
+                    if (shot._metadataToken != request.token) continue;
+                    shot._metadataToken = 0;
+                    shot._metadataReady = outcome.succeeded();
+                    if (outcome.succeeded()) {
+                        const ShotItem updated = _buildShotItem(
+                            request.path, _previewSettings, request.fpsOverride, media.get());
+                        shot.name = updated.name;
+                        shot.format = updated.format;
+                        shot.width = updated.width;
+                        shot.height = updated.height;
+                        shot.fps = updated.fps;
+                        shot.firstFrame = updated.firstFrame;
+                        shot.lastFrame = updated.lastFrame;
+                        Q_EMIT dataChanged(index(row), index(row));
+                    }
+                }
+                if (outcome.succeeded()) _queueThumbnail(request.path);
+            }
+            _startNextMetadata();
+        });
+}
+
+void PlaylistModel::_cancelMetadataJobs()
+{
+    ++_metadataGeneration;
+    _metadataQueue.clear();
+    if (_metadataJob) _metadataJob->cancel();
+}
+
+void PlaylistModel::_cancelUnusedMetadataRequest(quint64 token)
+{
+    if (!token || std::any_of(_shots.begin(), _shots.end(), [token](const ShotItem& s) {
+            return s._metadataToken == token;
+        })) return;
+    _metadataQueue.erase(std::remove_if(_metadataQueue.begin(), _metadataQueue.end(),
+        [token](const MetadataRequest& r) { return r.token == token; }), _metadataQueue.end());
+    if (_metadataJob && _activeMetadata.token == token) {
+        _metadataJob->cancel();
+        _activeMetadata.token = 0; // A later re-add must not join this canceled request.
+    }
 }
 
 void PlaylistModel::_queueThumbnail(const QString& path)
@@ -320,12 +458,27 @@ void PlaylistModel::_queueThumbnail(const QString& path)
 void PlaylistModel::_scheduleThumbnail(const QString& path)
 {
     if (path.isEmpty() || !QFileInfo::exists(path)) return;
+    if (_thumbnailQueue.contains(path)) return;
     for (const auto& job : _thumbnailJobs) {
-        if (job && job->property("cgplay.thumbnailPath").toString() == path) return;
+        if (job && job->property("cgplay.thumbnailPath").toString() == path &&
+            job->property("cgplay.thumbnailGeneration").toULongLong() == _thumbnailGeneration &&
+            !job->property("cgplay.thumbnailCanceled").toBool()) return;
     }
+    _thumbnailQueue.enqueue(path);
+    _drainThumbnailQueue();
+}
 
+void PlaylistModel::_drainThumbnailQueue()
+{
+    while (_thumbnailJobs.size() < kMaxThumbnailJobs && !_thumbnailQueue.isEmpty()) {
+        _startThumbnail(_thumbnailQueue.dequeue());
+    }
+}
+
+void PlaylistModel::_startThumbnail(const QString& path)
+{
     const auto shotIt = std::find_if(_shots.cbegin(), _shots.cend(), [&path](const ShotItem& shot) {
-        return shot.path == path && shot.thumbnail.isNull();
+        return shot.path == path && !shot._metadataToken && shot.thumbnail.isNull();
     });
     if (shotIt == _shots.cend()) return;
 
@@ -358,6 +511,7 @@ void PlaylistModel::_scheduleThumbnail(const QString& path)
                 : JobOutcome::success(QVariant::fromValue(image));
         });
     job->setProperty("cgplay.thumbnailPath", path);
+    job->setProperty("cgplay.thumbnailGeneration", QVariant::fromValue(_thumbnailGeneration));
     _thumbnailJobs.push_back(job);
     connect(job, &JobHandle::finished, this,
         [this, job, path, generation](const JobOutcome& outcome) {
@@ -368,25 +522,33 @@ void PlaylistModel::_scheduleThumbnail(const QString& path)
                     }),
                 _thumbnailJobs.end());
             job->deleteLater();
-            if (generation != _thumbnailGeneration || !outcome.succeeded()) return;
-            const QImage image = outcome.value.value<QImage>();
-            if (image.isNull()) return;
-            for (int row = 0; row < static_cast<int>(_shots.size()); ++row) {
-                ShotItem& shot = _shots[static_cast<size_t>(row)];
-                if (shot.path != path || !shot.thumbnail.isNull()) continue;
-                shot.thumbnail = QIcon(QPixmap::fromImage(image));
-                Q_EMIT dataChanged(index(row), index(row), {Qt::DecorationRole});
+            if (generation == _thumbnailGeneration && outcome.succeeded() &&
+                !job->property("cgplay.thumbnailCanceled").toBool()) {
+                const QImage image = outcome.value.value<QImage>();
+                if (!image.isNull()) {
+                    for (int row = 0; row < static_cast<int>(_shots.size()); ++row) {
+                        ShotItem& shot = _shots[static_cast<size_t>(row)];
+                        if (shot.path != path || !shot.thumbnail.isNull()) continue;
+                        shot.thumbnail = QIcon(QPixmap::fromImage(image));
+                        Q_EMIT dataChanged(index(row), index(row), {Qt::DecorationRole});
+                    }
+                }
             }
+            _drainThumbnailQueue();
         });
 }
 
 void PlaylistModel::_cancelThumbnailJobs()
 {
     ++_thumbnailGeneration;
+    _thumbnailQueue.clear();
     for (const auto& job : _thumbnailJobs) {
-        if (job) job->cancel();
+        if (job) {
+            job->setProperty("cgplay.thumbnailCanceled", true);
+            job->cancel();
+        }
     }
-    _thumbnailJobs.clear();
+    // Keep canceled workers counted until finished, including during rebuilds.
 }
 
 QString PlaylistModel::_detectFormat(const QString& path)
@@ -435,6 +597,7 @@ QJsonObject PlaylistModel::toJson() const
         o["width"]       = s.width;
         o["height"]      = s.height;
         o["fps"]         = s.fps;
+        o["metadata_ready"] = s.isMetadataReady();
         o["track_kind"]  = s.trackKind;
         o["track_name"]  = s.trackName;
         if (s.statusColor.isValid())
@@ -447,6 +610,7 @@ QJsonObject PlaylistModel::toJson() const
 
 void PlaylistModel::fromJson(const QJsonObject& root)
 {
+    _cancelMetadataJobs();
     _cancelThumbnailJobs();
     beginResetModel();
     _shots.clear();
@@ -464,27 +628,17 @@ void PlaylistModel::fromJson(const QJsonObject& root)
         s.width      = o["width"].toInt(0);
         s.height     = o["height"].toInt(0);
         s.fps        = o["fps"].toDouble(24.0);
+        s._metadataReady = o["metadata_ready"].toBool(true);
         s.trackKind  = o["track_kind"].toString("Video");
         s.trackName  = o["track_name"].toString();
         if (o.contains("status_color"))
             s.statusColor = QColor(o["status_color"].toString());
-        if (QFileInfo::exists(s.path)) {
-            const cgplay::MediaInfo media = cgplay::MediaProbe::probe(s.path, s.fps > 0.0 ? s.fps : 0.0);
-            s.name = media.name.isEmpty() ? (s.name.isEmpty() ? _displayName(s.path) : s.name) : media.name;
-            s.format = media.formatLabel.isEmpty() ? _detectFormat(s.path) : media.formatLabel;
-            s.width = media.width;
-            s.height = media.height;
-            s.fps = media.fps > 0.0 ? media.fps : 24.0;
-            s.firstFrame = media.firstFrame;
-            s.lastFrame = media.lastFrame >= media.firstFrame
-                ? media.lastFrame
-                : media.firstFrame + std::max(1, media.effectiveFrameCount()) - 1;
-        }
         _shots.push_back(s);
     }
     endResetModel();
-    for (const auto& shot : _shots) {
-        _queueThumbnail(shot.path);
+    for (int row = 0; row < static_cast<int>(_shots.size()); ++row) {
+        const double fps = _shots[static_cast<size_t>(row)].fps;
+        _queueMetadata(row, fps > 0.0 ? fps : 0.0);
     }
 }
 

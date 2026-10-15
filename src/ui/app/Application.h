@@ -283,6 +283,12 @@ public:
     bool rebuildViewerForRuntime();
     void refreshAnnotationCapabilityForRuntime();
 
+Q_SIGNALS:
+    // Issued before asynchronous probing, including same-path reopen and close.
+    void mediaOpenRequested(const QString& path);
+    void mediaPlayerOpening(const QString& path);
+    void mediaOpenFailed(const QString& path, const QString& error);
+
 protected:
     void closeEvent(QCloseEvent* event) override;
     void dragEnterEvent(QDragEnterEvent* event) override;
@@ -327,6 +333,7 @@ private:
     QJsonArray _runMediaStateSmokeChecks(const QString& mediaPath);
     QJsonArray _runSequenceTimeSmokeChecks(const QString& mediaPath);
     QJsonArray _runInOutSmokeChecks(const QString& mediaPath);
+    QJsonArray _runSessionRestoreSmokeChecks(const QString& mediaPath);
     void _showFullScreenChromeTemporarily();
     void _hideFullScreenChrome();
     void _setFullScreenChromeVisible(bool visible, bool forceApply = false);

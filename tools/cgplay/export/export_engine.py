@@ -63,7 +63,7 @@ def _check_dependencies():
         missing.append("Pillow")
     return "\n".join(deps), missing
 
-def run_export(source, output, fps, start_frame, end_frame, bitrate="20M", codec="h264", annotations_json=None):
+def run_export(source, output, fps, start_frame, end_frame, bitrate="20M", codec="h264", annotations_json=None, frame_numbering="source"):
     deps_ok, missing = _check_dependencies()
     sys.stdout.write(f"LOG Dependencies: {deps_ok.replace(chr(10), ' | ')}\n"); sys.stdout.flush()
     if missing:
@@ -88,14 +88,14 @@ def run_export(source, output, fps, start_frame, end_frame, bitrate="20M", codec
                 raise FileNotFoundError(f"Annotation sidecar not found: {annotations_json}")
             with open(annotations_json, 'r', encoding='utf-8') as f:
                 annotations = json.load(f)
-        result = export_frames(source, settings, progress_callback=progress, start_frame=start_frame, end_frame=end_frame, annotations=annotations)
+        result = export_frames(source, settings, progress_callback=progress, start_frame=start_frame, end_frame=end_frame, annotations=annotations, frame_numbering=frame_numbering)
         sys.stdout.write(f"LOG Output: {result}\n"); sys.stdout.write("DONE\n"); sys.stdout.flush()
         return 0
     except Exception as e: _write_error_log(f"Export failed:\n{traceback.format_exc()}", output); return 1
 
 def main():
     if len(sys.argv) < 6:
-        print(f"Usage: export_engine <source> <output> <fps> <start> <end> [bitrate] [codec] [--annotations <json>]\n\nPython: {sys.executable}\nPYTHONPATH: {os.environ.get('PYTHONPATH', '(not set)')}\n", file=sys.stderr)
+        print(f"Usage: export_engine <source> <output> <fps> <start> <end> [bitrate] [codec] [--annotations <json>] [--relative-frames]\n\nPython: {sys.executable}\nPYTHONPATH: {os.environ.get('PYTHONPATH', '(not set)')}\n", file=sys.stderr)
         sys.exit(1)
     source=sys.argv[1]; output=sys.argv[2]; fps=float(sys.argv[3]); start=int(sys.argv[4]); end=int(sys.argv[5])
     bitrate=sys.argv[6] if len(sys.argv)>6 and not sys.argv[6].startswith("--") else "20M"
@@ -105,6 +105,7 @@ def main():
     for i, a in enumerate(sys.argv):
         if a == "--annotations" and i+1 < len(sys.argv):
             anno = sys.argv[i+1]; break
-    sys.exit(run_export(source, output, fps, start, end, bitrate, codec, anno))
+    numbering = "relative" if "--relative-frames" in sys.argv[6:] else "source"
+    sys.exit(run_export(source, output, fps, start, end, bitrate, codec, anno, numbering))
 
 if __name__=="__main__": main()

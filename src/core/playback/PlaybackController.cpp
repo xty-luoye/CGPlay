@@ -1,4 +1,4 @@
-﻿// CGPlay PlaybackController.cpp
+// CGPlay PlaybackController.cpp
 // Uses tl::Player directly (like DJV) — no Qt wrappers.
 
 #include "PlaybackController.h"
@@ -424,6 +424,7 @@ PlaybackController::PlaybackController(
     _p->signalProxy = new PlaybackServiceSignals(this);
 
     connect(this, &PlaybackController::fileOpened, _p->signalProxy, &PlaybackServiceSignals::fileOpened);
+    connect(this, &PlaybackController::fileOpenFailed, _p->signalProxy, &PlaybackServiceSignals::fileOpenFailed);
     connect(this, &PlaybackController::fileClosed, _p->signalProxy, &PlaybackServiceSignals::fileClosed);
     connect(this, &PlaybackController::currentFrameChanged, _p->signalProxy, &PlaybackServiceSignals::currentFrameChanged);
     connect(this, &PlaybackController::fpsChanged, _p->signalProxy, &PlaybackServiceSignals::fpsChanged);
@@ -598,6 +599,7 @@ void PlaybackController::openFile(
     QFileInfo fi(path);
     if (!fi.exists()) {
         qWarning() << "[PlaybackController] File not found:" << path;
+        Q_EMIT fileOpenFailed(path, QStringLiteral("File not found: %1").arg(path));
         return;
     }
 
@@ -779,9 +781,18 @@ void PlaybackController::_createPlayer(
             connect(job, &JobHandle::finished, this,
                 [this, job, path, sourcePath, sequenceFpsOverride, generation](const JobOutcome& outcome) {
                     if (_p->transcodeJob == job) _p->transcodeJob.clear();
-                    if (generation != _p->openGeneration || _p->currentPath != sourcePath || !outcome.succeeded()) return;
+                    if (generation != _p->openGeneration || _p->currentPath != sourcePath) return;
+                    if (!outcome.succeeded()) {
+                        Q_EMIT fileOpenFailed(sourcePath, outcome.errorMessage.isEmpty()
+                            ? QStringLiteral("AV1 conversion did not complete.") : outcome.errorMessage);
+                        return;
+                    }
                     const QString cachePath = outcome.value.toString();
-                    if (!cachePath.isEmpty()) _createPlayer(cachePath, sequenceFpsOverride, sourcePath, QStringLiteral("h264"));
+                    if (cachePath.isEmpty()) {
+                        Q_EMIT fileOpenFailed(sourcePath, QStringLiteral("AV1 conversion returned no playable file."));
+                        return;
+                    }
+                    _createPlayer(cachePath, sequenceFpsOverride, sourcePath, QStringLiteral("h264"));
                 });
             return;
         }
@@ -818,10 +829,13 @@ void PlaybackController::_createPlayer(
                         qWarning() << "[PlaybackController] Background transcode job failed:"
                                    << outcome.errorCode << outcome.errorMessage;
                     }
+                    Q_EMIT fileOpenFailed(sourcePath, outcome.errorMessage.isEmpty()
+                        ? QStringLiteral("Media conversion did not complete.") : outcome.errorMessage);
                     return;
                 }
                 const QString cachePath = outcome.value.toString();
                 if (cachePath.isEmpty()) {
+                    Q_EMIT fileOpenFailed(sourcePath, QStringLiteral("Media conversion returned no playable file."));
                     return;
                 }
                 _destroyPlayer();
@@ -830,6 +844,7 @@ void PlaybackController::_createPlayer(
         return;
     } catch (const std::exception& e) {
         qCritical() << "[PlaybackController] Failed to open:" << path << "—" << e.what();
+        Q_EMIT fileOpenFailed(sourcePath, QString::fromUtf8(e.what()));
     }
 #else
     qWarning() << "[PlaybackController] tlRender not available; stub mode for" << path;

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // CGPlay PlaylistModel.h
 // Qt item model for the shot/clip list
 
@@ -6,6 +6,7 @@
 #include <QString>
 #include <QIcon>
 #include <QPointer>
+#include <QQueue>
 #include "ocio/OcioManager.h"
 #include <vector>
 #include <memory>
@@ -35,6 +36,13 @@ struct ShotItem
 
     bool isValid() const { return !path.isEmpty(); }
     int  frameCount() const { return lastFrame - firstFrame + 1; }
+    bool isMetadataReady() const { return !_metadataToken && _metadataReady; }
+
+private:
+    friend class PlaylistModel;
+    // Transient identity follows this row through moves/sorts, never a session field.
+    quint64 _metadataToken = 0;
+    bool _metadataReady = true;
 };
 
 // ─── PlaylistModel ────────────────────────────────────────────────────────────
@@ -74,6 +82,7 @@ public:
     void addPath(const QString& path);
     void addPath(const QString& path, double fpsOverride);
     void addPath(const QString& path, const MediaInfo& mediaInfo, double fpsOverride = 0.0);
+    void updateMetadata(int row, const MediaInfo& mediaInfo, double fpsOverride = 0.0);
     void addPaths(const QStringList& paths);
     void addShot(ShotItem shot);       // Direct shot insertion (for OTIO import)
     void removeShotAt(int index);
@@ -99,8 +108,19 @@ Q_SIGNALS:
     void currentChanged(int index, const ShotItem& shot);
 
 private:
+    struct MetadataRequest {
+        quint64 token = 0;
+        QString path;
+        double fpsOverride = 0.0;
+    };
+    void _queueMetadata(int row, double fpsOverride);
+    void _startNextMetadata();
+    void _cancelMetadataJobs();
+    void _cancelUnusedMetadataRequest(quint64 token);
     void _queueThumbnail(const QString& path);
     void _scheduleThumbnail(const QString& path);
+    void _drainThumbnailQueue();
+    void _startThumbnail(const QString& path);
     void _cancelThumbnailJobs();
     static ShotItem _buildShotItem(const QString& path, const OcioManager::PreviewTransformSettings& previewSettings = {}, double fpsOverride = 0.0, const MediaInfo* mediaInfo = nullptr);
     static QString  _detectFormat(const QString& path);
@@ -110,7 +130,14 @@ private:
     int                   _currentIndex = -1;
     OcioManager::PreviewTransformSettings _previewSettings;
     QVector<QPointer<JobHandle>> _thumbnailJobs;
+    QQueue<QString> _thumbnailQueue;
     quint64 _thumbnailGeneration = 0;
+    QQueue<MetadataRequest> _metadataQueue;
+    QPointer<JobHandle> _metadataJob;
+    MetadataRequest _activeMetadata;
+    quint64 _activeMetadataGeneration = 0;
+    quint64 _metadataGeneration = 0;
+    quint64 _nextMetadataToken = 0;
 };
 
 } // namespace cgplay

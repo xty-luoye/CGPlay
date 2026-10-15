@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QTimer>
 #include <memory>
+#include <optional>
 
 namespace cgplay {
 
@@ -39,6 +40,7 @@ public:
     bool save(const QString& path = {}) override;
     bool load(const QString& path) override;
     bool saveAs() override;
+    bool isRestoring() const { return _pendingRestore.has_value(); }
 
     // ── 自动保存 ──────────────────────────────────────────────────────────
     void enableAutoSave(int intervalMs = 300000) override;  // 默认 5 分钟
@@ -61,12 +63,30 @@ public Q_SLOTS:
 Q_SIGNALS:
     void sessionSaved(const QString& path);
     void sessionLoaded(const QString& path);
+    void sessionLoadFailed(const QString& path, const QString& error);
     void dirtyChanged(bool dirty);
 
 private:
     QJsonObject _serialize() const;
     bool        _deserialize(const QJsonObject& root);
+    bool        _beginRestore(const QJsonObject& root, const QString& path, bool recovery);
+    void        _finishRestore(quint64 generation);
+    void        _cancelRestore();
+    void        _failRestore(const QString& error);
     void        _setDirty(bool dirty);
+
+    struct PendingRestore {
+        QJsonObject root;
+        QString mediaPath;
+        QString sessionPath;
+        quint64 generation = 0;
+        bool recovery = false;
+        bool playerOpening = false;
+    };
+    std::optional<PendingRestore> _pendingRestore;
+    quint64 _restoreGeneration = 0;
+    bool _openingRestoreMedia = false;
+    bool _preserveRecovery = false;
 
     MainWindow*                      _mainWindow;
     std::shared_ptr<AnnotationManager> _annoMgr;

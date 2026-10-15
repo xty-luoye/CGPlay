@@ -13,6 +13,8 @@ void MainWindow::openFile(const QString& path)
 {
     if (path.isEmpty()) return;
 
+    Q_EMIT mediaOpenRequested(path);
+
     _p->autoPlayPending = false;
 
     const QFileInfo incomingInfo(path);
@@ -50,11 +52,16 @@ void MainWindow::openFile(const QString& path)
         });
     _p->mediaProbeJob = job;
     connect(job, &JobHandle::finished, this,
-        [this, job, path, sequenceFpsOverride, generation, mediaInfo](const JobOutcome&) {
+        [this, job, path, sequenceFpsOverride, generation, mediaInfo](const JobOutcome& outcome) {
             if (_p->mediaProbeJob == job) {
                 _p->mediaProbeJob.clear();
             }
             if (generation != _p->mediaProbeGeneration || mediaInfo->error == QStringLiteral("Media probe canceled")) {
+                return;
+            }
+            if (!outcome.succeeded()) {
+                Q_EMIT mediaOpenFailed(path, outcome.errorMessage.isEmpty()
+                    ? QStringLiteral("Media probing failed or was canceled.") : outcome.errorMessage);
                 return;
             }
             _openFileWithMediaInfo(path, sequenceFpsOverride, *mediaInfo);
@@ -87,32 +94,10 @@ void MainWindow::_openFileWithMediaInfo(
         if (existingIndex < 0) {
             playlistModel->addPath(path, mediaInfo, sequenceFpsOverride);
             existingIndex = playlistModel->shotCount() - 1;
-        } else if (sequenceFpsOverride > 0.0) {
-            auto& shot = const_cast<ShotItem&>(playlistModel->shotAt(existingIndex));
-            shot.fps = sequenceFpsOverride;
-            shot.width = mediaInfo.width;
-            shot.height = mediaInfo.height;
-            shot.firstFrame = mediaInfo.firstFrame;
-            shot.lastFrame = mediaInfo.lastFrame >= mediaInfo.firstFrame
-                ? mediaInfo.lastFrame
-                : mediaInfo.firstFrame + std::max(1, mediaInfo.effectiveFrameCount()) - 1;
-            Q_EMIT playlistModel->dataChanged(
-                playlistModel->index(existingIndex),
-                playlistModel->index(existingIndex));
         } else if (existingIndex >= 0) {
-            auto& shot = const_cast<ShotItem&>(playlistModel->shotAt(existingIndex));
-            shot.width = mediaInfo.width;
-            shot.height = mediaInfo.height;
-            shot.fps = mediaInfo.fps > 0.0 ? mediaInfo.fps : shot.fps;
-            shot.firstFrame = mediaInfo.firstFrame;
-            shot.lastFrame = mediaInfo.lastFrame >= mediaInfo.firstFrame
-                ? mediaInfo.lastFrame
-                : mediaInfo.firstFrame + std::max(1, mediaInfo.effectiveFrameCount()) - 1;
-            shot.format = mediaInfo.formatLabel.isEmpty() ? shot.format : mediaInfo.formatLabel;
-            shot.name = mediaInfo.name.isEmpty() ? shot.name : mediaInfo.name;
-            Q_EMIT playlistModel->dataChanged(
-                playlistModel->index(existingIndex),
-                playlistModel->index(existingIndex));
+            // Confirmed open metadata supersedes any older playlist probe for
+            // this row, including a sequence FPS chosen by the user.
+            playlistModel->updateMetadata(existingIndex, mediaInfo, sequenceFpsOverride);
         }
         if (existingIndex >= 0) {
             playlistModel->setCurrentIndex(existingIndex);
@@ -121,6 +106,7 @@ void MainWindow::_openFileWithMediaInfo(
     if (auto* s = _p->playbackCtrl->playbackStats()) s->reset();
     if (_p->timeline) _p->timeline->setMediaPath(path);
     _p->autoPlayPending = mediaInfo.isVideo;
+    Q_EMIT mediaPlayerOpening(path);
     if (auto* playback = dynamic_cast<PlaybackController*>(_p->playbackCtrl.get())) {
         playback->openFile(path, sequenceFpsOverride, mediaInfo.codecName);
     } else {
@@ -134,9 +120,13 @@ void MainWindow::_openFileWithMediaInfo(
         // once after that item exists so its GPU display shader receives the
         // exact ACES 1.2 options instead of retaining the pre-open defaults.
         const quint64 generation = _p->mediaGenerationId;
-        QTimer::singleShot(250, this, [this, generation, path] {
+        const auto initialColorOptions = _p->ocioManager->currentOptions();
+        QTimer::singleShot(250, this, [this, generation, path, initialColorOptions] {
             if (generation != _p->mediaGenerationId || _p->currentPath != path ||
                 !_p->playbackCtrl->isValid()) return;
+            // A loaded session or a user adjustment owns its selected transform;
+            // this delayed GPU rebind must not replace it with EXR defaults.
+            if (_p->ocioManager->currentOptions() != initialColorOptions) return;
             _p->ocioManager->applyExrSceneLinearDefaults();
         });
     }
@@ -197,6 +187,7 @@ void MainWindow::_resetMediaSession(const QString& path, const QString& fingerpr
 
 void MainWindow::_closeCurrentMedia()
 {
+    Q_EMIT mediaOpenRequested({});
     _p->autoPlayPending = false;
     ++_p->mediaProbeGeneration;
     if (_p->mediaProbeJob) {

@@ -18,6 +18,7 @@ public:
 
 Q_SIGNALS:
     void fileOpened(const QString& path);
+    void fileOpenFailed(const QString& path, const QString& error);
     void fileClosed();
     void currentFrameChanged(int frame, int total);
     void fpsChanged(double fps);

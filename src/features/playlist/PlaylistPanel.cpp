@@ -591,6 +591,11 @@ void PlaylistPanel::_onExportOtio()
     if (e.exportToFile(path, _p->model)) {
         auto* mw = qobject_cast<QMainWindow*>(window());
         if (mw && mw->statusBar()) mw->statusBar()->showMessage(QString::fromUtf8("OTIO 已导出"), 3000);
+    } else {
+        QMessageBox::warning(this, QStringLiteral("OTIO 导出失败"),
+            e.errorString().isEmpty()
+                ? QStringLiteral("无法写入 OTIO 文件，请检查保存位置。")
+                : e.errorString());
     }
 }
 

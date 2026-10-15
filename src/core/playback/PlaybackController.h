@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // CGPlay PlaybackController.h
 // Wraps tl::timeline::Player — follows DJV's pattern directly.
 
@@ -122,6 +122,7 @@ public Q_SLOTS:
 
 Q_SIGNALS:
     void fileOpened(const QString& path);
+    void fileOpenFailed(const QString& path, const QString& error);
     void fileClosed();
     void currentFrameChanged(int frame, int total);
     void fpsChanged(double fps);

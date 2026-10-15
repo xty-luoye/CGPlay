@@ -1,4 +1,4 @@
-﻿// CGPlay ReviewExport.cpp
+// CGPlay ReviewExport.cpp
 
 #include "ReviewExport.h"
 #include "AnnotationItem.h"
@@ -725,7 +725,10 @@ static bool exportWithPython(const QString& srcMedia, const QString& outVideo,
         QString::number(startFrame),
         QString::number(endFrame),
         QStringLiteral("20M"),
-        codecId
+        codecId,
+        // UI ranges and annotation frames are zero-based timeline positions,
+        // even when sequence filenames start at 1001 or another source frame.
+        QStringLiteral("--relative-frames")
     };
     if (!annoJson.isEmpty()) {
         pyArgs << "--annotations" << annoJson;

@@ -32,6 +32,13 @@ class ImageReader:
         读单帧 → RGB uint8（已做 Reinhard + sRGB）
         返回形状 (H, W, 3) numpy 数组。
         """
+        # EXR channel/part metadata is required to distinguish color from AOVs.
+        # An imageio fallback would discard that metadata and could turn Z into A.
+        if os.path.splitext(path)[1].lower() == ".exr":
+            if not _HAS_OIIO:
+                raise RuntimeError("OpenImageIO is required for safe EXR channel interpretation")
+            return _read_oiio(path)
+
         if _HAS_OIIO:
             try:
                 return _read_oiio(path)
@@ -87,32 +94,35 @@ class ImageReader:
     def get_sequence_range(
         frames: Dict[int, str],
         start: Optional[int] = None,
-        end: Optional[int] = None
+        end: Optional[int] = None,
+        *,
+        frame_numbering: str = "source",
     ) -> Tuple[int, int, List[Tuple[int, str]]]:
+        """Select source frames or zero-based timeline positions, including gaps.
+
+        The CLI retains source numbering by default. The player explicitly uses
+        relative numbering for both its export range and annotation frames.
+        """
+        if frame_numbering not in ("source", "relative"):
+            raise ValueError(f"Unknown frame numbering: {frame_numbering}")
         nums = sorted(frames.keys())
+        if not nums:
+            raise ValueError("Empty image sequence")
         actual_min, actual_max = nums[0], nums[-1]
-
-        # 如果请求范围与实际帧完全不重叠，使用实际范围
-        if start is not None and end is not None:
-            if end < actual_min or start > actual_max:
-                # 请求范围完全在序列之外 — 自动修正为实际范围
-                start, end = actual_min, actual_max
+        origin = actual_min if frame_numbering == "relative" else 0
         if start is None:
-            start = actual_min
+            start = actual_min - origin
         if end is None:
-            end = actual_max
+            end = actual_max - origin
+        if start > end or (frame_numbering == "relative" and start < 0):
+            raise ValueError(f"Invalid {frame_numbering} frame range: {start}-{end}")
 
-        frame_paths = []
-        for f in range(start, end + 1):
-            p = frames.get(f)
-            if p:
-                frame_paths.append((f, p))
-
-        # 如果还是没有找到帧（不连续的帧号），收集所有帧
+        # Iterate actual files rather than every integer in a potentially huge
+        # sparse range. Keep timeline positions, not the packed list indices.
+        frame_paths = [(n - origin, frames[n]) for n in nums
+                       if start <= n - origin <= end]
         if not frame_paths:
-            frame_paths = [(n, frames[n]) for n in nums if start <= n <= end]
-            if not frame_paths:
-                frame_paths = [(n, frames[n]) for n in nums]
+            raise ValueError(f"No image files in {frame_numbering} frame range: {start}-{end}")
 
         return start, end, frame_paths
 
@@ -127,10 +137,49 @@ def _read_oiio(path: str) -> np.ndarray:
     if not img:
         raise IOError(f"OIIO: cannot open {path}")
 
-    data = img.read_image(oiio.FLOAT)
-    img.close()
+    try:
+        channels = None
+        if os.path.splitext(path)[1].lower() == ".exr":
+            if img.seek_subimage(1, 0):
+                raise ValueError("Multi-part EXR export requires an explicit part selection")
+            if not img.seek_subimage(0, 0):
+                raise IOError(f"OIIO: cannot read first EXR part: {path}")
+            channels = _exr_color_channels(tuple(img.spec().channelnames))
+        data = img.read_image(oiio.FLOAT)
+        if data is None:
+            raise IOError(f"OIIO: cannot read {path}: {img.geterror()}")
+        if channels is not None:
+            data = data[:, :, channels]
+    finally:
+        img.close()
 
     return _process_pixels(data)
+
+
+def _exr_color_channels(names) -> List[int]:
+    """Choose one named RGB layer and its own Alpha, never an arbitrary AOV."""
+    layers = {}
+    for index, name in enumerate(names):
+        prefix, separator, component = name.rpartition(".")
+        if not separator:
+            prefix, component = "", name
+        component = component.upper()
+        if component not in ("R", "G", "B", "A", "ALPHA"):
+            continue
+        if component == "ALPHA":
+            component = "A"
+        layer = layers.setdefault(prefix, {})
+        layer.setdefault(component, []).append(index)
+    color_layers = [layer for layer in layers.values() if all(c in layer for c in "RGB")]
+    if len(color_layers) != 1:
+        raise ValueError("EXR export requires exactly one named RGB layer; select a color layer first")
+    layer = color_layers[0]
+    if any(len(indices) != 1 for indices in layer.values()):
+        raise ValueError("Ambiguous EXR channel in the selected RGB layer")
+    channels = [layer[c][0] for c in "RGB"]
+    if "A" in layer:
+        channels.append(layer["A"][0])
+    return channels
 
 
 def _read_imageio(path: str) -> np.ndarray:

@@ -1262,7 +1262,12 @@ void MainWindow::_setupMenuBar()
         const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("导出 OTIO"), QStringLiteral("timeline.otio"), tr("OTIO (*.otio)"));
         if (!path.isEmpty()) {
             OtioExporter exporter;
-            exporter.exportToFile(path, _p->playlist->model());
+            if (!exporter.exportToFile(path, _p->playlist->model())) {
+                QMessageBox::warning(this, QStringLiteral("OTIO 导出失败"),
+                    exporter.errorString().isEmpty()
+                        ? QStringLiteral("无法写入 OTIO 文件，请检查保存位置。")
+                        : exporter.errorString());
+            }
         }
     });
 

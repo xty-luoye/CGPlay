@@ -37,6 +37,7 @@ set(CGPLAY_SOURCES
     ui/app/MainWindowAutomation.cpp
     ui/app/MainWindowAutomationFullscreen.cpp
     ui/app/MainWindowAutomationState.cpp
+    ui/app/MainWindowAutomationSession.cpp
     ui/app/MainWindowAutomationCoverage.cpp
     ui/app/MainWindowAutomationMedia.cpp
     ui/app/MainWindowAutomationSettings.cpp

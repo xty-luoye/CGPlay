@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 // CGPlay OtioExporter.h
 // Exports PlaylistModel to OTIO JSON file
 
@@ -24,6 +24,11 @@ public:
     bool exportShotsToFile(const QString& otioPath,
                            const std::vector<ShotItem>& shots,
                            const QString& timelineName = QString());
+
+    QString errorString() const { return _errorString; }
+
+private:
+    QString _errorString;
 };
 
 } // namespace cgplay

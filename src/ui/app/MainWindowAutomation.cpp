@@ -743,6 +743,8 @@ QJsonObject MainWindow::runPlayerSmokeChecks(const QString& mediaPath)
                 for (const auto& result : _runSequenceTimeSmokeChecks(mediaPath)) results.append(result);
             } else if (group == QStringLiteral("in-out")) {
                 for (const auto& result : _runInOutSmokeChecks(mediaPath)) results.append(result);
+            } else if (group == QStringLiteral("session-restore")) {
+                for (const auto& result : _runSessionRestoreSmokeChecks(mediaPath)) results.append(result);
             } else {
                 results.append(QJsonObject{{"name", "Smoke group"}, {"status", "FAIL"},
                     {"message", QStringLiteral("Unknown smoke group: %1").arg(group)}});

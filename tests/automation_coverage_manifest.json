@@ -184,7 +184,7 @@
       "test": "test_codex_owner_split_contracts.py"
     },
     "export.render": {
-      "test": "test_export.py+test_export_h264.py+test_export_h265.py+test_export_prores.py+test_export_exr.py"
+      "test": "test_export.py+test_export_h264.py+test_export_h265.py+test_export_prores.py+test_export_exr.py; test_export_sequence_contract.py:relative ranges, named EXR channels, annotation positions, first-frame reuse, failure cleanup"
     },
     "workspace.save": {
       "test": "player-smoke:Workspace save"
@@ -203,6 +203,7 @@
     }
   },
   "featureTests": {
+    "playlist.otioReadiness": "test_playlist_async_contract.py:pending and failed rows preserve existing output; real OTIO duration/rate; unknown FPS persistence and confirmed metadata supersedes older probe",
     "timeline.inOutVisibility": "tests/run_in_out_regression.py; in-out:values visible for subpixel range; timeline screenshot; cleared label; close clears values",
     "settings.lifecycle": "player-smoke:Settings lazy construction and local theme+Settings reuse and close cleanup",
     "settings.pages": "player-smoke:Settings all pages and captures+Settings shared command choices",
@@ -222,7 +223,11 @@
     "updates.preference": "player-smoke:Settings automatic update preference and cancellation",
     "updates.lifecycle": "test_update_ui_lifecycle.py",
     "updates.downloadReuse": "update_ui_cache_contracts (offline Qt confirmation and cached installer reuse)",
-    "updates.integrity": "update_service_contracts (offline HTTP/version/digest/cancellation/launcher)"
+    "updates.integrity": "update_service_contracts (offline HTTP/version/digest/cancellation/launcher)",
+    "playlist.asyncImport": "test_playlist_async_contract.py; test_playlist_restore_performance.py:GUI heartbeat, order, removal/clear cancellation, metadata deduplication",
+    "playlist.thumbnailDispatch": "test_playlist_async_contract.py:at most two dispatched thumbnails; shared pool remains available; canceled jobs counted until finished",
+    "session.recovery": "run_session_restore_regression.py:media-ready A/B and seek, superseded requests, failed recovery retained, ordinary source switch reset",
+    "export.sequenceContract": "test_export_sequence_contract.py:relative source frames, real EXR RGBZ/RGBA/unsupported channels, one decode per selected frame"
   },
   "environmentCapabilities": [
     "physical-audio-output-device",
