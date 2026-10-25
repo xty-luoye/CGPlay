@@ -190,7 +190,7 @@
       "test": "compare-export-smoke:registered command, immutable player snapshot, controls, background export; tests/test_compare_export.py"
     },
     "recording.open": {
-      "test": "recording-smoke:lazy panel, actual OBS properties, scope/format/audio controls, synthetic start/pause/resume/gain/mute/stop, MP4 probe, recovery and deferred close; tests/test_recording_ui.py"
+      "test": "recording-smoke:lazy panel, actual OBS properties, native/720p/1080p/2K/4K/8K and 24/25/30/50/60/90/120 FPS controls, old component rejection, actual encoded FPS and skipped frame statistics, synthetic start/pause/resume/gain/mute/stop, MP4 probe, recovery and deferred close; tests/test_recording_ui.py; tests/test_recording_helper.py:real native pixels and 2K/4K/8K120 output"
     },
     "workspace.save": {
       "test": "player-smoke:Workspace save"

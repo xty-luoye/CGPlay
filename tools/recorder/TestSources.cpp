@@ -21,7 +21,7 @@ uint64_t recordingFrameTimeNs(uint64_t frames, uint32_t rate) {
 }
 bool recordingClockSelfTest() {
     constexpr uint64_t twoHours = 7200000000000ULL;
-    for (uint32_t rate : {1U, 24U, 25U, 30U, 60U, 48000U}) {
+    for (uint32_t rate : {1U, 24U, 25U, 30U, 60U, 90U, 120U, 48000U}) {
         if (recordingFrameTimeNs(uint64_t(rate) * 7200, rate) != twoHours ||
             recordingFrameTimeNs(uint64_t(rate) * 7200 + 1, rate) <= twoHours) return false;
     }

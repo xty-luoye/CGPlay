@@ -141,9 +141,34 @@ void MainWindow::runRecordingSmokeChecks(const QString& directory,std::function<
             combo("RecordingSource")->setCurrentIndex(0);
             add(QStringLiteral("window source uses exact catalog plan"),panel->currentSettings().value("windowToken")==catalog.value("windows").toArray().at(0).toObject().value("plan").toObject().value("windowToken"));
             combo("RecordingScope")->setCurrentIndex(combo("RecordingScope")->findData(QStringLiteral("monitor")));combo("RecordingSource")->setCurrentIndex(0);
-            combo("RecordingResolution")->setCurrentIndex(0);combo("RecordingFps")->setCurrentIndex(1);
+            auto* resolution=combo("RecordingResolution"); auto* rate=combo("RecordingFps");
+            const auto selectSize=[resolution](int width,int height) {
+                resolution->setCurrentIndex(resolution->findData(QJsonObject{{"width",width},{"height",height}}));
+            };
+            add(QStringLiteral("native resolution is default without preset dimensions"),panel->currentSettings().value("nativeResolution").toBool() &&
+                !panel->currentSettings().contains("width") && !panel->currentSettings().contains("height"));
+            bool presets=true;
+            for (const auto size : {QSize(1280,720),QSize(1920,1080),QSize(2560,1440),QSize(3840,2160),QSize(7680,4320)}) {
+                selectSize(size.width(),size.height()); const auto plan=panel->currentSettings();
+                presets=presets && resolution->currentIndex()>=0 && plan.value("width").toInt()==size.width() &&
+                    plan.value("height").toInt()==size.height() && !plan.contains("nativeResolution");
+            }
+            bool rates=rate->count()==7;
+            for (int fps : {24,25,30,50,60,90,120}) {
+                rate->setCurrentIndex(rate->findData(fps));
+                rates=rates && rate->currentIndex()>=0 && panel->currentSettings().value("fps").toInt()==fps;
+            }
+            add(QStringLiteral("all resolution and frame rate controls up to 8K120"),presets && rates,
+                {{"maximumPlan",panel->currentSettings()}});
+            const QString highImage=QDir(directory).filePath(QStringLiteral("recording_8k120.png"));
+            add(QStringLiteral("8K120 panel widget evidence"),panel->grab().save(highImage,"PNG"),{{"path",highImage},{"method","QWidget::grab; no desktop capture"}});
+            auto oldCatalog=catalog; oldCatalog.remove("recordingConfigRevision"); panel->setCatalog(oldCatalog);
+            add(QStringLiteral("old recording component cannot start new formats"),!button("RecordingStart")->isEnabled() &&
+                panel->findChild<QLabel*>(QStringLiteral("RecordingError"))->text().contains(QStringLiteral("版本过旧")));
+            panel->setCatalog(catalog);combo("RecordingSource")->setCurrentIndex(0);
+            selectSize(1920,1080);rate->setCurrentIndex(rate->findData(60));
             add(QStringLiteral("1080p60 control values"),panel->currentSettings().value("width").toInt()==1920 && panel->currentSettings().value("height").toInt()==1080 && panel->currentSettings().value("fps").toInt()==60);
-            combo("RecordingResolution")->setCurrentIndex(1);combo("RecordingFps")->setCurrentIndex(0);
+            selectSize(1280,720);rate->setCurrentIndex(rate->findData(30));
             checkbox("RecordingSystemEnabled")->click();checkbox("RecordingMicEnabled")->click();
             combo("RecordingSystemDevice")->setCurrentIndex(0);combo("RecordingMicDevice")->setCurrentIndex(0);
             panel->findChild<QSlider*>(QStringLiteral("RecordingSystemGain"))->setValue(50);
@@ -160,6 +185,13 @@ void MainWindow::runRecordingSmokeChecks(const QString& directory,std::function<
         if (state->phase==1) {
             if (actual!=QStringLiteral("Recording") || status.value("durationNs").toVariant().toLongLong()<600000000) return;
             add(QStringLiteral("real synthetic recording started"),true,{{"status",status}});
+            const auto stats=status.value("stats").toObject();
+            const QString statusText=panel->findChild<QLabel*>(QStringLiteral("RecordingStatus"))->text();
+            add(QStringLiteral("actual recording statistics reach service and panel"),stats.value("width").toInt()==1280 &&
+                stats.value("height").toInt()==720 && stats.value("targetFps").toInt()==30 && stats.value("encodedFrames").toInt()>0 &&
+                stats.value("encodedFps").toDouble()>0 && stats.contains("renderSkippedFrames") && stats.contains("encodeSkippedFrames") &&
+                statusText.contains(QStringLiteral("编码输出")) && statusText.contains(QStringLiteral("编码跳帧")),
+                {{"stats",stats},{"statusText",statusText}});
             trace(QStringLiteral("pause-request-before"));button("RecordingPause")->click();trace(QStringLiteral("pause-request-after"));state->phase=2;state->phaseElapsed.restart();return;
         }
         if (state->phase==2) {
@@ -391,6 +423,8 @@ raise SystemExit(0 if ok else 1)
             if (actual!=QStringLiteral("Completed")) { finish(status.value("error").toString());return; }
             add(QStringLiteral("real recovery button publishes second new MP4"),QFileInfo(QDir(directory).filePath(QStringLiteral("recovered_ui.mp4"))).isFile() && QFileInfo(QDir(directory).filePath(QStringLiteral("recording_ui.mp4"))).isFile(),{{"status",status}});
             checkbox("RecordingMicMute")->setChecked(false);output->setText(QDir(directory).filePath(QStringLiteral("close_ui.mp4")));
+            combo("RecordingResolution")->setCurrentIndex(combo("RecordingResolution")->findData(QJsonObject{{"nativeResolution",true}}));
+            combo("RecordingFps")->setCurrentIndex(combo("RecordingFps")->findData(120));
             button("RecordingStart")->click();state->phase=9;state->phaseElapsed.restart();return;
         }
         if (state->phase==9) {
@@ -400,6 +434,10 @@ raise SystemExit(0 if ok else 1)
             state->phase=10;state->phaseElapsed.restart();return;
         }
         if (state->phase==10 && !service->isBusy() && !isVisible()) {
+            const auto stats=status.value("stats").toObject();
+            add(QStringLiteral("native 120FPS UI request survives real save and close"),stats.value("nativeResolution").toBool() &&
+                stats.value("width").toInt()==320 && stats.value("height").toInt()==180 && stats.value("targetFps").toInt()==120 &&
+                actual==QStringLiteral("Completed"),{{"status",status}});
             add(QStringLiteral("pending-close completion hook was exercised"),state->evidence.value("closePendingReentryChecked").toBool());
             add(QStringLiteral("close completes after recorder finalization"),actual==QStringLiteral("Completed") && QFileInfo(QDir(directory).filePath(QStringLiteral("close_ui.mp4"))).isFile(),{{"status",status}});
             finish();

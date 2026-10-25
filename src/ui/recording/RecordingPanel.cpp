@@ -61,13 +61,19 @@ RecordingPanel::RecordingPanel(QWidget* parent) : QWidget(parent)
     _refresh->setObjectName(QStringLiteral("RecordingRefresh")); column->addWidget(_refresh);
     auto* format = new QFormLayout; column->addLayout(format);
     _resolution = new QComboBox(this); _resolution->setObjectName(QStringLiteral("RecordingResolution"));
-    _resolution->addItem(QStringLiteral("1080p · 1920 × 1080"), QJsonObject{{"width",1920},{"height",1080}});
+    _resolution->addItem(QStringLiteral("原始分辨率"), QJsonObject{{"nativeResolution",true}});
     _resolution->addItem(QStringLiteral("720p · 1280 × 720"), QJsonObject{{"width",1280},{"height",720}});
+    _resolution->addItem(QStringLiteral("1080p · 1920 × 1080"), QJsonObject{{"width",1920},{"height",1080}});
+    _resolution->addItem(QStringLiteral("2K · 2560 × 1440"), QJsonObject{{"width",2560},{"height",1440}});
+    _resolution->addItem(QStringLiteral("4K · 3840 × 2160"), QJsonObject{{"width",3840},{"height",2160}});
+    _resolution->addItem(QStringLiteral("8K · 7680 × 4320"), QJsonObject{{"width",7680},{"height",4320}});
+    _resolution->setToolTip(QStringLiteral("原始分辨率保留录制来源的实际像素；宽度向上补齐到 4 的倍数，高度向上补齐到偶数，最高 8K。"));
     format->addRow(QStringLiteral("画质"), _resolution);
     _fps = new QComboBox(this); _fps->setObjectName(QStringLiteral("RecordingFps"));
-    _fps->addItem(QStringLiteral("30 FPS"), 30); _fps->addItem(QStringLiteral("60 FPS"), 60);
+    for (int fps : {24,25,30,50,60,90,120}) _fps->addItem(QStringLiteral("%1 FPS").arg(fps),fps);
+    _fps->setCurrentIndex(_fps->findData(30));
     format->addRow(QStringLiteral("帧率"), _fps);
-    auto* sdr = new QLabel(QStringLiteral("H.264 / MP4 · SDR。HDR 屏幕请先关闭 HDR。"), this);
+    auto* sdr = new QLabel(QStringLiteral("H.264 / MP4 · SDR · CPU 编码，最高 8K / 120 FPS。实际流畅度取决于设备性能；掉帧时请降低分辨率或帧率。HDR 屏幕请先关闭 HDR。"), this);
     sdr->setWordWrap(true); column->addWidget(sdr);
     auto* outputRow = new QHBoxLayout;
     _output = new QLineEdit(this); _output->setObjectName(QStringLiteral("RecordingOutput"));
@@ -134,6 +140,9 @@ void RecordingPanel::setCatalog(const QJsonObject& catalog)
 {
     if (isBusy()) return;
     _catalog = catalog; _catalogError = catalog.value(QStringLiteral("error")).toString();
+    if (_catalogError.isEmpty() && (catalog.value(QStringLiteral("recordingConfigRevision")).toInt()<2 ||
+        catalog.value(QStringLiteral("maxFps")).toInt()<120 || !catalog.value(QStringLiteral("nativeResolution")).toBool()))
+        _catalogError=QStringLiteral("录屏组件版本过旧，请更新录屏组件后重试。");
     _error->setText(_catalogError);
     populateDevices(_systemDevice,catalog.value(QStringLiteral("systemAudio")).toArray());
     populateDevices(_micDevice,catalog.value(QStringLiteral("microphones")).toArray()); updateSources();
@@ -170,8 +179,14 @@ QJsonObject RecordingPanel::currentSettings() const
     QJsonObject result=kind==QStringLiteral("player") ? _playerSelection : _source->currentData().toJsonObject();
     result.insert(QStringLiteral("source"),kind);
     const auto size=_resolution->currentData().toJsonObject();
-    result.insert(QStringLiteral("width"),size.value(QStringLiteral("width")));
-    result.insert(QStringLiteral("height"),size.value(QStringLiteral("height")));
+    if (size.value(QStringLiteral("nativeResolution")).toBool()) {
+        result.insert(QStringLiteral("nativeResolution"),true);
+        result.remove(QStringLiteral("width")); result.remove(QStringLiteral("height"));
+    } else {
+        result.remove(QStringLiteral("nativeResolution"));
+        result.insert(QStringLiteral("width"),size.value(QStringLiteral("width")));
+        result.insert(QStringLiteral("height"),size.value(QStringLiteral("height")));
+    }
     result.insert(QStringLiteral("fps"),_fps->currentData().toInt());
     result.insert(QStringLiteral("output"),_output->text().trimmed());
     result.insert(QStringLiteral("systemEnabled"),_systemEnabled->isChecked());
@@ -229,6 +244,14 @@ void RecordingPanel::setServiceState(const QJsonObject& value)
     if (!descriptor.isEmpty()) _recoveryDescriptorPath=descriptor;
     if (!mkv.isEmpty()) _recoveryMkvPath=mkv;
     QString status=labels.value(_state,_state)+QStringLiteral("  ")+durationText(value.value(QStringLiteral("durationNs")).toVariant().toLongLong());
+    const auto stats=value.value(QStringLiteral("stats")).toObject();
+    if (stats.value(QStringLiteral("targetFps")).toInt()>0) {
+        status+=QStringLiteral("\n%1 × %2 · 目标 %3 FPS · 编码输出 %4 FPS\n渲染跳帧 %5 · 编码跳帧 %6 · H.264（CPU）")
+            .arg(stats.value(QStringLiteral("width")).toInt()).arg(stats.value(QStringLiteral("height")).toInt())
+            .arg(stats.value(QStringLiteral("targetFps")).toInt()).arg(stats.value(QStringLiteral("encodedFps")).toDouble(),0,'f',1)
+            .arg(stats.value(QStringLiteral("renderSkippedFrames")).toVariant().toULongLong())
+            .arg(stats.value(QStringLiteral("encodeSkippedFrames")).toVariant().toULongLong());
+    }
     QString recoveryPaths;
     if (!_recoveryDescriptorPath.isEmpty()) recoveryPaths+=QStringLiteral("恢复记录：%1").arg(_recoveryDescriptorPath);
     if (!_recoveryMkvPath.isEmpty()) recoveryPaths+=(recoveryPaths.isEmpty()?QString():QStringLiteral("\n"))+QStringLiteral("录像文件：%1").arg(_recoveryMkvPath);
@@ -238,7 +261,7 @@ void RecordingPanel::setServiceState(const QJsonObject& value)
         ? recoveryPaths : value.value(QStringLiteral("outputPath")).toString());
     _recover->setToolTip(recoveryPaths);
     const QString error=value.value(QStringLiteral("error")).toString();
-    _error->setText(error.contains(QStringLiteral("player-geometry-refresh-required"))
+    _error->setText((error.contains(QStringLiteral("player-geometry-refresh-required")) || error.contains(QStringLiteral("native-source-geometry-changed")))
         ? QStringLiteral("录制区域尺寸发生变化，已停止并保留录像；请重新开始。") : error);
     updateControls();
 }

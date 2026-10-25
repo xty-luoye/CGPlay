@@ -5,6 +5,7 @@ import ctypes
 import hashlib
 import json
 import math
+from fractions import Fraction
 import os
 import re
 import subprocess
@@ -153,11 +154,16 @@ def prepare(request):
     plan = request.get("helperPlan", {})
     if not isinstance(plan, dict):
         raise ValueError("invalid-helper-plan")
+    native_resolution = plan.get("nativeResolution", False)
+    if not isinstance(native_resolution, bool):
+        raise ValueError("invalid-native-resolution-selection")
     audio_count = 3 if plan.get("splitTracks") and (plan.get("systemEnabled") or plan.get("micEnabled")) else 1
     value = dict(schema=1, kind="cgplay-recording-session", sessionId=session,
                  mkvFile=mkv.name, nativeSidecarFile=mkv.name + ".json", finalOutputPath=str(output),
                  protectedInputs=protected, protectedMediaPaths=request.get("protectedMediaPaths", []),
-                 width=plan.get("width", 1920), height=plan.get("height", 1080), fps=plan.get("fps", 30), audioStreams=audio_count)
+                 width=None if native_resolution else plan.get("width", 1920),
+                 height=None if native_resolution else plan.get("height", 1080), nativeResolution=native_resolution,
+                 fps=plan.get("fps", 30), audioStreams=audio_count)
     write_exclusive(descriptor, value)
     return dict(ok=True, sessionId=session, sessionDescriptorPath=str(descriptor), mkvPath=str(mkv), outputPath=str(output))
 
@@ -200,6 +206,19 @@ def descriptor_paths(path):
         raise ValueError("native-sidecar-mismatch")
     if not isinstance(native.get("mkvIdentity"), dict):
         raise ValueError("recording-identity-not-yet-recorded")
+    if value.get("nativeResolution") is True:
+        # Only the helper can resolve the real physical capture dimensions.
+        # Keep the request immutable; bind finalization/recovery to its recorded
+        # format, then require the actual media probe to match it exactly.
+        video_format = native.get("videoFormat", {})
+        if not isinstance(video_format, dict) or video_format.get("nativeResolution") is not True:
+            raise ValueError("native-recording-format-missing")
+        width, height, fps = (video_format.get(key) for key in ("width", "height", "fps"))
+        if (any(type(number) is not int for number in (width, height, fps)) or
+                not 160 <= width <= 8192 or not 90 <= height <= 8192 or width % 4 or height % 2 or
+                width * height > 8192 * 4320 or not 1 <= fps <= 120 or fps != value.get("fps")):
+            raise ValueError("invalid-native-recording-format")
+        value = dict(value, width=width, height=height)
     return value, mkv, native["mkvIdentity"]
 
 
@@ -299,6 +318,8 @@ def probe(ffprobe, path, stage, cancel_path, expected):
         raise ValueError("unexpected-recording-streams")
     if (video[0].get("width"), video[0].get("height")) != (expected["width"], expected["height"]):
         raise ValueError("unexpected-recording-dimensions")
+    if Fraction(video[0].get("r_frame_rate", "0/1")) != expected["fps"]:
+        raise ValueError("unexpected-recording-frame-rate")
     duration = float(value.get("format", {}).get("duration", 0))
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError("invalid-recording-duration")

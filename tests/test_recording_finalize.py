@@ -44,11 +44,11 @@ class RecordingFinalizeTests(unittest.TestCase):
         (self.directory/('finalizer'+str(self.request_index)+'.json')).write_text(json.dumps(dict(exitCode=process.returncode,messages=messages),indent=2),encoding='utf-8')
         return process.returncode,messages[-1]
 
-    def capture(self):
-        code,value=self.call('prepare')
+    def capture(self,**settings):
+        code,value=self.call('prepare',helperPlan=self.helper.plan(**settings))
         self.assertEqual(0,code,value)
         self.helper.output=Path(value['mkvPath'])
-        self.helper.start()
+        self.helper.start(**settings)
         import time;time.sleep(1.3)
         self.helper.stop()
         return self.helper.output
@@ -61,6 +61,38 @@ class RecordingFinalizeTests(unittest.TestCase):
         recovered=self.directory/'recovered.mp4'
         code,value=self.call('recover',finalOutputPath=str(recovered));self.assertEqual(0,code,value)
         self.assertGreater(media(recovered)['video'][0]['count'],20)
+
+    def test_native_dimensions_survive_real_publish_and_recovery(self):
+        mkv=self.capture(nativeResolution=True,sourceWidth=321,sourceHeight=181,fps=120)
+        before=hashlib.sha256(mkv.read_bytes()).hexdigest()
+        descriptor=json.loads(self.descriptor.read_text())
+        self.assertTrue(descriptor['nativeResolution']);self.assertIsNone(descriptor['width'])
+        for operation,name in [('finalize','published.mp4'),('recover','native-recovered.mp4')]:
+            target=self.directory/name
+            code,value=self.call(operation,finalOutputPath=str(target));self.assertEqual(0,code,value)
+            with av.open(str(target)) as container:
+                stream=container.streams.video[0]
+                self.assertEqual((324,182),(stream.width,stream.height));self.assertEqual(120,stream.base_rate)
+                times=[float(frame.pts*frame.time_base) for frame in container.decode(video=0)]
+                self.assertGreater(len(times),100)
+                self.assertTrue(all(abs(b-a-1/120)<.002 for a,b in zip(times,times[1:])))
+        self.assertEqual(before,hashlib.sha256(mkv.read_bytes()).hexdigest())
+
+    def test_native_format_metadata_is_required_bounded_and_probed(self):
+        mkv=self.capture(nativeResolution=True)
+        sidecar=Path(str(mkv)+'.json');original=json.loads(sidecar.read_text())
+        formats=[None,dict(nativeResolution=True,width=8192,height=8192,fps=30),
+                 dict(nativeResolution=True,width=324,height=182,fps=121),
+                 dict(nativeResolution=True,width=True,height=182,fps=30),
+                 dict(nativeResolution=True,width=640,height=360,fps=30)]
+        for video_format in formats:
+            changed=dict(original)
+            if video_format is None:changed.pop('videoFormat',None)
+            else:changed['videoFormat']=video_format
+            sidecar.write_text(json.dumps(changed),encoding='utf-8')
+            code,value=self.call('recover');self.assertNotEqual(0,code,value);self.assertFalse(self.target.exists())
+        sidecar.write_text(json.dumps(original),encoding='utf-8')
+        self.assertTrue(mkv.exists())
 
     def test_killed_helper_mkv_recovers_through_real_finalizer(self):
         code,value=self.call('prepare');self.assertEqual(0,code,value)

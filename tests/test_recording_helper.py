@@ -157,9 +157,9 @@ class Helper:
         self.send("start", plan=self.plan(**values))
         return self.wait(state="Recording", event="state")
 
-    def stop(self):
+    def stop(self, timeout=20):
         self.send("stop")
-        result = self.wait(state="Completed", event="finalized")
+        result = self.wait(state="Completed", event="finalized", timeout=timeout)
         self.finish(0)
         return result
 
@@ -454,6 +454,109 @@ class RecordingHelperTests(unittest.TestCase):
         self.assertLess(float(image[:20].mean()), 2.)
         self.assertGreater(float(image[540].mean()), 20.)
         (self.directory / "static_1080p_report.json").write_text(json.dumps(video, indent=2), encoding="utf-8")
+
+    def test_resolution_rate_and_native_limits_fail_before_encoding(self):
+        for values in (dict(fps=121), dict(fps=240), dict(width=8194), dict(height=8194),
+                       dict(width=8192, height=8192), dict(width=321), dict(width=322), dict(fps=120.5),
+                       dict(nativeResolution="true"), dict(nativeResolution=True, sourceWidth=8193),
+                       dict(nativeResolution=True, sourceWidth=8192, sourceHeight=8192)):
+            with self.subTest(values=values):
+                helper = self.helper(); helper.wait(event="ready")
+                helper.send("start", plan=helper.plan(**values))
+                rejected = helper.wait(state="Failed", event="state"); helper.finish(1)
+                self.assertTrue(rejected["error"])
+                self.assertFalse(any(item.get("state") == "Recording" for item in helper.events))
+                self.assertTrue(not helper.output.exists() or helper.output.stat().st_size == 0)
+
+    def test_native_odd_portrait_and_player_crop_preserve_pixel_geometry(self):
+        cases = [dict(sourceWidth=321, sourceHeight=181), dict(sourceWidth=181, sourceHeight=321),
+                 dict(sourceWidth=641, sourceHeight=361, geometryEpoch=1, cropLeft=80, cropTop=40,
+                      cropWidth=321, cropHeight=181, clientWidth=641, clientHeight=361)]
+        reports = []
+        for values in cases:
+            with self.subTest(values=values):
+                helper = self.helper(); helper.start(nativeResolution=True, testStatic=True, **values)
+                time.sleep(.9); final = helper.stop()
+                width, height = values.get("cropWidth", values["sourceWidth"]), values.get("cropHeight", values["sourceHeight"])
+                expected = ((width+3)//4*4, (height+1)//2*2)
+                with av.open(str(helper.output)) as source:
+                    stream = source.streams.video[0]
+                    self.assertEqual(expected, (stream.width, stream.height))
+                    frame = next(source.decode(video=0)).to_ndarray(format="rgb24")
+                # A gradient's source-coordinate values distinguish 1:1 padding
+                # from fitting/cropping/resampling the source into the canvas.
+                y, x = np.mgrid[12:height-12:8, 12:width-12:8]
+                actual = frame[y, x].astype(float)
+                expected_rgb = np.stack((np.zeros_like(x), (y+values.get("cropTop", 0))*255//values["sourceHeight"],
+                                         (x+values.get("cropLeft", 0))*255//values["sourceWidth"]), axis=-1)
+                error = np.abs(actual-expected_rgb)
+                self.assertLess(float(error.mean()), 5.)
+                self.assertLess(float(np.percentile(error, 99)), 14.)
+                stats = final["stats"]
+                self.assertTrue(stats["nativeResolution"])
+                self.assertEqual(expected, (stats["width"], stats["height"]))
+                self.assertGreater(stats["encodedFrames"], 10)
+                reports.append(dict(plan=values, dimensions=expected, pixelMeanError=float(error.mean()), stats=stats))
+        (self.directory / "native_pixel_report.json").write_text(json.dumps(reports, indent=2), encoding="utf-8")
+
+    def test_120fps_output_timestamps_audio_and_statistics_are_real(self):
+        helper = self.helper(); helper.start(fps=120)
+        time.sleep(1.4); final = helper.stop()
+        value = media(helper.output); video = value["video"][0]; audio = value["audio"][0]
+        self.assertGreater(video["count"], 100)
+        self.assertTrue(np.all(np.abs(np.diff(video["times"]) - 1/120) < .002))
+        self.assertLess(abs(len(audio["samples"])/audio["rate"] - video["count"]/120), .18)
+        stats = final["stats"]
+        self.assertEqual(120, stats["targetFps"])
+        # libobs send_interleaved increments before the muxer's stop timestamp
+        # cutoff. This is encoded output throughput, not an exact file counter.
+        self.assertGreaterEqual(stats["encodedFrames"], video["count"])
+        progress = [item["stats"] for item in helper.events if item.get("event") == "progress" and item.get("state") == "Recording"]
+        self.assertTrue(any(item["encodedFps"] > 0 for item in progress))
+        for key in ("encodedFrames", "renderSkippedFrames", "encodeSkippedFrames"):
+            self.assertTrue(all(b[key] >= a[key] for a,b in zip(progress, progress[1:])))
+        (self.directory / "120fps_report.json").write_text(json.dumps(dict(video=video, audioSamples=len(audio["samples"]),
+            audioRate=audio["rate"], stats=stats, progress=progress), indent=2), encoding="utf-8")
+
+    def test_2k_4k_and_8k120_encode_real_bounded_clips(self):
+        reports = []
+        for width, height, fps in ((2560,1440,60), (3840,2160,120), (7680,4320,120)):
+            with self.subTest(size=(width,height,fps)):
+                helper = self.helper(); helper.start(width=width, height=height, fps=fps,
+                    sourceWidth=640, sourceHeight=360, testStatic=True)
+                # The native stop/shutdown watchdog is 25 seconds, including
+                # overloaded 8K encoder drain. Observe that bounded contract;
+                # a hard-timeout exit still fails rather than passing as flush.
+                started = time.monotonic(); time.sleep(1.1); final = helper.stop(timeout=30)
+                # Stream decode one frame at a time: retaining an 8K120 clip as
+                # RGB arrays would turn an encoder check into a memory stress.
+                times = []; dims = set(); previous_dts = None
+                with av.open(str(helper.output)) as source:
+                    stream = source.streams.video[0]
+                    self.assertEqual((width,height), (stream.width,stream.height))
+                    self.assertEqual(fps, stream.average_rate)
+                    for packet in source.demux(stream):
+                        if packet.dts is not None:
+                            self.assertTrue(previous_dts is None or packet.dts>=previous_dts); previous_dts=packet.dts
+                        for frame in packet.decode():
+                            times.append(float(frame.pts*frame.time_base)); dims.add((frame.width,frame.height))
+                self.assertGreater(len(times), 2)
+                self.assertEqual({(width,height)}, dims)
+                gaps = np.diff(times)
+                self.assertTrue(np.all(gaps>0))
+                self.assertTrue(np.all(np.abs(gaps*fps-np.rint(gaps*fps))<.25))
+                self.assertEqual((width,height,fps), tuple(final["stats"][key] for key in ("width","height","targetFps")))
+                self.assertGreaterEqual(final["stats"]["encodedFrames"], len(times))
+                self.assertEqual(0, final["liveSourceThreads"])
+                with av.open(str(helper.output)) as source:
+                    audio_frames=list(source.decode(audio=0))
+                    samples=sum(frame.samples for frame in audio_frames)
+                    audio_seconds=samples/48000
+                self.assertLess(abs(audio_seconds-len(times)/fps), .18)
+                reports.append(dict(width=width,height=height,targetFps=fps,frames=len(times),
+                    elapsedSeconds=time.monotonic()-started,stats=final["stats"],times=times,audioSeconds=audio_seconds,
+                    syntheticOnly=True,sustainedHardwarePerformanceVerified=False))
+        (self.directory / "high_resolution_report.json").write_text(json.dumps(reports, indent=2), encoding="utf-8")
 
     def test_crop_epochs_use_edge_rescaling_and_ignore_old_geometry(self):
         helper = self.helper()

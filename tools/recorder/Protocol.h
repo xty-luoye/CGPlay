@@ -33,7 +33,7 @@ public:
     ~Protocol();
     Protocol(const Protocol&) = delete;
     bool pop(std::string& line);
-    void emit(const char* event, const std::string& state, const std::string& error = {}, long long durationNs = 0, long long bytes = 0, int liveThreads = -1);
+    void emit(const char* event, const std::string& state, const std::string& error = {}, long long durationNs = 0, long long bytes = 0, int liveThreads = -1, obs_data_t* stats = nullptr);
     bool accept(obs_data_t* command);
     bool failed() const { return overflow.load() || outputFailed.load(); }
     bool ended() const { return eof.load(); }

@@ -403,7 +403,7 @@
     {
       "id": "OBS-corresponding-sources",
       "archive": "CGPlay_1.0.8_OBS_corresponding_sources.zip",
-      "sha256": "7554c9d15cf62bb303a63409e6b5421ebf81007e12f27d21ef1bbb5627a37f85",
+      "sha256": "c83fe0a6450abd005f7030312be532de7c160cd807b11b809c52d91483eaea36",
       "sourceUrl": "https://github.com/obsproject/obs-studio/tree/72e86655715d9a25d69ce446aa4dd44ba58e10d2",
       "kind": "complete-corresponding-source-bundle"
     },
@@ -4383,7 +4383,7 @@
     },
     {
       "path": "runtime/recorder/CGPlayRecorder.exe",
-      "sha256": "997a9ac9f266028ac349c4509ed4a1e3ed4c0047970a4fa99b00ac9751f6c988"
+      "sha256": "e16e91d42a2241e31f8ad3a9b7552b7842db7ba76b1df8e113d5a4b3cad8f98d"
     },
     {
       "path": "runtime/recorder/core/obs-ffmpeg/data/locale/af-ZA.ini",
@@ -5203,7 +5203,7 @@
     },
     {
       "path": "runtime/recorder/core/win-capture/win-capture.dll",
-      "sha256": "2db0ee107950707b1944556d634a7ba0e30958910d04cf0ee07ac5dc12e8d119"
+      "sha256": "589e24581363f03fbf3921fa3231e442e28fa5276e511b2a2503129f51edc6d2"
     },
     {
       "path": "runtime/recorder/core/win-wasapi/data/locale/af-ZA.ini",
@@ -5487,7 +5487,7 @@
     },
     {
       "path": "runtime/recorder/core/win-wasapi/win-wasapi.dll",
-      "sha256": "7d35d7641bc1749ad0f91a201cc5666b8978a0b46f787734b46080ab89750dba"
+      "sha256": "6907ed4c885317d715e5ae4ce45cec60cc56e68e6abf7b29d6235701b442a541"
     },
     {
       "path": "runtime/recorder/data/libobs/area.effect",
@@ -5631,7 +5631,7 @@
     },
     {
       "path": "runtime/recorder/runtime-manifest.json",
-      "sha256": "a6b1957313ed0bcd896e5f0aaf8f85930f6e17d86f09dfd7b60d3c330064c3a8"
+      "sha256": "8de2fa5f7fc94536f162c45b92349fee39223ec7affeb8404870d4e65a79ad0d"
     },
     {
       "path": "avcodec-62.dll",

@@ -1,8 +1,8 @@
 # CGPlayRecorder native backend
 
-This is the **backend only**. It does not add a Qt panel, a menu action, device
-selection UI, player shutdown integration, MP4 publishing, or recovery UI. Do not
-advertise integrated recording until those host paths are implemented and tested.
+This directory builds the isolated native backend. The host panel and asynchronous
+supervisor live in `src/ui/recording` and `src/services/recording`; MP4 publishing
+and recovery validation live in `tools/cgplay/export/recording_finalize.py`.
 
 ## Build and runtime isolation
 
@@ -62,7 +62,8 @@ Start plans:
 |---|---|
 | `source` | `monitor`, `window`, `player`; `synthetic` requires the explicit test process flag |
 | `output` | Absolute, new `.recording.<session>.mkv` in an existing non-reparse directory; existing file/sidecar is rejected |
-| `width,height,fps` | Defaults 1920/1080/30; even canvas; max 3840x2160/60, limited to 1080p60 pixel rate; fixed for a session |
+| `width,height,fps` | Defaults 1920/1080/30; width divisible by 4, height by 2; axes at most 8192, canvas area at most 8192x4320, fps 1..120; fixed for a session. UI presets end at UHD 7680x4320/120 |
+| `nativeResolution` | Optional boolean: derives physical capture-source dimensions, or the player crop dimensions, and pads width up to a multiple of 4 and height up to a multiple of 2. Keeps source pixels at 1:1; does not expose the original media-file resolution. Same 8K size bounds apply; geometry changes stop recording |
 | `hwnd,pid,processCreated,windowClass,windowToken` | Required for window/player; HWND and process FILETIME are decimal strings to avoid JSON number precision loss; token must come from OBS selection properties |
 | `monitorId` | Exact OBS monitor property value for monitor capture, not a display index |
 | `systemEnabled,micEnabled` | Independent booleans, default false; enabled production sources require explicit `systemDeviceId` / `micDeviceId`; `default` is rejected |
@@ -82,6 +83,12 @@ both devices opens neither device and writes a genuinely silent AAC mixer track
 (the OBS AV muxer requires an audio encoder). H264 uses x264 veryfast/CRF20,
 zerolatency, two-second keyframes. This backend does not claim HDR, native HDR
 retention or hardware encoder support. It never re-applies OCIO to captured pixels.
+High resolutions and frame rates are selectable limits, not a promise of sustained
+realtime performance. The panel reports measured encoded throughput and render/
+encode skipped-frame counters; reduce the selected format when overloaded.
+
+Catalogs advertise `recordingConfigRevision:2`, `maxFps:120`, `nativeResolution:true`
+and the size bounds. The updated panel rejects an older recording component.
 
 Responses include protocol/session, output `seq`, `replyTo`, event, state, error,
 `durationNs` and bytes. Duration is OBS's output-frame counter at the configured
@@ -92,6 +99,12 @@ threads joined too. The successful chain is Preparing -> Starting -> Recording
 <-> Paused -> Stopping -> Finalizing -> Completed. Source/transport failures retain
 MKV and report Recoverable. Stopping before the first encoded recording reports
 Failed rather than publishing an empty successful video.
+
+State/progress/finalized responses also contain a `stats` object with canvas size,
+target FPS, native-size selection, encoder ID, rolling `encodedFps`, `encodedFrames`,
+`renderSkippedFrames` and `encodeSkippedFrames`. These are libobs pipeline metrics,
+not a decoded file-frame count: `send_interleaved` counts before the muxer's stop
+timestamp cutoff. Final file timestamps and frame counts are validated separately.
 
 ## Shutdown, files and recovery
 

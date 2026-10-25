@@ -79,7 +79,7 @@ struct RecordingService::Private {
     QElapsedTimer phaseClock, heartbeat, stopClock;
     QString role, state = QStringLiteral("Idle"), id, finalPath, mkvPath, descriptor, error, nativeState;
     QString requestPath;
-    QJsonObject plan, result;
+    QJsonObject plan, result, nativeStats;
     QStringList protectedMedia;
     QByteArray stdoutBuffer, stderrBuffer;
     qint64 sequence = 0, lastNativeSeq = 0, duration = 0, bytes = 0;
@@ -98,7 +98,7 @@ struct RecordingService::Private {
     QJsonObject status() const {
         return {{"schema", 1}, {"state", state}, {"busy", busy}, {"paused", paused},
                 {"canPause", role == QStringLiteral("helper") && !stopRequested && (state == QStringLiteral("Recording") || state == QStringLiteral("Paused"))},
-                {"sessionId", id}, {"durationNs", duration}, {"bytes", bytes}, {"error", error},
+                {"sessionId", id}, {"durationNs", duration}, {"bytes", bytes}, {"error", error}, {"stats", nativeStats},
                 {"outputPath", finalPath}, {"mkvPath", mkvPath}, {"sessionDescriptorPath", descriptor}, {"closePending", closePending}};
     }
     void update(const QString& next = {}) {
@@ -235,6 +235,8 @@ struct RecordingService::Private {
                     bytes = qMax(bytes, object.value("bytes").toVariant().toLongLong());
                 }
                 nativeState = object.value("state").toString(nativeState); paused = nativeState == QStringLiteral("Paused");
+                const auto stats = object.value(QStringLiteral("stats")).toObject();
+                if (stats.value(QStringLiteral("targetFps")).toInt()>0) nativeStats=stats;
                 update(nativeState == QStringLiteral("Completed") ? QStringLiteral("Finalizing") : nativeState);
                 if (event == QStringLiteral("finalized") && process) process->closeWriteChannel();
             } else {
@@ -289,6 +291,7 @@ bool RecordingService::start(const RecordingStartRequest& request, QString* fail
     if (_p->busy || _p->closePending || _p->shutdown || (request.synthetic && !testGate()) || !runtimeValid(request.runtime, failure)) { if (failure && failure->isEmpty()) *failure = QStringLiteral("当前不能开始新的录屏。"); return false; }
     if (!QDir::isAbsolutePath(request.finalOutputPath) || QFileInfo(request.finalOutputPath).suffix().compare(QStringLiteral("mp4"), Qt::CaseInsensitive)) { if (failure) *failure = QStringLiteral("请选择新的 MP4 文件路径。"); return false; }
     _p->runtime = request.runtime; _p->id = newId(); _p->plan = request.helperPlan; _p->plan.remove(QStringLiteral("output"));
+    _p->nativeStats = {};
     _p->finalPath = request.finalOutputPath; _p->protectedMedia = request.protectedMediaPaths; _p->synthetic = request.synthetic;
     _p->mkvPath = QDir(QFileInfo(_p->finalPath).absolutePath()).filePath(QStringLiteral(".cgplay-recording-%1/capture.recording.%1.mkv").arg(_p->id));
     _p->descriptor = QDir(QFileInfo(_p->mkvPath).absolutePath()).filePath(QStringLiteral("session.json"));
@@ -299,6 +302,7 @@ bool RecordingService::recover(const RecordingRecoveryRequest& request, QString*
     if (_p->busy || _p->closePending || _p->shutdown || !runtimeValid(request.runtime, failure)) { if (failure && failure->isEmpty()) *failure = QStringLiteral("当前不能恢复录像。"); return false; }
     _p->runtime = request.runtime; _p->descriptor = request.sessionDescriptorPath; _p->finalPath = request.finalOutputPath;
     _p->mkvPath.clear(); _p->protectedMedia = request.protectedMediaPaths; _p->id = newId(); _p->plan = {};
+    _p->nativeStats = {};
     _p->error.clear(); _p->duration = _p->bytes = 0; _p->stopRequested = false; _p->busy = true; _p->update(QStringLiteral("Finalizing")); _p->launchPython(QStringLiteral("recover")); return true;
 }
 void RecordingService::setPaused(bool value) { if (_p->busy && !_p->stopRequested) _p->send(value ? QStringLiteral("pause") : QStringLiteral("resume")); }

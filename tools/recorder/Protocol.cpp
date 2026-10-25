@@ -149,7 +149,7 @@ bool Protocol::accept(obs_data_t* data) {
     incomingSeq = seq;
     return true;
 }
-void Protocol::emit(const char* event, const std::string& state, const std::string& error, long long durationNs, long long bytes, int liveThreads) {
+void Protocol::emit(const char* event, const std::string& state, const std::string& error, long long durationNs, long long bytes, int liveThreads, obs_data_t* stats) {
     Data data(obs_data_create());
     obs_data_set_int(data, "protocol", 1);
     obs_data_set_string(data, "session", session.c_str());
@@ -160,6 +160,7 @@ void Protocol::emit(const char* event, const std::string& state, const std::stri
     obs_data_set_string(data, "error", error.c_str());
     obs_data_set_int(data, "durationNs", durationNs);
     obs_data_set_int(data, "bytes", bytes);
+    if (stats) obs_data_set_obj(data, "stats", stats);
     if (liveThreads >= 0) obs_data_set_int(data, "liveSourceThreads", liveThreads);
     std::string line = obs_data_get_json(data);
     line.erase(std::remove(line.begin(), line.end(), '\n'), line.end());

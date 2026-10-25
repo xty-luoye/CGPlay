@@ -53,6 +53,10 @@ static Data inspectRuntime(RuntimeManifest& runtime, bool catalog, bool syntheti
         if (!obs_reset_audio(&audio)) throw std::runtime_error("probe-audio-mixer-unavailable");
         runtime.loadModules();
         obs_data_set_int(result, "schema", 1); obs_data_set_bool(result, "ok", true);
+        obs_data_set_int(result, "recordingConfigRevision", 2);
+        obs_data_set_int(result, "maxOutputWidth", 8192); obs_data_set_int(result, "maxOutputHeight", 8192);
+        obs_data_set_int(result, "maxOutputPixels", 8192LL * 4320); obs_data_set_int(result, "maxFps", 120);
+        obs_data_set_bool(result, "nativeResolution", true);
         obs_data_set_string(result, "obsVersion", obs_get_version_string()); obs_data_set_int(result, "obsApi", obs_get_version());
         obs_data_set_string(result, "sourceCommit", "72e86655715d9a25d69ce446aa4dd44ba58e10d2");
         obs_data_set_string(result, "manifestSHA256", runtime.identity().c_str()); obs_data_set_string(result, "runtimeIdentity", runtime.identity().c_str());
@@ -116,6 +120,11 @@ int main(int argc, char** argv) {
     using namespace recorder;
     bool probe = false;
     try {
+        // Native source and crop sizes must use physical pixels at every DPI.
+        if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) &&
+            GetLastError() != ERROR_ACCESS_DENIED) throw std::runtime_error("capture-dpi-awareness-unavailable");
+        if (GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()) != DPI_AWARENESS_PER_MONITOR_AWARE)
+            throw std::runtime_error("capture-dpi-awareness-mismatch");
         bool synthetic = false, clockTest = false, enumerate = false;
         if (argc == 2 && std::string(argv[1]) == "--synthetic") synthetic = true;
         else if (argc == 2 && std::string(argv[1]) == "--clock-selftest") clockTest = true;

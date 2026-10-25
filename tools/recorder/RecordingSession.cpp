@@ -1,4 +1,7 @@
 #include "RecordingSession.h"
+#include <media-io/video-io.h>
+#include <algorithm>
+#include <cmath>
 #include "TestSources.h"
 #include <util/platform.h>
 #include <mmdeviceapi.h>
@@ -99,7 +102,36 @@ void RecordingSession::transition(const std::string& value, const std::string& f
         // Disk/full/permission failure must never bypass stop, flush or joins.
         if (error.empty()) error = failure.what();
     }
-    protocol.emit("state", state, error, finalDuration, finalBytes);
+    auto stats = statistics();
+    protocol.emit("state", state, error, finalDuration, finalBytes, -1, stats);
+}
+Data RecordingSession::statistics() {
+    if (!initialized && !lastStatsJson.empty()) return Data(obs_data_create_from_json(lastStatsJson.c_str()));
+    Data stats(obs_data_create());
+    if (!width || !height) return stats;
+    obs_data_set_int(stats, "width", width); obs_data_set_int(stats, "height", height);
+    obs_data_set_int(stats, "targetFps", fps); obs_data_set_string(stats, "encoderId", "obs_x264");
+    obs_data_set_bool(stats, "nativeResolution", nativeOutput);
+    if (initialized && obs_get_video()) {
+        const double renderFps = obs_get_active_fps();
+        obs_data_set_double(stats, "renderFps", std::isfinite(renderFps) ? renderFps : 0.);
+        renderSkipped = std::max<uint64_t>(renderSkipped, obs_get_lagged_frames());
+        encodeSkipped = std::max<uint64_t>(encodeSkipped, video_output_get_skipped_frames(obs_get_video()));
+    }
+    if (output) {
+        recordedFrames = std::max<uint64_t>(recordedFrames, std::max(0, obs_output_get_total_frames(output)));
+        const uint64_t now = os_gettime_ns();
+        if (state == "Paused") encodedFps = 0.;
+        else if (state == "Recording" && statsAt && now > statsAt)
+            encodedFps = static_cast<double>(recordedFrames - statsFrames) * 1e9 / static_cast<double>(now - statsAt);
+        statsAt = now; statsFrames = recordedFrames;
+    }
+    obs_data_set_double(stats, "encodedFps", encodedFps);
+    obs_data_set_int(stats, "encodedFrames", recordedFrames);
+    obs_data_set_int(stats, "renderSkippedFrames", renderSkipped);
+    obs_data_set_int(stats, "encodeSkippedFrames", encodeSkipped);
+    if (initialized) lastStatsJson = obs_data_get_json(stats);
+    return stats;
 }
 void RecordingSession::sidecar() {
     if (sidecarPath.empty()) return;
@@ -112,6 +144,12 @@ void RecordingSession::sidecar() {
     obs_data_set_string(value, "runtime", utf8(runtime.root.wstring()).c_str());
     obs_data_set_int(value, "durationNs", finalDuration);
     obs_data_set_int(value, "bytes", finalBytes);
+    if (width && height) {
+        Data format(obs_data_create());
+        obs_data_set_int(format, "width", width); obs_data_set_int(format, "height", height);
+        obs_data_set_int(format, "fps", fps); obs_data_set_bool(format, "nativeResolution", nativeOutput);
+        obs_data_set_obj(value, "videoFormat", format);
+    }
     HANDLE recordedFile = CreateFileW(nativeFilePath(outputPath).c_str(), FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
     if (recordedFile != INVALID_HANDLE_VALUE) {
@@ -144,15 +182,18 @@ void RecordingSession::start(obs_data_t* plan) {
     catch (const std::exception& failure) { error = failure.what(); cleanup(); terminal = true; transition("Failed", error); }
 }
 void RecordingSession::initialize(obs_data_t* plan) {
-    onlyFields(plan, {"source", "output", "width", "height", "fps", "sourceWidth", "sourceHeight", "testStatic", "systemEnabled", "micEnabled", "systemDeviceId", "micDeviceId", "systemGain", "micGain", "systemMute", "micMute", "splitTracks", "hwnd", "pid", "processCreated", "windowClass", "windowToken", "monitorId", "geometryEpoch", "cropLeft", "cropTop", "cropWidth", "cropHeight", "clientWidth", "clientHeight", "hdr"});
+    onlyFields(plan, {"source", "output", "width", "height", "nativeResolution", "fps", "sourceWidth", "sourceHeight", "testStatic", "systemEnabled", "micEnabled", "systemDeviceId", "micDeviceId", "systemGain", "micGain", "systemMute", "micMute", "splitTracks", "hwnd", "pid", "processCreated", "windowClass", "windowToken", "monitorId", "geometryEpoch", "cropLeft", "cropTop", "cropWidth", "cropHeight", "clientWidth", "clientHeight", "hdr"});
     sourceKind = stringField(plan, "source");
     if (sourceKind != "synthetic" && sourceKind != "monitor" && sourceKind != "window" && sourceKind != "player") throw std::runtime_error("source-not-supported");
     if (synthetic != (sourceKind == "synthetic")) throw std::runtime_error("synthetic-source-allowlist");
     if (boolField(plan, "hdr")) throw std::runtime_error("hdr-capture-not-supported");
-    width = static_cast<uint32_t>(integerField(plan, "width", 160, 3840, 1920));
-    height = static_cast<uint32_t>(integerField(plan, "height", 90, 2160, 1080));
-    fps = static_cast<uint32_t>(integerField(plan, "fps", 1, 60, 30));
-    if ((width & 1) || (height & 1) || uint64_t(width) * height * fps > 1920ULL * 1080 * 60) throw std::runtime_error("unsupported-encoding-size-rate");
+    const bool nativeResolution = boolField(plan, "nativeResolution");
+    nativeOutput = nativeResolution;
+    width = static_cast<uint32_t>(integerField(plan, "width", 160, 8192, 1920));
+    height = static_cast<uint32_t>(integerField(plan, "height", 90, 8192, 1080));
+    fps = static_cast<uint32_t>(integerField(plan, "fps", 1, 120, 30));
+    if (!nativeResolution && ((width & 3) || (height & 1) || uint64_t(width) * height > 8192ULL * 4320))
+        throw std::runtime_error("unsupported-encoding-size-rate");
     outputPath = fs::path(wide(stringField(plan, "output")));
     if (!outputPath.is_absolute() || outputPath.extension() != L".mkv" || outputPath.filename().wstring().find(wide(".recording." + protocol.sessionId() + ".mkv")) == std::wstring::npos) throw std::runtime_error("unique-session-mkv-required");
     outputPath = outputPath.lexically_normal();
@@ -189,6 +230,36 @@ void RecordingSession::initialize(obs_data_t* plan) {
         if (systemEnabled) activeEndpoint(stringField(plan, "systemDeviceId"));
         if (micEnabled) activeEndpoint(stringField(plan, "micDeviceId"));
     }
+    if (nativeResolution) {
+        long long sourceWidth = 0, sourceHeight = 0;
+        if (sourceKind == "player" || (synthetic && obs_data_has_user_value(plan, "cropWidth"))) {
+            sourceWidth = integerField(plan, "cropWidth", 1, 8192, 0);
+            sourceHeight = integerField(plan, "cropHeight", 1, 8192, 0);
+        } else if (synthetic) {
+            sourceWidth = integerField(plan, "sourceWidth", 16, 8192, 1280);
+            sourceHeight = integerField(plan, "sourceHeight", 16, 8192, 720);
+        } else if (sourceKind == "window") {
+            RECT client{};
+            if (!GetClientRect(window, &client)) throw std::runtime_error("native-window-size-unavailable");
+            sourceWidth = client.right - client.left; sourceHeight = client.bottom - client.top;
+        } else {
+            MONITORINFO info{}; info.cbSize = sizeof(info);
+            if (!monitor || !GetMonitorInfoW(monitor, &info)) throw std::runtime_error("native-monitor-size-unavailable");
+            sourceWidth = info.rcMonitor.right - info.rcMonitor.left;
+            sourceHeight = info.rcMonitor.bottom - info.rcMonitor.top;
+        }
+        if (sourceWidth < 160 || sourceHeight < 90 || sourceWidth > 8192 || sourceHeight > 8192)
+            throw std::runtime_error("native-size-outside-supported-range");
+        // obs_reset_video rounds output width down to four pixels and height
+        // down to two. Pad the canvas first to preserve every source pixel.
+        width = static_cast<uint32_t>((sourceWidth + 3) & ~3LL);
+        height = static_cast<uint32_t>((sourceHeight + 1) & ~1LL);
+        nativeWidth = static_cast<uint32_t>(sourceWidth); nativeHeight = static_cast<uint32_t>(sourceHeight);
+    }
+    // Bound both axes and canvas area, including portrait sources. Widen
+    // arithmetic before multiplication so malformed plans cannot wrap it.
+    if ((width & 3) || (height & 1) || uint64_t(width) * height > 8192ULL * 4320)
+        throw std::runtime_error("unsupported-encoding-size-rate");
     std::string config = utf8((outputPath.parent_path() / wide(".recorder-config-" + protocol.sessionId())).wstring());
     // OBS config directories are session-owned; plugins never scan user paths.
     if (!obs_startup("en-US", config.c_str(), nullptr)) throw std::runtime_error("obs-startup-failed");
@@ -210,8 +281,8 @@ void RecordingSession::initialize(obs_data_t* plan) {
     if (!scene) throw std::runtime_error("scene-create-failed");
     Data settings(obs_data_create());
     if (synthetic) {
-        obs_data_set_int(settings, "width", integerField(plan, "sourceWidth", 16, 3840, width));
-        obs_data_set_int(settings, "height", integerField(plan, "sourceHeight", 16, 2160, height));
+        obs_data_set_int(settings, "width", integerField(plan, "sourceWidth", 16, 8192, width));
+        obs_data_set_int(settings, "height", integerField(plan, "sourceHeight", 16, 8192, height));
         obs_data_set_bool(settings, "static", boolField(plan, "testStatic"));
         source = obs_source_create_private("cgplay_test_pattern", "synthetic-video", settings);
     } else if (sourceKind == "monitor") {
@@ -240,6 +311,12 @@ void RecordingSession::initialize(obs_data_t* plan) {
     obs_sceneitem_set_alignment(item, OBS_ALIGN_CENTER);
     obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
     obs_sceneitem_set_bounds(item, &bounds); obs_sceneitem_set_pos(item, &position);
+    if (nativeOutput) {
+        obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_NONE);
+        obs_sceneitem_set_alignment(item, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
+        const vec2 nativePosition{0.f, 0.f}; obs_sceneitem_set_pos(item, &nativePosition);
+        const vec2 nativeScale{1.f, 1.f}; obs_sceneitem_set_scale(item, &nativeScale);
+    }
     // A player crop is set before the scene becomes an active output source.
     cropEnabled = sourceKind == "player" || (synthetic && obs_data_has_user_value(plan, "cropWidth"));
     if (cropEnabled) crop(plan); else geometryReady = true;
@@ -283,6 +360,9 @@ bool RecordingSession::readySources() {
         if (!called || status < 0) throw std::runtime_error("video-capture-unhealthy");
     } else if (synthetic) ready = testVideoFrameCount() > 1;
     ready = ready && obs_source_get_width(source) > 0 && obs_source_get_height(source) > 0;
+    if (ready && nativeOutput && !cropEnabled &&
+        (obs_source_get_width(source) != nativeWidth || obs_source_get_height(source) != nativeHeight))
+        throw std::runtime_error("native-source-geometry-changed");
     for (auto* audioSource : {system, mic}) if (audioSource && !synthetic) {
         calldata_t data{};
         bool called = proc_handler_call(obs_source_get_proc_handler(audioSource), "cgplay_wasapi_health", &data);
@@ -371,6 +451,9 @@ void RecordingSession::crop(obs_data_t* settings, bool reapply) {
     auto edge = [](long long n, long long total, uint32_t size) { return static_cast<int>(std::clamp(std::llround(double(n) * size / total), 0LL, static_cast<long long>(size))); };
     obs_sceneitem_crop rectangle{edge(left, cw, sw), edge(top, ch, sh), static_cast<int>(sw) - edge(left + w, cw, sw), static_cast<int>(sh) - edge(top + h, ch, sh)};
     if (rectangle.left + rectangle.right >= static_cast<int>(sw) || rectangle.top + rectangle.bottom >= static_cast<int>(sh)) throw std::runtime_error("empty-player-crop");
+    if (nativeOutput && (sw - rectangle.left - rectangle.right != nativeWidth ||
+                         sh - rectangle.top - rectangle.bottom != nativeHeight))
+        throw std::runtime_error("native-source-geometry-changed");
     obs_sceneitem_set_crop(item, &rectangle); commitSnapshot(); geometryReady = true;
     croppedSourceWidth = sw; croppedSourceHeight = sh;
 }
@@ -380,16 +463,20 @@ void RecordingSession::stop(const std::string& reason) {
     if (!reason.empty()) error = reason;
     stoppingAt = os_gettime_ns();
     watchdogDeadline.store(GetTickCount64() + 25000);
-    transition("Stopping");
     if (outputAccepted && output && !stopSignal.load(std::memory_order_acquire)) {
         // Pause stops only the output clock; OBS stop owns final packet drain.
+        // Request its timestamp cutoff before transition() flushes the sidecar:
+        // a slow disk must not extend the user's recording after Stop.
         obs_output_stop(output);
+        transition("Stopping");
     } else {
+        transition("Stopping");
         if (error.empty()) error = "stopped-before-recording";
         transition("Finalizing");
         cleanup(); terminal = true;
         transition("Failed", error);
-        protocol.emit("finalized", state, error, finalDuration, finalBytes, liveTestSourceThreads());
+        auto stats = statistics();
+        protocol.emit("finalized", state, error, finalDuration, finalBytes, liveTestSourceThreads(), stats);
     }
 }
 void RecordingSession::disconnect(const std::string& reason) { stop(reason); }
@@ -443,7 +530,8 @@ void RecordingSession::poll() {
             std::error_code fileError;
             if (fs::exists(outputPath, fileError)) finalBytes = static_cast<long long>(fs::file_size(outputPath, fileError));
             transition(error.empty() ? "Completed" : "Recoverable", error);
-            protocol.emit("finalized", state, error, finalDuration, finalBytes, liveTestSourceThreads());
+            auto stats = statistics();
+            protocol.emit("finalized", state, error, finalDuration, finalBytes, liveTestSourceThreads(), stats);
         } else if (stoppingRequested && os_gettime_ns() - stoppingAt > 15000000000ULL) {
             if (output) obs_output_force_stop(output);
             error = "output-stop-timeout";
@@ -454,7 +542,9 @@ void RecordingSession::poll() {
             if (os_gettime_ns() / 1000000000ULL != lastStatus / 1000000000ULL) {
                 try { sidecar(); } catch (const std::exception& failure) { stop(failure.what()); return; }
             }
-            lastStatus = os_gettime_ns(); protocol.emit("progress", state, error, finalDuration, finalBytes);
+            lastStatus = os_gettime_ns();
+            auto stats = statistics();
+            protocol.emit("progress", state, error, finalDuration, finalBytes, -1, stats);
         }
     } catch (const std::exception& failure) { stop(failure.what()); }
 }

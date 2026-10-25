@@ -119,6 +119,10 @@ class RecordingUiAcceptance(unittest.TestCase):
         self.assertEqual(report["summary"]["fail"], 0)
         checks = {item["name"]: item for item in report["checks"]}
         for name in ("real synthetic recording started", "real MP4 frames CFR and audio gain mute",
+                     "native resolution is default without preset dimensions", "all resolution and frame rate controls up to 8K120",
+                     "8K120 panel widget evidence", "old recording component cannot start new formats",
+                     "actual recording statistics reach service and panel",
+                     "native 120FPS UI request survives real save and close",
                      "full stable-region synthetic audio continuity",
                      "pause settles encoded output within bounded drain",
                      "pause freezes recorded clock and resume is available", "resume advances recorded clock",

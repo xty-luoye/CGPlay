@@ -29,6 +29,7 @@ private:
     static void started(void*, calldata_t*);
     static void stopped(void*, calldata_t*);
     void sidecar();
+    Data statistics();
     void watchdogLoop();
     void joinWatchdog();
     RuntimeManifest& runtime;
@@ -50,8 +51,14 @@ private:
     uint32_t width = 0, height = 0, fps = 30;
     long long geometryEpoch = -1, cropLeft = 0, cropTop = 0, cropWidth = 0, cropHeight = 0, clientWidth = 0, clientHeight = 0;
     bool geometryReady = false, cropEnabled = false;
+    bool nativeOutput = false;
+    uint32_t nativeWidth = 0, nativeHeight = 0;
     uint32_t croppedSourceWidth = 0, croppedSourceHeight = 0;
     uint64_t preparingAt = 0, stoppingAt = 0, lastStatus = 0;
+    uint64_t statsAt = 0, statsFrames = 0;
+    double encodedFps = 0.;
+    uint64_t recordedFrames = 0, renderSkipped = 0, encodeSkipped = 0;
+    std::string lastStatsJson;
     long long finalDuration = 0, finalBytes = 0;
     obs_scene_t* scene = nullptr;
     obs_sceneitem_t* item = nullptr;
