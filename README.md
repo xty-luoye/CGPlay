@@ -1,6 +1,6 @@
 # CGPlay
 
-CGPlay 是面向 VFX、动画和合成审片流程的 Windows 播放器，使用 C++17、Qt 6、tlRender 和 Python 构建。项目开发目录曾使用 RVLite 名称，代码中仍保留部分命名。
+CGPlay 是面向 VFX、动画和合成审片流程的 Windows 播放器，使用 C++20、Qt 6、tlRender 和 Python 构建。项目开发目录曾使用 RVLite 名称，代码中仍保留部分命名。
 
 当前源码版本：**1.0.8**。正式下载以 Releases 为准。
 
@@ -38,7 +38,7 @@ CGPlay 是面向 VFX、动画和合成审片流程的 Windows 播放器，使用
 
 ## 构建状态
 
-当前支持的开发目标为 **Windows x64 + Visual Studio 2022 + Qt 6.5.3**，Qt WebEngineWidgets 为必需组件。完整播放器需要 tlRender / feather-tk 及其原生依赖；当前依赖源码要求 CMake 3.31 或更新版本。
+当前支持的开发目标为 **Windows x64 + Visual Studio 2022 + Qt 6.11.3 / WebEngine 6.11.3**，Qt WebEngineWidgets 为必需组件。完整播放器需要 tlRender / feather-tk 及其原生依赖；当前依赖源码要求 CMake 3.31 或更新版本。
 
 **应用源码与第三方运行组件分别提供。** 本版已记录实际依赖版本、固定上游提交、完整源码及本地修改，提供匹配组件的构建脚本。尚未验证从独立干净系统重建官方安装包；请按[构建说明](docs/OFFICIAL_BUILD.md)和[依赖来源记录](docs/DEPENDENCY_SOURCES_1.0.8.md)配置经过匹配的依赖。
 
