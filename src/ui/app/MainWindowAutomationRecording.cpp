@@ -134,6 +134,18 @@ void MainWindow::runRecordingSmokeChecks(const QString& directory,std::function<
             if (catalog.value("monitors").toArray().isEmpty() || catalog.value("windows").toArray().isEmpty() ||
                 catalog.value("systemAudio").toArray().isEmpty() || catalog.value("microphones").toArray().isEmpty()) { finish(QStringLiteral("Synthetic OBS catalog is incomplete")); return; }
             add(QStringLiteral("actual synthetic OBS properties enumerated without capture"),!service->isBusy() && !catalog.value("runtimeIdentity").toString().isEmpty(),{{"catalog",catalog}});
+            add(QStringLiteral("desktop recording is default and single monitor selected"),combo("RecordingScope")->currentData().toString()==QStringLiteral("monitor") &&
+                combo("RecordingSource")->currentIndex()==0 && panel->currentSettings().value("source").toString()==QStringLiteral("monitor") &&
+                panel->findChild<QLabel*>(QStringLiteral("RecordingSourceNote"))->text().contains(QStringLiteral("最小化 CGPlay 后仍会继续")));
+            auto multiCatalog=catalog;auto monitors=catalog.value("monitors").toArray();auto first=monitors.at(0).toObject();
+            auto firstPlan=first.value("plan").toObject();firstPlan.insert("monitorId",QStringLiteral("synthetic-first-monitor"));first.insert("plan",firstPlan);monitors.replace(0,first);
+            auto second=first;
+            auto secondPlan=second.value("plan").toObject();secondPlan.insert("monitorId",QStringLiteral("synthetic-second-monitor"));
+            second.insert("plan",secondPlan);monitors.append(second);multiCatalog.insert("monitors",monitors);
+            combo("RecordingScope")->setCurrentIndex(combo("RecordingScope")->findData(QStringLiteral("window")));
+            panel->setCatalog(multiCatalog);combo("RecordingScope")->setCurrentIndex(combo("RecordingScope")->findData(QStringLiteral("monitor")));
+            add(QStringLiteral("multiple monitors require an explicit selection"),combo("RecordingSource")->count()==2 && combo("RecordingSource")->currentIndex()==-1);
+            panel->setCatalog(catalog);
             add(QStringLiteral("audio disabled by default and explicit output required"),!checkbox("RecordingSystemEnabled")->isChecked() && !checkbox("RecordingMicEnabled")->isChecked() && !button("RecordingStart")->isEnabled());
             const QString outputPath=QDir(directory).filePath(QStringLiteral("recording_ui.mp4"));
             panel->setProperty("cgplay.recordingInjectedOutput",outputPath);button("RecordingBrowse")->click();

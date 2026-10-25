@@ -94,6 +94,23 @@ class RecordingFinalizeTests(unittest.TestCase):
         sidecar.write_text(json.dumps(original),encoding='utf-8')
         self.assertTrue(mkv.exists())
 
+    def test_native_viewer_resize_retains_mkv_and_recovers_through_real_finalizer(self):
+        settings=dict(nativeResolution=True,sourceWidth=640,sourceHeight=360,geometryEpoch=1,
+            cropLeft=80,cropTop=40,cropWidth=320,cropHeight=180,clientWidth=640,clientHeight=360)
+        code,value=self.call('prepare',helperPlan=self.helper.plan(**settings));self.assertEqual(0,code,value)
+        self.helper.output=Path(value['mkvPath']);self.helper.start(**settings)
+        import time;time.sleep(.9)
+        self.helper.send('crop',geometryEpoch=2,cropLeft=80,cropTop=40,cropWidth=400,cropHeight=180,clientWidth=640,clientHeight=360)
+        stopped=self.helper.wait(state='Recoverable',event='finalized');self.helper.finish(1)
+        self.assertEqual('native-source-geometry-changed',stopped['error']);self.assertFalse(self.target.exists())
+        before=hashlib.sha256(self.helper.output.read_bytes()).hexdigest()
+        code,value=self.call('recover');self.assertEqual(0,code,value)
+        self.assertEqual(before,hashlib.sha256(self.helper.output.read_bytes()).hexdigest())
+        with av.open(str(self.target)) as container:
+            stream=container.streams.video[0];self.assertEqual((320,180),(stream.width,stream.height))
+            self.assertEqual(30,stream.base_rate)
+            self.assertGreater(sum(1 for frame in container.decode(video=0)),20)
+
     def test_killed_helper_mkv_recovers_through_real_finalizer(self):
         code,value=self.call('prepare');self.assertEqual(0,code,value)
         self.helper.output=Path(value['mkvPath']);self.helper.start()

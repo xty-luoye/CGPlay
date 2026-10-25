@@ -48,8 +48,8 @@ RecordingPanel::RecordingPanel(QWidget* parent) : QWidget(parent)
     auto* form = new QFormLayout;
     column->addLayout(form);
     _scope = new QComboBox(this); _scope->setObjectName(QStringLiteral("RecordingScope"));
+    _scope->addItem(QStringLiteral("桌面 / 显示器（整屏）"), QStringLiteral("monitor"));
     _scope->addItem(QStringLiteral("播放器画面"), QStringLiteral("player"));
-    _scope->addItem(QStringLiteral("整个屏幕"), QStringLiteral("monitor"));
     _scope->addItem(QStringLiteral("指定窗口"), QStringLiteral("window"));
     form->addRow(QStringLiteral("录制范围"), _scope);
     _source = new QComboBox(this); _source->setObjectName(QStringLiteral("RecordingSource"));
@@ -167,10 +167,13 @@ void RecordingPanel::updateSources()
         _source->addItem(value.value(QStringLiteral("label")).toString(), plan);
         if (plan==previous) selection=_source->count()-1;
     }
+    if (selection<0 && kind==QStringLiteral("monitor") && _source->count()==1) selection=0;
     _source->setCurrentIndex(selection); _source->setVisible(kind!=QStringLiteral("player"));
-    _sourceNote->setText(kind==QStringLiteral("player")
+    _sourceNote->setText(kind==QStringLiteral("monitor")
+        ? QStringLiteral("录制所选显示器上的整个桌面和所有应用；切换应用或最小化 CGPlay 后仍会继续。多显示器时请选择要录制的来源。")
+        : kind==QStringLiteral("player")
         ? QStringLiteral("录制当前播放器显示区域，字幕、批注和浮层会一同录制。SDR 画面不再重复应用 OCIO。录制中切全屏或跨缩放比例屏幕导致尺寸变化时会停止并保留录像，请重新开始。")
-        : QStringLiteral("只录制明确选择的屏幕或窗口。来源关闭、最小化或失效时会停止并保留可恢复文件。"));
+        : QStringLiteral("只录制明确选择的窗口。该窗口关闭、最小化或失效时会停止并保留可恢复文件。"));
     updateControls();
 }
 QJsonObject RecordingPanel::currentSettings() const

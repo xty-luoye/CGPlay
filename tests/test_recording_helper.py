@@ -499,6 +499,41 @@ class RecordingHelperTests(unittest.TestCase):
                 reports.append(dict(plan=values, dimensions=expected, pixelMeanError=float(error.mean()), stats=stats))
         (self.directory / "native_pixel_report.json").write_text(json.dumps(reports, indent=2), encoding="utf-8")
 
+    def test_native_crop_resize_stops_and_retains_recording_including_when_paused(self):
+        for paused in (False, True):
+            with self.subTest(paused=paused):
+                helper = self.helper()
+                helper.start(nativeResolution=True, testStatic=True, sourceWidth=640, sourceHeight=360,
+                    geometryEpoch=1, cropLeft=80, cropTop=40, cropWidth=320, cropHeight=180, clientWidth=640, clientHeight=360)
+                time.sleep(.6)
+                # Moving the same-size crop is supported and must keep recording.
+                helper.send("crop", geometryEpoch=2, cropLeft=120, cropTop=40, cropWidth=320, cropHeight=180,
+                            clientWidth=640, clientHeight=360)
+                moved = helper.wait(event="geometry"); self.assertEqual("Recording", moved["state"])
+                time.sleep(.6)
+                if paused:
+                    helper.send("pause"); helper.wait(state="Paused", event="state")
+                # A dock/layout change can resize the viewer without resizing
+                # its top-level captured source. The poll-time source-size guard
+                # cannot detect this; the crop command must stop the session.
+                helper.send("crop", geometryEpoch=3, cropLeft=120, cropTop=40, cropWidth=400, cropHeight=180,
+                            clientWidth=640, clientHeight=360)
+                resize_sequence = helper.sequence
+                final = helper.wait(state="Recoverable", event="finalized"); helper.finish(1)
+                self.assertEqual("native-source-geometry-changed", final["error"])
+                self.assertEqual(0, final["liveSourceThreads"])
+                self.assertFalse(any(e.get("event")=="commandError" and e.get("replyTo")==resize_sequence for e in helper.events))
+                self.assertTrue(helper.output.is_file())
+                with av.open(str(helper.output)) as source:
+                    frames = list(source.decode(video=0))
+                    self.assertEqual((320,180),(source.streams.video[0].width,source.streams.video[0].height))
+                    self.assertGreater(len(frames),20)
+                    first,last=(f.to_ndarray(format="rgb24") for f in (frames[0],frames[-1]))
+                    self.assertGreater(float(last[40:140,80:240,2].mean()-first[40:140,80:240,2].mean()),8.)
+                sidecar=json.loads(Path(str(helper.output)+".json").read_text())
+                self.assertEqual("Recoverable",sidecar["state"])
+                self.assertEqual((320,180),(sidecar["videoFormat"]["width"],sidecar["videoFormat"]["height"]))
+
     def test_120fps_output_timestamps_audio_and_statistics_are_real(self):
         helper = self.helper(); helper.start(fps=120)
         time.sleep(1.4); final = helper.stop()
@@ -520,8 +555,11 @@ class RecordingHelperTests(unittest.TestCase):
 
     def test_2k_4k_and_8k120_encode_real_bounded_clips(self):
         reports = []
-        for width, height, fps in ((2560,1440,60), (3840,2160,120), (7680,4320,120)):
-            with self.subTest(size=(width,height,fps)):
+        # Repeated ceiling recordings exercise the stop/deactivation race
+        # while x264 is overloaded; successful mux stop alone is insufficient.
+        for trial, (width, height, fps) in enumerate(((2560,1440,60), (3840,2160,120),
+                (7680,4320,120), (7680,4320,120), (7680,4320,120))):
+            with self.subTest(size=(width,height,fps), trial=trial):
                 helper = self.helper(); helper.start(width=width, height=height, fps=fps,
                     sourceWidth=640, sourceHeight=360, testStatic=True)
                 # The native stop/shutdown watchdog is 25 seconds, including

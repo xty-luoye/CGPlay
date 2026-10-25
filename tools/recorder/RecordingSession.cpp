@@ -463,11 +463,11 @@ void RecordingSession::stop(const std::string& reason) {
     if (!reason.empty()) error = reason;
     stoppingAt = os_gettime_ns();
     watchdogDeadline.store(GetTickCount64() + 25000);
-    if (outputAccepted && output && !stopSignal.load(std::memory_order_acquire)) {
+    if (outputAccepted && output) {
         // Pause stops only the output clock; OBS stop owns final packet drain.
         // Request its timestamp cutoff before transition() flushes the sidecar:
         // a slow disk must not extend the user's recording after Stop.
-        obs_output_stop(output);
+        if (!stopSignal.load(std::memory_order_acquire)) obs_output_stop(output);
         transition("Stopping");
     } else {
         transition("Stopping");
@@ -491,7 +491,19 @@ void RecordingSession::command(obs_data_t* value) {
         if ((state != "Recording" && state != "Paused") || !obs_output_can_pause(output) || !obs_output_pause(output, pause)) throw std::runtime_error("pause-not-available");
         transition(pause ? "Paused" : "Recording");
     } else if (name == "setAudio") { audio(value); protocol.emit("audio", state); }
-    else if (name == "crop" && cropEnabled) { crop(value); protocol.emit("geometry", state); }
+    else if (name == "crop" && cropEnabled) {
+        try { crop(value); }
+        catch (const std::runtime_error& failure) {
+            // A valid new player snapshot cannot resize the fixed native
+            // canvas. Stop with a recoverable recording, rather than report a
+            // rejected command and keep capturing the obsolete viewer region.
+            if (nativeOutput && std::string(failure.what()) == "native-source-geometry-changed") {
+                stop(failure.what()); return;
+            }
+            throw;
+        }
+        protocol.emit("geometry", state);
+    }
     else if (name == "injectFailure" && synthetic) {
         auto target = stringField(value, "target");
         if (target == "blocked-stop") {
@@ -523,7 +535,16 @@ void RecordingSession::poll() {
             finalDuration = static_cast<long long>(recordingFrameTimeNs(static_cast<uint64_t>(obs_output_get_total_frames(output)), fps));
             finalBytes = static_cast<long long>(obs_output_get_total_bytes(output));
         }
-        if (stopSignal.load(std::memory_order_acquire)) {
+        // libobs emits "stop" before end_data_capture_thread has disconnected
+        // its encoders and cleared active. Releasing an active output here can
+        // force-stop it again and reset the event that its first stop just set.
+        if (stopSignal.load(std::memory_order_acquire) && output && obs_output_active(output)) {
+            if (!stoppingRequested) {
+                stoppingRequested = true; stoppingAt = os_gettime_ns();
+                watchdogDeadline.store(GetTickCount64() + 25000);
+                transition("Stopping");
+            }
+        } else if (stopSignal.load(std::memory_order_acquire)) {
             if (stopCode.load() != OBS_OUTPUT_SUCCESS && error.empty()) error = "output-stop-error:" + std::to_string(stopCode.load());
             transition("Finalizing");
             cleanup(); terminal = true;
@@ -551,10 +572,12 @@ void RecordingSession::poll() {
 void RecordingSession::cleanup() {
     if (initialized && !watchdogDeadline.load()) watchdogDeadline.store(GetTickCount64() + 25000);
     if (output) {
-        if (outputAccepted && obs_output_active(output) && !stopSignal.load(std::memory_order_acquire)) {
-            obs_output_force_stop(output);
-            // Only emergency unwinding uses this helper-local bounded drain.
-            for (int i = 0; i < 1000 && !stopSignal.load(std::memory_order_acquire); ++i) Sleep(10);
+        if (outputAccepted && obs_output_active(output)) {
+            if (!stopSignal.load(std::memory_order_acquire)) obs_output_force_stop(output);
+            // Emergency unwinding must also await deactivation, not just the
+            // earlier stop notification. The independent 25s watchdog bounds
+            // this wait without releasing objects still used by encoder tasks.
+            while (obs_output_active(output)) Sleep(10);
         }
         if (callbacksConnected) {
             auto* handler = obs_output_get_signal_handler(output);

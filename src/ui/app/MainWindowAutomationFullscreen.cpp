@@ -2,6 +2,8 @@
 #include <QMouseEvent>
 #include <QSignalBlocker>
 #include <QWindow>
+#include <QFile>
+#include <QJsonDocument>
 #include <cmath>
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
@@ -649,6 +651,36 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
             _p->fullscreen->state().fullscreenOverlay && !_p->fullscreen->state().fullscreenOverlay->isVisible() &&
             _p->timeline->parentWidget() == _p->centerSplitter &&
             _p->playbackBar->parentWidget() == _p->centerSplitter);
+    }
+    // Explicit visible-only diagnostic handshake: the recorder starts only
+    // after this instance is ready, and this window minimizes itself. Ordinary
+    // background smokes never capture the desktop or expose a native window.
+    const QString desktopProbe = qEnvironmentVariable("CGPLAY_DESKTOP_CAPTURE_PROBE_DIR");
+    if (!desktopProbe.isEmpty() && !qApp->property("cgplay.automationBackground").toBool()) {
+        const QDir probeDirectory(desktopProbe);
+        if (probeDirectory.isAbsolute() && probeDirectory.exists()) {
+            const auto writeProbe = [&](const QString& name, const QJsonObject& value) {
+                QFile file(probeDirectory.filePath(name));
+                return file.open(QIODevice::WriteOnly) &&
+                    file.write(QJsonDocument(value).toJson()) > 0;
+            };
+            const bool ready = writeProbe(QStringLiteral("ready.json"), {{"ready", true}});
+            QElapsedTimer deadline; deadline.start();
+            while (ready && !QFileInfo::exists(probeDirectory.filePath(QStringLiteral("recording.json"))) &&
+                   deadline.elapsed() < 20000) settleFullscreen(20);
+            const bool recording = ready && QFileInfo::exists(probeDirectory.filePath(QStringLiteral("recording.json")));
+            bool minimized = false;
+            if (recording) {
+                settleFullscreen(500);
+                showMinimized(); settleFullscreen(250);
+                minimized = isMinimized();
+                writeProbe(QStringLiteral("minimized.json"), {{"minimized", minimized}});
+                settleFullscreen(2750);
+                showNormal(); settleFullscreen(500);
+            }
+            writeProbe(QStringLiteral("finished.json"), {{"passed", recording && minimized && !isMinimized()},
+                {"recordingHandshake", recording}, {"minimized", minimized}, {"restored", !isMinimized()}});
+        }
     }
     bind(originalShortcut);
     for (const auto& action : actions) action.first->setShortcut(action.second);
