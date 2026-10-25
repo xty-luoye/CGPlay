@@ -24,7 +24,7 @@ class ReviewPanel : public QWidget
     Q_OBJECT
 public:
     explicit ReviewPanel(AnnotationManager* mgr, QWidget* parent = nullptr);
-    void refresh(const QVector<AnnotationItem>& all, int currentFrame = 0);
+    void refresh(const QVector<AnnotationItem>& all, int currentFrame = 0, double mediaFps = 0.0);
     void selectById(const QString& annId);
     void setToolsWidget(QWidget* widget);
     void setSettingsWidget(QWidget* widget);
@@ -77,6 +77,7 @@ private:
     QFrame*       _selectedCard  = nullptr;
     QString       _lastSignature;
     int           _currentFrame = 0;
+    double        _mediaFps = 0.0;
 };
 
 } // namespace cgplay

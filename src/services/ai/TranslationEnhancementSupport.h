@@ -24,12 +24,12 @@ struct VisualFallbackReport
 };
 
 QString onlineVttTime(double seconds);
-QString defaultOnlineHelperPath();
-QString defaultOcrHelperPath();
+QString defaultOnlineHelperPath(const ComponentRuntimePaths& runtime = {});
+QString defaultOcrHelperPath(const ComponentRuntimePaths& runtime = {});
 QString defaultCodexExecutablePath();
 QString subtitleCodexHomePath();
-QString defaultLongAsrHelperPath();
-QString defaultLongAsrTranslateHelperPath();
+QString defaultLongAsrHelperPath(const ComponentRuntimePaths& runtime = {});
+QString defaultLongAsrTranslateHelperPath(const ComponentRuntimePaths& runtime = {});
 QString ocrIntakeJsonPath(const QString& ocrSourcePath);
 QJsonObject readJsonObjectFile(const QString& path);
 ProcessOutcome waitForWorkerProcess(QProcess* process, int timeoutMs,
@@ -39,7 +39,8 @@ QString onlineSearchJsonPath(const QString& onlineSourcePath);
 QString onlineReferenceProviderKind(const TranslationEnhancementScheduleRequest& request);
 QString onlineReferenceFallbackReason(const TranslationEnhancementScheduleRequest& request);
 QString translateSubtitleTextWithHelper(const QString& helperPath, const QString& text,
-    const QString& sourceLanguage, const QString& targetLanguage, QString* errorMessage);
+    const QString& sourceLanguage, const QString& targetLanguage, QString* errorMessage,
+    const ComponentRuntimePaths& runtime = {});
 QString translateSubtitleTextWithOpenAICompatible(const QString& systemPrompt, const QString& userPrompt,
     const QString& baseUrl, const QString& apiKey, const QString& model, QString* errorMessage);
 bool writeJsonFile(const QString& path, const QJsonObject& payload);

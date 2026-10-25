@@ -25,7 +25,7 @@ DefaultDirName={localappdata}\Programs\CGPlay
 DefaultGroupName=CGPlay
 AllowNoIcons=yes
 DisableProgramGroupPage=yes
-LicenseFile=..\..\LICENSE.txt
+LicenseFile=..\..\docs\CGPlay_Commercial_EULA.txt
 OutputDir={#InstallerOutputDir}
 #if PackageMode == "lite"
 OutputBaseFilename=CGPlay_Setup_{#AppVersion}_lite

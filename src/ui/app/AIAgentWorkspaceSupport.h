@@ -91,6 +91,12 @@ extern const char* const kQwenDefaultTranslationModel;
 extern const char* const kQwenDefaultAsrModel;
 
 QString zh(const char* text);
+#if defined(__cpp_char8_t)
+inline QString zh(const char8_t* text)
+{
+    return zh(reinterpret_cast<const char*>(text));
+}
+#endif
 bool hasSensitiveCredentialQuery(const QString& value);
 QString normalizeSubtitleAsrProtocol(QString value);
 bool modelLooksUnsuitableForQwenAsr(const QString& model);

@@ -1,5 +1,6 @@
 #include "ApplicationInternal.h"
 #include "services/platform/WindowsFileAssociations.h"
+#include "features/settings/ThumbnailCacheSettings.h"
 #include <QStandardItemModel>
 #include <QListWidget>
 #include <QTabBar>
@@ -173,7 +174,7 @@ private:
             QStringLiteral("为鼠标和手柄选择命令，完成后保存绑定。"),
             QStringLiteral("查看全部已注册功能与当前快捷键；此列表不会执行命令。"),
             QStringLiteral("调整音量、音频同步、输出设备与预读。"),
-            QStringLiteral("调整硬件解码与缓存；缓存清理不会删除源视频。"),
+            QStringLiteral("查看实际解码后端，调整内存与磁盘缩略图缓存；清理不会删除源视频。"),
             QStringLiteral("调整字幕显示、翻译模式和源语言。"),
             QStringLiteral("配置 AI 服务连接；搜索不会读取密钥或编辑框内容。")};
         _description->setText(descriptions.value(index));
@@ -2231,33 +2232,58 @@ void MainWindow::_installSettingsWidgets(ReviewPanel* panel)
     auto* decodeGroup = new QGroupBox(QStringLiteral("解码与缓存"), performanceContent);
     auto* decodeForm = new QFormLayout(decodeGroup);
     auto* hardwareCombo = new QComboBox(decodeGroup);
+    hardwareCombo->setObjectName(QStringLiteral("hardwareDecodeRequest"));
     auto* app = qobject_cast<Application*>(qApp);
     auto hw = app ? app->hwDecodeManager() : nullptr;
     for (int i = 0; i <= static_cast<int>(HwAccelType::Auto); ++i) {
         const auto type = static_cast<HwAccelType>(i);
-        hardwareCombo->addItem(type == HwAccelType::Auto ? QStringLiteral("自动选择（推荐）") : hwAccelName(type), i);
+        hardwareCombo->addItem(type == HwAccelType::Auto ? QStringLiteral("自动（当前回退软件）") : hwAccelName(type), i);
+        if (type != HwAccelType::None) {
+            auto* model = qobject_cast<QStandardItemModel*>(hardwareCombo->model());
+            if (model && model->item(i)) model->item(i)->setEnabled(false);
+            hardwareCombo->setItemData(i, QStringLiteral("当前播放内核尚未实现此解码路径"), Qt::ToolTipRole);
+        }
     }
     if (hw) hardwareCombo->setCurrentIndex(static_cast<int>(hw->hwAccelType()));
+    auto* decodeStatus = new QLabel(decodeGroup);
+    decodeStatus->setObjectName(QStringLiteral("hardwareDecodeStatus"));
+    decodeStatus->setWordWrap(true);
+    const auto refreshDecodeStatus = [hw, decodeStatus] {
+        decodeStatus->setText(QStringLiteral("实际解码：软件（CPU）。%1")
+            .arg(hw ? hw->fallbackReason() : QStringLiteral("当前播放内核未接入硬件解码。")));
+    };
+    refreshDecodeStatus();
     auto* ramCacheSpin = new QSpinBox(decodeGroup);
+    ramCacheSpin->setObjectName(QStringLiteral("ramCacheSizeGB"));
     ramCacheSpin->setRange(1, 64);
     ramCacheSpin->setSuffix(QStringLiteral(" GB"));
     ramCacheSpin->setValue(static_cast<int>(_p->cacheManager ? _p->cacheManager->ramCacheSizeGB() : 4));
     auto* aheadSpin = new QSpinBox(decodeGroup);
+    aheadSpin->setObjectName(QStringLiteral("videoRequestLimit"));
     aheadSpin->setRange(4, 512);
     aheadSpin->setValue(static_cast<int>(_p->cacheManager ? _p->cacheManager->readAheadFrames() : 32));
     auto* behindSpin = new QSpinBox(decodeGroup);
+    behindSpin->setObjectName(QStringLiteral("cacheReadBehindFrames"));
     behindSpin->setRange(0, 256);
     behindSpin->setValue(static_cast<int>(_p->cacheManager ? _p->cacheManager->readBehindFrames() : 8));
-    decodeForm->addRow(QStringLiteral("硬件解码"), hardwareCombo);
+    decodeForm->addRow(QStringLiteral("解码请求"), hardwareCombo);
+    decodeForm->addRow(QStringLiteral("当前后端"), decodeStatus);
     decodeForm->addRow(QStringLiteral("内存缓存"), ramCacheSpin);
-    decodeForm->addRow(QStringLiteral("向前预读帧"), aheadSpin);
+    aheadSpin->setToolTip(QStringLiteral("限制新建播放器的并发视频请求数；当前媒体重新打开后生效。"));
+    decodeForm->addRow(QStringLiteral("视频请求上限（重开生效）"), aheadSpin);
     decodeForm->addRow(QStringLiteral("向后保留帧"), behindSpin);
     performanceLayout->addWidget(decodeGroup);
     auto* clearCacheButton = new QPushButton(QStringLiteral("清空播放缓存"), performanceContent);
+    clearCacheButton->setObjectName(QStringLiteral("clearPlaybackCaches"));
     performanceLayout->addWidget(clearCacheButton);
+    auto* diskCacheGroup = new QGroupBox(QStringLiteral("磁盘缩略图缓存"), performanceContent);
+    auto* diskCacheLayout = new QVBoxLayout(diskCacheGroup);
+    diskCacheLayout->addWidget(new ThumbnailCacheSettings(_p->userSettings, diskCacheGroup));
+    performanceLayout->addWidget(diskCacheGroup);
     performanceLayout->addStretch();
-    connect(hardwareCombo, qOverload<int>(&QComboBox::activated), this, [hw, hardwareCombo](int index) {
+    connect(hardwareCombo, qOverload<int>(&QComboBox::activated), this, [hw, hardwareCombo, refreshDecodeStatus](int index) {
         if (hw && index >= 0) hw->setHwAccelType(static_cast<HwAccelType>(hardwareCombo->itemData(index).toInt()));
+        refreshDecodeStatus();
     });
     connect(ramCacheSpin, &QSpinBox::editingFinished, this, [this, ramCacheSpin] {
         if (_p->cacheManager) _p->cacheManager->setRamCacheSizeGB(static_cast<size_t>(ramCacheSpin->value()));
@@ -2269,8 +2295,8 @@ void MainWindow::_installSettingsWidgets(ReviewPanel* panel)
         if (_p->cacheManager) _p->cacheManager->setReadBehindFrames(static_cast<size_t>(behindSpin->value()));
     });
     connect(clearCacheButton, &QPushButton::clicked, this, [this] {
-        if (_p->cacheManager) _p->cacheManager->clear();
-        if (statusBar()) statusBar()->showMessage(QStringLiteral("播放缓存已清空"), 2500);
+        if (_p->cacheManager) _p->cacheManager->clearPlaybackCaches();
+        if (statusBar()) statusBar()->showMessage(QStringLiteral("已请求清空所有窗口的播放缓存"), 2500);
     });
     tabs->addTab(performanceTab, QStringLiteral("性能"));
 

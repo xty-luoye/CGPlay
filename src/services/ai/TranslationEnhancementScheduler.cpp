@@ -93,8 +93,10 @@ QJsonObject TranslationEnhancementScheduler::policy() const
 }
 
 QJsonObject TranslationEnhancementScheduler::evaluate(
-    const TranslationEnhancementScheduleRequest& request) const
+    const TranslationEnhancementScheduleRequest& inputRequest) const
 {
+    TranslationEnhancementScheduleRequest request = inputRequest;
+    if (!request.runtime.captured) request.runtime = captureComponentRuntimePaths();
     const QString mode = TranslationPlaybackStrategy::normalizeModeId(request.playbackMode);
     const QJsonObject mediaIdentity = SubtitleGenerationService::mediaIdentity(request.mediaPath);
     const QString mediaFingerprint =
@@ -1271,15 +1273,14 @@ QJsonObject TranslationEnhancementScheduler::_runManualOnlineWorker(
             return result;
         }
         const QString helper = request.onlineHelperScriptPath.trimmed().isEmpty()
-            ? defaultOnlineHelperPath()
+            ? defaultOnlineHelperPath(request.runtime)
             : request.onlineHelperScriptPath;
         if (!QFileInfo::exists(helper)) {
             result.insert(QStringLiteral("degradedReason"), QStringLiteral("online-helper-script-missing"));
             result.insert(QStringLiteral("helperScriptPath"), helper);
             return result;
         }
-        const QString python = QProcessEnvironment::systemEnvironment()
-            .value(QStringLiteral("SUBTITLE_ONLINE_PYTHON"), QStringLiteral("python"));
+        const QString python = request.runtime.pythonFor(QStringLiteral("SUBTITLE_ONLINE_PYTHON"));
         QStringList arguments{
             helper,
             QStringLiteral("--media"), request.mediaPath,
@@ -1296,7 +1297,7 @@ QJsonObject TranslationEnhancementScheduler::_runManualOnlineWorker(
         };
 
         QProcess process;
-        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        QProcessEnvironment env = request.runtime.pythonEnvironment(QStringLiteral("SUBTITLE_ONLINE_PYTHON"));
         env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
         env.insert(QStringLiteral("SUBTITLE_WORKBENCH_API_KEY"), request.translationApiKey.trimmed());
         env.insert(QStringLiteral("SUBTITLE_WORKBENCH_BASE_URL"), request.translationBaseUrl.trimmed());
@@ -1452,7 +1453,7 @@ QJsonObject TranslationEnhancementScheduler::_runManualOnlineWorker(
     }
 
     const QString helper = request.onlineHelperScriptPath.trimmed().isEmpty()
-        ? defaultOnlineHelperPath()
+        ? defaultOnlineHelperPath(request.runtime)
         : request.onlineHelperScriptPath;
     if (!QFileInfo::exists(helper)) {
         result.insert(QStringLiteral("degradedReason"), QStringLiteral("online-helper-script-missing"));
@@ -1460,8 +1461,7 @@ QJsonObject TranslationEnhancementScheduler::_runManualOnlineWorker(
         return result;
     }
 
-    const QString python = QProcessEnvironment::systemEnvironment()
-        .value(QStringLiteral("SUBTITLE_ONLINE_PYTHON"), QStringLiteral("python"));
+    const QString python = request.runtime.pythonFor(QStringLiteral("SUBTITLE_ONLINE_PYTHON"));
     QStringList arguments{
         helper,
         QStringLiteral("--media"), request.mediaPath,
@@ -1479,7 +1479,7 @@ QJsonObject TranslationEnhancementScheduler::_runManualOnlineWorker(
     }
 
     QProcess process;
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    QProcessEnvironment env = request.runtime.pythonEnvironment(QStringLiteral("SUBTITLE_ONLINE_PYTHON"));
     env.insert(QStringLiteral("SUBTITLE_ONLINE_API_KEY"), request.onlineApiKey.trimmed());
     if (!request.onlineBaseUrl.trimmed().isEmpty()) {
         env.insert(QStringLiteral("SUBTITLE_ONLINE_BASE_URL"), request.onlineBaseUrl.trimmed());
@@ -1632,7 +1632,7 @@ QJsonObject TranslationEnhancementScheduler::_runManualOnlineTranslationWorker(
     translatedCues.reserve(sourceCues.size());
     int translatedCueCount = 0;
     QString firstError;
-    const QString helper = defaultLongAsrTranslateHelperPath();
+    const QString helper = defaultLongAsrTranslateHelperPath(request.runtime);
     const bool helperReady = QFileInfo::exists(helper);
     const bool providerReady =
         request.translationProviderAvailable &&
@@ -1653,7 +1653,7 @@ QJsonObject TranslationEnhancementScheduler::_runManualOnlineTranslationWorker(
                 sourceText,
                 QStringLiteral("auto"),
                 QStringLiteral("zh"),
-                &translateError);
+                &translateError, request.runtime);
         }
         if (translatedText.isEmpty() && providerReady) {
             const QString providerKindLower = request.translationProviderKind.trimmed().toLower();
@@ -1839,16 +1839,15 @@ QJsonObject TranslationEnhancementScheduler::_runManualOcrWorker(
         return result;
     }
     const QString helper = request.ocrHelperScriptPath.trimmed().isEmpty()
-        ? defaultOcrHelperPath()
+        ? defaultOcrHelperPath(request.runtime)
         : request.ocrHelperScriptPath;
     if (!QFileInfo::exists(helper)) {
         result.insert(QStringLiteral("degradedReason"), QStringLiteral("ocr-helper-script-missing"));
         result.insert(QStringLiteral("helperScriptPath"), helper);
         return result;
     }
-    const QString python = QProcessEnvironment::systemEnvironment()
-        .value(QStringLiteral("SUBTITLE_OCR_PYTHON"), QStringLiteral("python"));
-    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString python = request.runtime.pythonFor(QStringLiteral("SUBTITLE_OCR_PYTHON"));
+    const QProcessEnvironment env = request.runtime.pythonEnvironment(QStringLiteral("SUBTITLE_OCR_PYTHON"));
     const QString durationOverride = env.value(QStringLiteral("SUBTITLE_OCR_DURATION_SECONDS")).trimmed();
     const double targetDurationSeconds = std::max(24.0, request.highQualityTargetCoverageSeconds);
     const double durationSeconds = std::max(
@@ -2142,16 +2141,15 @@ QJsonObject TranslationEnhancementScheduler::_runManualLongAsrWorker(
         return result;
     }
     const QString helper = request.longAsrHelperScriptPath.trimmed().isEmpty()
-        ? defaultLongAsrHelperPath()
+        ? defaultLongAsrHelperPath(request.runtime)
         : request.longAsrHelperScriptPath;
     if (!QFileInfo::exists(helper)) {
         result.insert(QStringLiteral("fallbackReason"), QStringLiteral("long-asr-helper-script-missing"));
         result.insert(QStringLiteral("helperScriptPath"), helper);
         return result;
     }
-    const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    const QString python = env.value(QStringLiteral("SUBTITLE_LONG_ASR_PYTHON"),
-                                     env.value(QStringLiteral("SUBTITLE_OCR_PYTHON"), QStringLiteral("python")));
+    const QProcessEnvironment env = request.runtime.pythonEnvironment(QStringLiteral("SUBTITLE_LONG_ASR_PYTHON"));
+    const QString python = request.runtime.pythonFor(QStringLiteral("SUBTITLE_LONG_ASR_PYTHON"));
     const QString durationOverride =
         env.value(QStringLiteral("SUBTITLE_LONG_ASR_DURATION_SECONDS")).trimmed();
     const double targetDurationSeconds = std::max(24.0, request.highQualityTargetCoverageSeconds);
@@ -2657,7 +2655,7 @@ bool TranslationEnhancementScheduler::_writeOcrTranslatedCache(
     }
     QVector<GeneratedSubtitleCue> translatedCues;
     translatedCues.reserve(sourceCues.size());
-    const QString helper = defaultLongAsrTranslateHelperPath();
+    const QString helper = defaultLongAsrTranslateHelperPath(request.runtime);
     const bool helperReady = QFileInfo::exists(helper);
     const bool providerReady =
         request.translationProviderAvailable &&
@@ -2682,7 +2680,7 @@ bool TranslationEnhancementScheduler::_writeOcrTranslatedCache(
                     sourceText,
                     QStringLiteral("auto"),
                     QStringLiteral("zh"),
-                    &translateError);
+                    &translateError, request.runtime);
             }
             if (translatedText.isEmpty() && providerReady) {
                 const QString providerKindLower = request.translationProviderKind.trimmed().toLower();

@@ -1205,6 +1205,7 @@ TranslationEnhancementScheduleRequest MainWindow::_buildTranslationEnhancementRe
         : SubtitleGenerationService::defaultTranslatedVttPath(_p->currentPath, QStringLiteral("zh-Hans"));
 
     TranslationEnhancementScheduleRequest schedulerRequest;
+    schedulerRequest.runtime = captureComponentRuntimePaths();
     schedulerRequest.playbackMode = modeId;
     schedulerRequest.mediaPath = _p->currentPath;
     schedulerRequest.quickTranslatedVttPath = quickTranslatedVttPath;
@@ -2437,6 +2438,7 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
     }
 
     SubtitleGenerationRequest request;
+    request.runtime = captureComponentRuntimePaths();
     request.mediaPath = _p->currentPath;
     request.targetLanguage = QStringLiteral("zh-Hans");
     request.sourceLanguageHint = QStringLiteral("ja");

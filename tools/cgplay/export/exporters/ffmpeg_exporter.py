@@ -101,10 +101,30 @@ class FFmpegExporter:
         channels = frame_bgr.shape[2] if frame_bgr.ndim == 3 else 1
         if channels not in (3, 4):
             raise ValueError(f"Expected BGR or BGRA frame, got shape {frame_bgr.shape}")
+        if frame_bgr.dtype not in (np.dtype('uint8'), np.dtype('uint16')):
+            raise ValueError(f"Expected uint8/uint16 BGR(A), got {frame_bgr.dtype}")
+        high_depth = frame_bgr.dtype == np.dtype('uint16')
         if h != self.settings.height or w != self.settings.width:
             from PIL import Image
 
-            if channels == 4:
+            if high_depth:
+                # Pillow's RGB/RGBA modes would silently reduce this input to
+                # 8 bit. Resize float planes, premultiplying opacity so hidden
+                # RGB cannot bleed into a partially transparent edge.
+                work = frame_bgr.astype(np.float32)
+                if channels == 4:
+                    work[:, :, :3] *= work[:, :, 3:] / 65535.0
+                resized = np.stack([
+                    np.asarray(Image.fromarray(np.ascontiguousarray(work[:, :, c])).resize(
+                        (self.settings.width, self.settings.height), Image.Resampling.LANCZOS), dtype=np.float32)
+                    for c in range(channels)], axis=2)
+                if channels == 4:
+                    alpha = np.clip(resized[:, :, 3:], 0.0, 65535.0)
+                    resized[:, :, :3] = np.divide(resized[:, :, :3] * 65535.0, alpha,
+                        out=np.zeros_like(resized[:, :, :3]), where=alpha > 0.0)
+                    resized[:, :, 3:] = alpha
+                frame_bgr = np.ascontiguousarray(np.rint(np.clip(resized, 0.0, 65535.0)).astype(np.uint16))
+            elif channels == 4:
                 rgba = frame_bgr[:, :, [2, 1, 0, 3]]
                 resized = Image.fromarray(rgba, "RGBA").resize(
                     (self.settings.width, self.settings.height),
@@ -121,7 +141,8 @@ class FFmpegExporter:
 
         av_frame = av.VideoFrame.from_ndarray(
             frame_bgr,
-            format="bgra" if frame_bgr.shape[2] == 4 else "bgr24",
+            format=("bgra64le" if channels == 4 else "bgr48le") if high_depth
+                else ("bgra" if channels == 4 else "bgr24"),
         )
         colorspace = COLORSPACE_MAP.get(int(self.settings.color_space))
         if colorspace is not None:

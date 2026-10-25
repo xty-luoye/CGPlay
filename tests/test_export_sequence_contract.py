@@ -257,6 +257,53 @@ class ExportSequenceContractTests(unittest.TestCase):
         self.assertEqual(1, code)
         self.assertFalse(destination.exists())
 
+    def test_deep_exr_rejected_before_any_pixel_decode(self):
+        from types import SimpleNamespace
+        source = self.output_dir / "deep.exr"
+        names = ["R", "G", "B", "A", "Z"]
+        spec = oiio.ImageSpec(4, 3, len(names), oiio.FLOAT)
+        spec.channelnames = names
+        spec.deep = True
+        spec.attribute("compression", "zips")
+        data = oiio.DeepData()
+        data.init(12, len(names), [oiio.FLOAT] * len(names), names)
+        for pixel in range(12):
+            data.set_samples(pixel, 1)
+            for channel, value in enumerate([.18, .25, .5, .5, 10.]):
+                data.set_deep_value(pixel, channel, 0, value)
+        output = oiio.ImageOutput.create(str(source))
+        self.assertTrue(output.open(str(source), spec), output.geterror())
+        try:
+            self.assertTrue(output.write_deep_image(data), output.geterror())
+        finally:
+            output.close()
+        opened = oiio.ImageInput.open(str(source))
+        self.assertIsNotNone(opened)
+        self.assertTrue(opened.spec().deep)
+
+        class MetadataOnlyInput:
+            pixel_decode_called = False
+            closed = False
+
+            def __getattr__(self, name):
+                return getattr(opened, name)
+
+            def read_image(self, *args, **kwargs):
+                self.pixel_decode_called = True
+                raise AssertionError("Deep EXR must be rejected before requesting pixels")
+
+            def close(self):
+                self.closed = True
+                return opened.close()
+
+        guarded = MetadataOnlyInput()
+        binding = SimpleNamespace(ImageInput=SimpleNamespace(open=lambda path: guarded), FLOAT=oiio.FLOAT)
+        with patch.object(image_reader, "oiio", binding):
+            with self.assertRaisesRegex(ValueError, "Deep EXR"):
+                ImageReader.read_frame(str(source))
+        self.assertFalse(guarded.pixel_decode_called)
+        self.assertTrue(guarded.closed)
+
     def test_exr_requires_oiio_but_png_fallback_dispatch_stays_available(self):
         from PIL import Image
         png = self.output_dir / "rgba.png"
@@ -288,10 +335,11 @@ class ExportSequenceContractTests(unittest.TestCase):
             with self.subTest(failure=failure):
                 output = self.output_dir / f"{failure}.mov"
                 progress = []
+                staged = []
                 class Exporter:
                     closed = False
                     def write_frame(self, frame):
-                        output.write_bytes(b"partial export")
+                        staged[0].write_bytes(b"partial export")
                         if failure == "encode":
                             raise RuntimeError("injected encode failure")
                     def close(self):
@@ -299,16 +347,19 @@ class ExportSequenceContractTests(unittest.TestCase):
                         if failure == "flush":
                             raise RuntimeError("injected flush failure")
                 exporter = Exporter()
-                def read(path):
+                def open_exporter(staged_settings, logger):
+                    staged.append(Path(staged_settings.output_path))
+                    return exporter
+                def read(path, **kwargs):
                     if failure == "read" and str(path).endswith("1002.exr"):
                         raise IOError("injected decode failure")
-                    return original_read(path)
+                    return original_read(path, **kwargs)
                 def notify(percent, message):
                     progress.append(percent)
                     if failure == "interrupt" and percent > 5:
                         raise RuntimeError("interrupted through callback")
                 settings = ExportSettings(output_path=str(output), codec="prores_4444")
-                with patch("cgplay.export.export_job._open_exporter", return_value=exporter), \
+                with patch("cgplay.export.export_job._open_exporter", side_effect=open_exporter), \
                         patch.object(ImageReader, "read_frame", side_effect=read):
                     with self.assertRaises(RuntimeError):
                         export_frames(str(self.source), settings, progress_callback=notify,

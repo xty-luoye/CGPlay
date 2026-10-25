@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // CGPlay PlaybackController.h
 // Wraps tl::timeline::Player — follows DJV's pattern directly.
 
@@ -156,6 +156,7 @@ private:
     void _destroyPlayer();
     void _resetMediaState();
     void _applyPlaybackOptions();
+    void _applyCacheOptions();
     void _connectPlayer();
     void _tickTimer();
     void _enforceLoopBounds();

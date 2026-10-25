@@ -1,0 +1,5 @@
+# Keep application text portable and source-material digests byte exact.
+* text=auto eol=lf
+/docs/third_party_licenses/** -text
+/tools/deps/** -text
+/cmake/patches/** -text

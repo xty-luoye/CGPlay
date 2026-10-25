@@ -32,14 +32,11 @@ public:
     virtual double speedMultiplier() const = 0;
     virtual int loopMode() const = 0; // 0=Loop, 1=Once, 2=PingPong
 
-#if CGPLAY_HAS_TLRENDER
-    virtual std::shared_ptr<tl::Player> player() const = 0;
-#endif
-
-#if CGPLAY_HAS_FTK
-    virtual std::shared_ptr<ftk::Context> context() const = 0;
-    virtual std::shared_ptr<ftk::Style> style() const = 0;
-#endif
+    // Keep the virtual layout independent of installed headers/backend flags.
+    // A build without the native backend exposes empty ownership handles.
+    virtual std::shared_ptr<tl::Player> player() const { return {}; }
+    virtual std::shared_ptr<ftk::Context> context() const { return {}; }
+    virtual std::shared_ptr<ftk::Style> style() const { return {}; }
 
     virtual void play() = 0;
     virtual void pause() = 0;

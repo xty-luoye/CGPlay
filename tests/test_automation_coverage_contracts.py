@@ -5,7 +5,7 @@ import unittest
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-COMMAND_PREFIXES = ("playback", "audio", "view", "translation", "annotation", "compare", "codex", "export", "workspace")
+COMMAND_PREFIXES = ("playback", "audio", "view", "translation", "annotation", "compare", "codex", "export", "recording", "workspace")
 
 
 def registered_commands() -> dict[str, str]:

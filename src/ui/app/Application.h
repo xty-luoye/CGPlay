@@ -10,6 +10,7 @@
 #include <QStringList>
 #include <QVector>
 #include <memory>
+#include <functional>
 #include <vector>
 
 #include "viewer/api/IActivePlaybackView.h"
@@ -40,6 +41,7 @@ class AnnotationManager;
 class OcioManager;
 class CacheManager;
 class HardwareDecodeManager;
+class RecordingService;
 class AnnotationOverlayProvider;
 struct MediaInfo;
 struct GeneratedSubtitleCue;
@@ -98,6 +100,8 @@ private:
     int _runUiCapture();
     int _runCodexWorkbenchSmoke();
     int _runPlayerSmokeTest();
+    int _runCompareExportSmoke();
+    int _runRecordingSmoke();
     int _runSubtitleGenerationSmoke();
     int _runSubtitleCacheDisplaySmoke();
     int _runSubtitleSwitchSequenceSmoke();
@@ -153,6 +157,13 @@ private:
     bool _playerSmokeMode = false;
     QString _playerSmokeMedia;
     QString _playerSmokeOutput;
+    bool _compareExportSmokeMode = false;
+    QString _compareExportSmokeA;
+    QString _compareExportSmokeB;
+    QString _compareExportSmokeOutput;
+    bool _recordingSmokeMode = false;
+    QString _recordingSmokeOutput;
+    QString _recordingSmokeRuntime;
     bool _subtitleGenerationSmokeMode = false;
     bool _subtitleGenerationSmokeMock = false;
     QString _subtitleGenerationSmokeMedia;
@@ -250,6 +261,10 @@ public:
     QMessageBox*        createRecoverySessionPromptForSmoke();
     QJsonObject captureRuntimeAnnotationState() const;
     QJsonObject runPlayerSmokeChecks(const QString& mediaPath);
+    void runCompareExportSmokeChecks(const QString& sourceA, const QString& sourceB,
+        const QString& artifactDirectory, std::function<void(QJsonObject)> finished);
+    void runRecordingSmokeChecks(const QString& artifactDirectory,
+        std::function<void(QJsonObject)> finished);
     QJsonObject runSubtitleGenerationSmokeChecks(
         const QString& mediaPath,
         const QString& outputPath,
@@ -311,6 +326,12 @@ private:
     void _rebuildCustomToolbar();
     void _refreshCommandPresentation();
     bool _executeCommandId(const QString& commandId, bool checked = false);
+    bool _exportCompareVideo();
+    bool _showRecordingPanel();
+    bool _deferCloseForRecording();
+    void _refreshRecordingCatalog();
+    QJsonObject _captureRecordingPlayerSelection(QString* error = nullptr) const;
+    QStringList _recordingProtectedPaths() const;
     void _applyPanelContributions();
     void _cleanupDuplicateReviewPanels();
     void _connectAnnotationToolbarSignals(AnnotationToolbar* toolbar);
@@ -332,6 +353,7 @@ private:
     QJsonObject _automationCoverage() const;
     QJsonArray _runMediaStateSmokeChecks(const QString& mediaPath);
     QJsonArray _runSequenceTimeSmokeChecks(const QString& mediaPath);
+    QJsonArray _runCacheRuntimeSmokeChecks(const QString& mediaPath);
     QJsonArray _runInOutSmokeChecks(const QString& mediaPath);
     QJsonArray _runSessionRestoreSmokeChecks(const QString& mediaPath);
     void _showFullScreenChromeTemporarily();

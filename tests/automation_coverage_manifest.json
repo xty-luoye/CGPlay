@@ -186,6 +186,12 @@
     "export.render": {
       "test": "test_export.py+test_export_h264.py+test_export_h265.py+test_export_prores.py+test_export_exr.py; test_export_sequence_contract.py:relative ranges, named EXR channels, annotation positions, first-frame reuse, failure cleanup"
     },
+    "export.compareVideo": {
+      "test": "compare-export-smoke:registered command, immutable player snapshot, controls, background export; tests/test_compare_export.py"
+    },
+    "recording.open": {
+      "test": "recording-smoke:lazy panel, actual OBS properties, scope/format/audio controls, synthetic start/pause/resume/gain/mute/stop, MP4 probe, recovery and deferred close; tests/test_recording_ui.py"
+    },
     "workspace.save": {
       "test": "player-smoke:Workspace save"
     },
@@ -203,6 +209,8 @@
     }
   },
   "featureTests": {
+    "settings.actualDecodeBackend": "player-smoke:Settings requested decoder and verified software backend; test_hardware_decode_state.py",
+    "settings.thumbnailDiskCache": "player-smoke:Settings disk thumbnail location quota usage and clear; test_thumbnail_disk_cache.py:real quota/LRU, leases, unknown namespace, junction, source preservation, actual controls and close",
     "playlist.otioReadiness": "test_playlist_async_contract.py:pending and failed rows preserve existing output; real OTIO duration/rate; unknown FPS persistence and confirmed metadata supersedes older probe",
     "timeline.inOutVisibility": "tests/run_in_out_regression.py; in-out:values visible for subpixel range; timeline screenshot; cleared label; close clears values",
     "settings.lifecycle": "player-smoke:Settings lazy construction and local theme+Settings reuse and close cleanup",
@@ -227,7 +235,7 @@
     "playlist.asyncImport": "test_playlist_async_contract.py; test_playlist_restore_performance.py:GUI heartbeat, order, removal/clear cancellation, metadata deduplication",
     "playlist.thumbnailDispatch": "test_playlist_async_contract.py:at most two dispatched thumbnails; shared pool remains available; canceled jobs counted until finished",
     "session.recovery": "run_session_restore_regression.py:media-ready A/B and seek, superseded requests, failed recovery retained, ordinary source switch reset",
-    "export.sequenceContract": "test_export_sequence_contract.py:relative source frames, real EXR RGBZ/RGBA/unsupported channels, one decode per selected frame"
+    "export.sequenceContract": "test_export_sequence_contract.py:relative source frames, real EXR RGBZ/RGBA/unsupported channels, metadata rejects deep before pixel decode, one decode per selected frame"
   },
   "environmentCapabilities": [
     "physical-audio-output-device",

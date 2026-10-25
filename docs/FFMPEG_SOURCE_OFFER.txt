@@ -1,52 +1,46 @@
-FFMPEG BUILD AND CORRESPONDING-SOURCE INFORMATION
-================================================
+CGPlay 1.0.8 — FFmpeg source access and build identities
 
-Scope and status
-----------------
-This historical filename records dependency provenance. It is not a written
-source offer or a claim that the publisher hosts complete corresponding source.
-This source-only publication includes neither FFmpeg binaries nor an installer.
-Before distributing binaries, the distributor must verify and supply the
-corresponding source and build information required by the applicable license.
+Release source archive and SHA-256:
+https://github.com/xty-luoye/CGPlay/releases/download/v1.0.8/cgplay-corresponding-sources-1.0.8.zip
+https://github.com/xty-luoye/CGPlay/releases/download/v1.0.8/cgplay-corresponding-sources-1.0.8.zip.sha256
 
-Native playback libraries
--------------------------
-The locally inspected CGPlay 1.0.7.11 Release avcodec-62.dll identifies itself as:
-  libavcodec license: LGPL version 2.1 or later
-Its embedded configuration identifies a vcpkg MSVC shared build:
-  --enable-shared --disable-static
-  --disable-libx264 --disable-libx265
-The inspected configuration contains neither --enable-gpl nor --enable-nonfree.
-These native DLLs are distinct from the standalone executables below. A future
-binary release must record its actual FFmpeg revision, vcpkg port/version,
-configuration, patches, and corresponding source; these are not established
-by the standalone executable's source archive.
+Start with dependency-provenance.json, complete original sources, vendor/local
+patches and build recipes in that asset. The installer's
+DEPENDENCY_PROVENANCE_1.0.8.json records source identities and source gaps.
+Missing corresponding source or required build scripts must be resolved before
+distributing that component, rather than treated as a disclaimer.
 
-Standalone command-line tools
------------------------------
-The existing local full package's ffmpeg.exe and ffprobe.exe are recorded as:
-  Version: 8.1.1-full_build-www.gyan.dev
-  License reported by ffmpeg.exe -L: GNU GPL version 3 or later
-  Flags: --enable-gpl --enable-version3 --enable-static
-         --enable-libx264 --enable-libx265
-The application invokes these tools as separate command-line processes.
-Their license and source obligations remain separate from the application's
-own source license; this notice does not relicense the tools.
+Separate distributions:
+- Native player: FFmpeg8.1.1 / avcodec62.28.101, vcpkg8.1.1#2, LGPL2.1+.
+  Original FFmpeg source SHA256:
+  918929faccab2700c9cc7be2531c0b74f054a4dd5d3862bc485b0ab17af76486
+  Complete installed-matching port/patches/SPDX/ABI are retained.
+- Standalone CLI: BtbN static GPL win64
+  n8.1.3-24-g92611900bb-20261024, on the8.1 maintenance branch.
+  https://github.com/BtbN/FFmpeg-Builds/tree/937868360a21d711ec94a33f5591d345ad9b7754
+  https://github.com/FFmpeg/FFmpeg/commit/92611900bb
+  The official binary ZIP SHA256 is:
+  3a7723ba3870822db054eed3cb729958b439ac4d0a8ce1ef8d4f7a148913575d
+  The matching official dependency-source cache SHA256 is:
+  dcda2ef4bfe1900a5089ced3d4bffd588d7f3aa87ba01a188185acdaa55dd0e4
+  Original source members, complete patches/build recipes and additional
+  runtime/toolchain notices are preserved. This is not a bare stable8.1.3
+  build or a new FFmpeg9 ABI. Prior Gyan binaries are not selected.
+- PyAV18.1.0: private FFmpeg8.1.2, vendor recipe8.1.2-1 at:
+  https://github.com/PyAV-Org/pyav-ffmpeg/tree/a71bf9279f7a4659154b68ba6783e89be460bcd5
+  The full patches/ffmpeg.patch changes x264/x265 license-selection lists.
+  Its LGPL3+ banner does not relicense x264/x265; preserve their own GPL terms.
+- OBS33 recorder: private FFmpeg8.1.2/x264r3106, GPL3+, exact recipe:
+  https://github.com/obsproject/obs-deps/tree/cbf0a3d8a0a34c07e822bda22a5f8214f91801d7
+  Retain OBS_SOURCES, OBS_GPLv3 and all matching source archives/patches.
 
-Upstream and distributor provenance leads:
-  https://ffmpeg.org/legal.html
-  https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n8.1.1.tar.gz
-  https://www.gyan.dev/ffmpeg/builds/
-  https://github.com/GyanD/codexffmpeg/archive/refs/tags/8.1.1.tar.gz
+Upstream source/distribution references:
+https://ffmpeg.org/download.html
+https://ffmpeg.org/legal.html
 
-These links have not been verified here as a complete corresponding-source
-package for every shipped binary and all its included libraries. In particular,
-verify exact revisions, downstream patches, dependency sources, configuration,
-compiler/build scripts, source hashes, and rebuild instructions. Do not describe
-an upstream tag or build-script archive alone as a fulfilled source obligation.
+Report source-access problems:
+https://github.com/xty-luoye/CGPlay/issues
 
-Other FFmpeg builds
-------------------
-PyAV wheels and Qt WebEngine may embed additional FFmpeg builds. Their source,
-configuration, licenses, and notices must be assessed from their own exact
-versions when bundled; the information above does not cover those builds.
+This is a source access index, not a claim that every vendor build has been
+independently reproduced. Independent build verification and required source
+availability are recorded separately.

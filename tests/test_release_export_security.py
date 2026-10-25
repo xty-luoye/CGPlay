@@ -77,7 +77,9 @@ class ReleaseExportSecurityTests(unittest.TestCase):
             self.assertEqual(expected_codec, stream["codec_name"])
             self.assertEqual("tv", stream.get("color_range"), stream)
             self.assertEqual("bt709", stream.get("color_space"), stream)
-            self.assertEqual("bt709", stream.get("color_transfer"), stream)
+            # Image values are now explicitly sRGB encoded, rather than
+            # retaining a BT.709 transfer tag that describes different values.
+            self.assertEqual("iec61966-2-1", stream.get("color_transfer"), stream)
             self.assertEqual("bt709", stream.get("color_primaries"), stream)
             report[codec] = stream
 
@@ -363,15 +365,16 @@ class ReleaseExportSecurityTests(unittest.TestCase):
     def test_finalize_failure_removes_partial_output(self) -> None:
         import logging
         from unittest.mock import patch
-        from cgplay.export.export_job import _export_image_sequence
+        from cgplay.export.export_job import export_frames
         from cgplay.export.models.export_settings import ExportSettings
 
         output = self.output_dir / "partial_finalize_failure.mp4"
         output.unlink(missing_ok=True)
 
+        staged = []
         class FailingExporter:
             def write_frame(self, _frame):
-                output.write_bytes(b"partial")
+                staged[0].write_bytes(b"partial")
 
             def close(self):
                 raise RuntimeError("simulated flush failure")
@@ -382,11 +385,13 @@ class ReleaseExportSecurityTests(unittest.TestCase):
             output_path=str(output),
             output_format="mp4",
         )
-        with patch("cgplay.export.export_job._open_exporter", return_value=FailingExporter()):
+        def open_exporter(staged_settings, logger):
+            staged.append(Path(staged_settings.output_path))
+            return FailingExporter()
+
+        with patch("cgplay.export.export_job._open_exporter", side_effect=open_exporter):
             with self.assertRaisesRegex(RuntimeError, "finalize"):
-                _export_image_sequence(
-                    str(self.source), settings, logging.getLogger("test"), None, 1, 1, None
-                )
+                export_frames(str(self.source), settings, start_frame=1, end_frame=1)
         self.assertFalse(output.exists())
 
     def test_cpp_paths_are_strict_and_plaintext_reads_are_removed(self) -> None:

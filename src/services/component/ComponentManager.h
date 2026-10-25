@@ -4,6 +4,7 @@
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
+#include <QReadWriteLock>
 
 class QWidget;
 class QProgressDialog;
@@ -61,6 +62,7 @@ public:
     QString componentRootPath(const QString& id) const;
     QString componentVersion(const QString& id) const;
     QJsonObject manifestDocument() const;
+    QJsonObject runtimeRootsSnapshot() const;
 
     static QString appRootPath();
     static QString componentsRootPath();
@@ -74,22 +76,22 @@ private:
     bool _loadCachedManifest();
     bool _loadManifestDocument(const QByteArray& json, QString* error);
     bool _loadState();
-    bool _saveState() const;
+    bool _saveState(const QJsonObject& state, QString* error) const;
 
     ComponentSpec _componentSpec(const QString& id) const;
     bool _isInstalled(const ComponentSpec& spec) const;
     bool _downloadAndInstall(const ComponentSpec& spec, QWidget* parentWidget, QString* error);
-    bool _verifyFileSha256(const QString& filePath, const QString& expectedSha256, QString* error) const;
     bool _extractArchive(
         const QString& archivePath,
         const QString& destinationPath,
         QProgressDialog* progressDialog,
         QString* error) const;
-    bool _copyExtractedPayload(const QString& extractRoot, const ComponentSpec& spec, QString* error) const;
     QString _resolveManifestUrl() const;
     QStringList _resolveManifestUrls() const;
 
+    mutable QReadWriteLock _metadataLock{QReadWriteLock::Recursive};
     QString _manifestUrl;
+    QJsonObject _bundledManifest;
     QJsonObject _manifestRoot;
     QJsonObject _installedState;
 };

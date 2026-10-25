@@ -3,10 +3,12 @@
 // replicating tl::qtwidget::ContainerWidget logic.
 
 #include "TlViewport.h"
+#include "NativeGLLoader.h"
 #include "core/GPUUploadQueue.h"
 
 #include <tlRender/UI/Viewport.h>
 #include <tlRender/GL/Render.h>
+#include <tlRender/Core/Version.h>
 
 #include <ftk/GL/Init.h>
 #include <ftk/GL/Mesh.h>
@@ -16,10 +18,16 @@
 #include <ftk/Core/Context.h>
 #include <ftk/Core/Observable.h>
 #include <ftk/UI/IconSystem.h>
+#include <nlohmann/json.hpp>
 
 #include <QElapsedTimer>
+#include <QEvent>
+#include <QJsonDocument>
+#include <QOpenGLContext>
 #include <QPainter>
+#include <QPointer>
 #include <QTimer>
+#include <QThread>
 
 #include <algorithm>
 #include <cmath>
@@ -30,7 +38,8 @@ namespace cgplay {
 namespace {
 
 constexpr int kInteractiveTimerIntervalMs = 8;
-constexpr int kIdleTimerIntervalMs = 33;
+constexpr int kIdleTimerIntervalMs = 100;
+constexpr int kHiddenTimerIntervalMs = 1000;
 constexpr int kInteractionBoostMs = 250;
 constexpr int kDeferredViewSyncDelayMs = 20;
 constexpr double kZoomSignalEpsilon = 0.0001;
@@ -105,7 +114,11 @@ struct TlViewport::Private
     std::unique_ptr<QTimer> timer;
     std::shared_ptr<tl::Player> player;
     std::shared_ptr<ftk::Observer<tl::Playback> > playbackObserver;
+    std::shared_ptr<ftk::ListObserver<tl::VideoFrame> > videoFrameObserver;
     tl::Playback playback = tl::Playback::Stop;
+    quint64 playerGeneration = 0;
+    QPointer<QWidget> observedWindow;
+    bool presentationRefreshQueued = false;
     QElapsedTimer interactionTimer;
     int timerIntervalMs = kIdleTimerIntervalMs;
 
@@ -125,6 +138,10 @@ struct TlViewport::Private
     qint64 timerPlaybackDecisionCount = 0;
     qint64 timerIdleDecisionCount = 0;
     qint64 timerIntervalChangeCount = 0;
+    qint64 hiddenSkipCount = 0;
+    qint64 pausedFrameWakeCount = 0;
+    qint64 restoreWakeCount = 0;
+    qint64 settingsWakeCount = 0;
     qint64 updateRequestsTotal = 0;
     qint64 updateRequestsFromTimer = 0;
     qint64 updateRequestsFromForceRender = 0;
@@ -177,6 +194,11 @@ TlViewport::TlViewport(
     connect(_p->timer.get(), &QTimer::timeout, this, [this] {
         if (!_p) return;
         ++_p->timerTickCount;
+        if (!_displayPollingAllowed()) {
+            ++_p->hiddenSkipCount;
+            _refreshTimerInterval();
+            return;
+        }
         const QSize widgetSize = size();
         const qreal dpr = devicePixelRatioF();
         if (_p->lastWidgetSize != widgetSize ||
@@ -210,10 +232,18 @@ TlViewport::TlViewport(
     });
     _p->timer->start(_p->timerIntervalMs);
     _p->renderTimer.start();
+    _watchTopLevelWindow();
 }
 
 TlViewport::~TlViewport()
 {
+    ++_p->playerGeneration;
+    _p->videoFrameObserver.reset();
+    _p->playbackObserver.reset();
+    _p->timer->stop();
+    if (_p->observedWindow) {
+        _p->observedWindow->removeEventFilter(this);
+    }
     makeCurrent();
 }
 
@@ -226,6 +256,33 @@ double TlViewport::zoom() const {
 }
 bool TlViewport::hasFrameView() const {
     return _p->viewport->hasFrameView();
+}
+
+QJsonObject TlViewport::exportDisplaySnapshot() const
+{
+    if (QThread::currentThread() != thread()) {
+        return {{QStringLiteral("valid"), false},
+                {QStringLiteral("error"), QStringLiteral("显示设置必须在界面线程读取。")}};
+    }
+    if (!_p || !_p->viewport) {
+        return {{QStringLiteral("valid"), false},
+                {QStringLiteral("error"), QStringLiteral("当前播放画面不可用。")}};
+    }
+    try {
+        nlohmann::json value;
+        value["ocio"] = _p->viewport->getOCIOOptions();
+        value["lut"] = _p->viewport->getLUTOptions();
+        value["imageOptions"] = _p->viewport->getImageOptions();
+        value["displayOptions"] = _p->viewport->getDisplayOptions();
+        value["background"] = _p->viewport->getBackgroundOptions();
+        value["foreground"] = _p->viewport->getForegroundOptions();
+        QJsonObject result = QJsonDocument::fromJson(QByteArray::fromStdString(value.dump())).object();
+        result.insert(QStringLiteral("valid"), true);
+        return result;
+    } catch (const std::exception& error) {
+        return {{QStringLiteral("valid"), false},
+                {QStringLiteral("error"), QString::fromUtf8(error.what())}};
+    }
 }
 
 // ─── v1.1 GPUUploadQueue ───────────────────────────────────────────────────────
@@ -249,6 +306,10 @@ void TlViewport::resetRenderStats()
     _p->timerPlaybackDecisionCount = 0;
     _p->timerIdleDecisionCount = 0;
     _p->timerIntervalChangeCount = 0;
+    _p->hiddenSkipCount = 0;
+    _p->pausedFrameWakeCount = 0;
+    _p->restoreWakeCount = 0;
+    _p->settingsWakeCount = 0;
     _p->updateRequestsTotal = 0;
     _p->updateRequestsFromTimer = 0;
     _p->updateRequestsFromForceRender = 0;
@@ -291,6 +352,12 @@ QJsonObject TlViewport::benchmarkDiagnostics() const
     out["timer_idle_decision_count"] = static_cast<double>(_p->timerIdleDecisionCount);
     out["timer_interval_change_count"] = static_cast<double>(_p->timerIntervalChangeCount);
     out["current_timer_interval_ms"] = _p->timerIntervalMs;
+    out["hidden_skip_count"] = static_cast<double>(_p->hiddenSkipCount);
+    out["paused_frame_wake_count"] = static_cast<double>(_p->pausedFrameWakeCount);
+    out["restore_wake_count"] = static_cast<double>(_p->restoreWakeCount);
+    out["settings_wake_count"] = static_cast<double>(_p->settingsWakeCount);
+    out["logical_visible"] = isVisible();
+    out["minimized"] = window() && window()->isMinimized();
     out["update_requests_total"] = static_cast<double>(_p->updateRequestsTotal);
     out["update_requests_from_timer"] = static_cast<double>(_p->updateRequestsFromTimer);
     out["update_requests_from_force_render"] = static_cast<double>(_p->updateRequestsFromForceRender);
@@ -303,6 +370,8 @@ QJsonObject TlViewport::benchmarkDiagnostics() const
 
 // ─── Slots ─────────────────────────────────────────────────────────────────────
 void TlViewport::setPlayer(const std::shared_ptr<tl::Player>& player) {
+    const quint64 generation = ++_p->playerGeneration;
+    _p->videoFrameObserver.reset();
     _p->playbackObserver.reset();
     _p->player = player;
     _p->playback = player ? player->getPlayback() : tl::Playback::Stop;
@@ -318,10 +387,28 @@ void TlViewport::setPlayer(const std::shared_ptr<tl::Player>& player) {
                 _p->playback = playback;
                 _refreshTimerInterval(true);
             });
+        _p->videoFrameObserver = ftk::ListObserver<tl::VideoFrame>::create(
+            _p->player->observeCurrentVideo(),
+            [this, generation](const std::vector<tl::VideoFrame>& frames) {
+                const bool hasImage = std::any_of(frames.begin(), frames.end(), [](const tl::VideoFrame& frame) {
+                    return std::any_of(frame.layers.begin(), frame.layers.end(), [](const tl::VideoLayer& layer) {
+                        return static_cast<bool>(layer.image) || static_cast<bool>(layer.imageB);
+                    });
+                });
+                if (!hasImage) return;
+                // A real decoded frame, rather than the seek command, wakes a
+                // paused display. The receiver context cancels queued work on
+                // destruction and the generation rejects an old player.
+                QMetaObject::invokeMethod(this, [this, generation] {
+                    _wakePausedFrame(generation);
+                }, Qt::QueuedConnection);
+            });
     }
     _markInteractionActive();
 }
 void TlViewport::clearPlayer() {
+    ++_p->playerGeneration;
+    _p->videoFrameObserver.reset();
     _p->playbackObserver.reset();
     _p->player.reset();
     _p->playback = tl::Playback::Stop;
@@ -333,15 +420,19 @@ void TlViewport::clearPlayer() {
 
 void TlViewport::setOCIOOptions(const tl::OCIOOptions& opts) {
     _p->viewport->setOCIOOptions(opts);
+    _wakeSettingsChange();
 }
 void TlViewport::setLUTOptions(const tl::LUTOptions& opts) {
     _p->viewport->setLUTOptions(opts);
+    _wakeSettingsChange();
 }
 void TlViewport::setImageOptions(const std::vector<ftk::ImageOptions>& opts) {
     _p->viewport->setImageOptions(opts);
+    _wakeSettingsChange();
 }
 void TlViewport::setDisplayOptions(const std::vector<tl::DisplayOptions>& opts) {
     _p->viewport->setDisplayOptions(opts);
+    _wakeSettingsChange();
 }
 void TlViewport::setCompareOptions(const tl::CompareOptions& opts) {
     if (_p->hasLastCompareOptions && compareOptionsEqual(_p->lastCompareOptions, opts)) {
@@ -357,9 +448,11 @@ void TlViewport::setCompareOptions(const tl::CompareOptions& opts) {
 }
 void TlViewport::setBackgroundOptions(const tl::BackgroundOptions& opts) {
     _p->viewport->setBackgroundOptions(opts);
+    _wakeSettingsChange();
 }
 void TlViewport::setForegroundOptions(const tl::ForegroundOptions& opts) {
     _p->viewport->setForegroundOptions(opts);
+    _wakeSettingsChange();
 }
 void TlViewport::setViewPosAndZoom(const ftk::V2I& pos, double z) {
     _p->viewport->setViewPosAndZoom(pos, z);
@@ -420,14 +513,42 @@ QPointF TlViewport::widgetToImage(double wx, double wy, int /*imgW*/, int /*imgH
     return QPointF((wx - vp.x) / z, (wy - vp.y) / z);
 }
 
+bool TlViewport::event(QEvent* event)
+{
+    const bool handled = QOpenGLWidget::event(event);
+    if (_p && (event->type() == QEvent::Show || event->type() == QEvent::Hide ||
+               event->type() == QEvent::ParentChange || event->type() == QEvent::WindowStateChange)) {
+        _watchTopLevelWindow();
+        _queuePresentationRefresh();
+    }
+    return handled;
+}
+
+bool TlViewport::eventFilter(QObject* watched, QEvent* event)
+{
+    if (_p && watched == _p->observedWindow &&
+        (event->type() == QEvent::Show || event->type() == QEvent::Hide ||
+         event->type() == QEvent::WindowStateChange)) {
+        _queuePresentationRefresh();
+    }
+    return QOpenGLWidget::eventFilter(watched, event);
+}
+
 // ─── OpenGL ────────────────────────────────────────────────────────────────────
 void TlViewport::initializeGL()
 {
-    initializeOpenGLFunctions();
-    ftk::gl::initGLAD();
-    glEnable(GL_DITHER);
-
     try {
+        if (!initializeOpenGLFunctions())
+            throw std::runtime_error("Cannot initialize Qt OpenGL 4.1 functions");
+        // This context belongs to Qt. The SDL loader used by native ftk
+        // windows does not resolve functions for the QOpenGLWidget context.
+        const auto load = [](const char* name) -> NativeGLProc {
+            auto* current = QOpenGLContext::currentContext();
+            return current ? current->getProcAddress(name) : nullptr;
+        };
+        if (!initializeNativeGL(load))
+            throw std::runtime_error("Cannot initialize GLAD for the Qt OpenGL context");
+        glEnable(GL_DITHER);
         auto ctx = _p->context.lock();
         if (!ctx) {
             qCritical() << "[TlViewport] Context expired, cannot create renderer";
@@ -691,6 +812,58 @@ void TlViewport::_markInteractionActive()
     _refreshTimerInterval(true);
 }
 
+bool TlViewport::_displayPollingAllowed() const
+{
+    // WA_DontShowOnScreen tests can still be logically visible. Do not use
+    // QWindow::isExposed(), which would throttle all background benchmarks.
+    return isVisible() && (!window() || !window()->isMinimized());
+}
+
+void TlViewport::_watchTopLevelWindow()
+{
+    QWidget* topLevel = window();
+    if (_p->observedWindow == topLevel) return;
+    if (_p->observedWindow) _p->observedWindow->removeEventFilter(this);
+    _p->observedWindow = topLevel;
+    if (topLevel && topLevel != this) topLevel->installEventFilter(this);
+}
+
+void TlViewport::_queuePresentationRefresh()
+{
+    if (_p->presentationRefreshQueued) return;
+    _p->presentationRefreshQueued = true;
+    QTimer::singleShot(0, this, [this] {
+        _p->presentationRefreshQueued = false;
+        _watchTopLevelWindow();
+        if (!_displayPollingAllowed()) {
+            _refreshTimerInterval();
+            return;
+        }
+        _p->pendingSizeSync = true;
+        ++_p->restoreWakeCount;
+        // Reuse the existing Windows/fullscreen presentation trigger once on
+        // restore. The player and its independent audio clock remain attached.
+        _forceRender();
+    });
+}
+
+void TlViewport::_wakePausedFrame(quint64 generation)
+{
+    if (generation != _p->playerGeneration || !_p->player ||
+        isActivePlayback(_p->playback) || !_displayPollingAllowed()) return;
+    ++_p->pausedFrameWakeCount;
+    _markInteractionActive();
+    _requestUpdate("paused_video");
+}
+
+void TlViewport::_wakeSettingsChange()
+{
+    if (!_displayPollingAllowed()) return;
+    ++_p->settingsWakeCount;
+    _markInteractionActive();
+    _requestUpdate("settings");
+}
+
 int TlViewport::_desiredPlaybackTimerIntervalMs() const
 {
     double playbackFps = 0.0;
@@ -721,8 +894,11 @@ void TlViewport::_refreshTimerInterval(bool pendingSizeUpdate)
         _p->interactionTimer.isValid() &&
         _p->interactionTimer.elapsed() < kInteractionBoostMs;
     const bool activePlayback = isActivePlayback(_p->playback);
+    const bool displayAllowed = _displayPollingAllowed();
     int desiredInterval = kIdleTimerIntervalMs;
-    if (pendingSizeUpdate || recentInteraction) {
+    if (!displayAllowed) {
+        desiredInterval = kHiddenTimerIntervalMs;
+    } else if (pendingSizeUpdate || recentInteraction) {
         ++_p->timerInteractiveDecisionCount;
         desiredInterval = kInteractiveTimerIntervalMs;
     } else if (activePlayback) {
@@ -735,7 +911,7 @@ void TlViewport::_refreshTimerInterval(bool pendingSizeUpdate)
         _p->timerIntervalMs = desiredInterval;
         ++_p->timerIntervalChangeCount;
         _p->timer->setTimerType(
-            (pendingSizeUpdate || recentInteraction || activePlayback)
+            displayAllowed && (pendingSizeUpdate || recentInteraction || activePlayback)
                 ? Qt::PreciseTimer
                 : Qt::CoarseTimer);
         _p->timer->start(desiredInterval);

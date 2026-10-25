@@ -177,8 +177,10 @@ void FullscreenController::toggle()
         _window->showNormal();
         const QList<int> centerSizes = _state.fullscreenCenterSizes;
         QTimer::singleShot(0, this, [this, centerSizes, transitionGeneration, restoreMaximized]() {
+            // Native fullscreen state can lag a requested exit on Windows.
+            // Only a newer transition may cancel restoring layout and paints.
             if (_state.fullscreenTransitionGeneration != transitionGeneration ||
-                _state.fullscreenActive || _window->isFullScreen()) return;
+                _state.fullscreenActive) return;
             if (_window->_p->centerSplitter && centerSizes.size() == _window->_p->centerSplitter->count()) {
                 _window->_p->centerSplitter->setSizes(centerSizes);
             }
@@ -197,7 +199,7 @@ void FullscreenController::toggle()
         // layout pass. Reconcile once after that transition, never polling.
         QTimer::singleShot(150, this, [this, transitionGeneration, restoreMaximized]() {
             if (_state.fullscreenTransitionGeneration != transitionGeneration ||
-                _state.fullscreenActive || _window->isFullScreen()) return;
+                _state.fullscreenActive) return;
             _state.fullscreenRestorePending = false;
             if (restoreMaximized && !_window->isMaximized()) _window->showMaximized();
         });

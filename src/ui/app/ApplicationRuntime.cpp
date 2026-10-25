@@ -5,6 +5,7 @@
 
 #include "common/core/OverlayRuntimeDebug.h"
 #include "common/core/ServiceLocator.h"
+#include "common/core/SystemPerformanceMonitor.h"
 #include "common/events/EventBus.h"
 #include "common/events/api/IEventBus.h"
 #include "common/events/api/EventTypes.h"
@@ -30,12 +31,14 @@
 #include "component/ComponentManager.h"
 #include "core/session/api/ISessionContributor.h"
 #include "hwdecode/HardwareDecodeManager.h"
+#include "media/ThumbnailDiskCache.h"
 #include "media/MediaProbe.h"
 #include "media/MediaService.h"
 #include "ocio/OcioManager.h"
 #include "playback/PlaybackController.h"
 #include "playback/api/IPlaybackService.h"
 #include "playback/PlaybackStats.h"
+#include "recording/RecordingService.h"
 #include "settings/api/ISettingsService.h"
 #include "settings/SettingsService.h"
 #include "viewer/TlViewport.h"
@@ -159,7 +162,7 @@ Application::Application(int& argc, char** argv)
         previousStartupPhaseMs = elapsedMs;
     };
     setApplicationName("CGPlay");
-    setApplicationVersion("1.0.7.18");
+    setApplicationVersion("1.0.8");
     setOrganizationName("CGPlay");
     _initStyle();
     _parseArgs();
@@ -248,6 +251,7 @@ Application::Application(int& argc, char** argv)
     _mediaService = std::make_shared<MediaService>();
     _windowSettings = std::make_shared<SettingsService>(QStringLiteral("CGPlay"), windowSettingsApplication);
     _userSettings = std::make_shared<SettingsService>(QStringLiteral("CGPlay"), settingsApplication);
+    ThumbnailDiskCache::initialize(*_userSettings);
     refreshAppearanceSettings();
     _hwDecodeMgr = std::make_shared<HardwareDecodeManager>();
     _hwDecodeMgr->probe();
@@ -500,10 +504,15 @@ Application::Application(int& argc, char** argv)
 
 Application::~Application()
 {
+    // Emergency final exit only; ordinary close is asynchronous in MainWindow.
+    RecordingService::shutdownAndDrainAll();
     for (auto* sw : _secondaryWindows) {
         delete sw;
     }
     _secondaryWindows.clear();
+    // Windows have stopped consuming samples. Final process shutdown owns the
+    // only join; closing an individual window never waits on PDH collection.
+    SystemPerformanceMonitor::shutdownWorkers();
 }
 
 bool Application::isAutomationMode() const
@@ -512,6 +521,8 @@ bool Application::isAutomationMode() const
         _captureUiMode ||
         _codexWorkbenchSmokeMode ||
         _playerSmokeMode ||
+        _compareExportSmokeMode ||
+        _recordingSmokeMode ||
         _subtitleGenerationSmokeMode ||
         _subtitleCacheDisplaySmokeMode ||
         _subtitleSwitchSequenceSmokeMode ||
@@ -558,6 +569,12 @@ int Application::run()
     }
     if (_playerSmokeMode) {
         return _runPlayerSmokeTest();
+    }
+    if (_compareExportSmokeMode) {
+        return _runCompareExportSmoke();
+    }
+    if (_recordingSmokeMode) {
+        return _runRecordingSmoke();
     }
     if (_subtitleGenerationSmokeMode) {
         return _runSubtitleGenerationSmoke();
@@ -1887,6 +1904,18 @@ void Application::_parseArgs()
             _codexWorkbenchSmokeMode = true;
         } else if (arg == QStringLiteral("--smoke-codex-workbench-output")) {
             _codexWorkbenchSmokeOutput = nextValue(arg);
+        } else if (arg == QStringLiteral("--compare-export-smoke")) {
+            _compareExportSmokeMode = true;
+            _compareExportSmokeA = nextValue(arg);
+            _compareExportSmokeB = nextValue(arg);
+        } else if (arg == QStringLiteral("--compare-export-smoke-output")) {
+            _compareExportSmokeOutput = nextValue(arg);
+        } else if (arg == QStringLiteral("--recording-smoke")) {
+            _recordingSmokeMode = true;
+        } else if (arg == QStringLiteral("--recording-smoke-output")) {
+            _recordingSmokeOutput = nextValue(arg);
+        } else if (arg == QStringLiteral("--recording-smoke-runtime")) {
+            _recordingSmokeRuntime = nextValue(arg);
         } else if (arg == QStringLiteral("--smoke-player")) {
             _playerSmokeMode = true;
             _playerSmokeMedia = nextValue(arg);

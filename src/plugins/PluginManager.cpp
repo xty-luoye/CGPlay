@@ -156,6 +156,16 @@ QStringList PluginManager::loadPluginsFromDirectory(const QString& directoryPath
         }
 
         auto loader = std::make_unique<QPluginLoader>(fileInfo.absoluteFilePath());
+        const QString actualIid = loader->metaData().value(QStringLiteral("IID")).toString();
+        if (actualIid != QLatin1String(CGPLAY_IPLUGIN_IID)) {
+            qWarning() << "[Plugins] Incompatible plugin ABI:" << fileInfo.fileName()
+                       << "expected" << CGPLAY_IPLUGIN_IID << "got" << actualIid;
+            runtimeCapabilityLog(QStringLiteral("PluginManager"), QStringLiteral("plugin.abiRejected"),
+                QJsonObject{{QStringLiteral("source"), fileInfo.absoluteFilePath()},
+                    {QStringLiteral("expectedIid"), QStringLiteral(CGPLAY_IPLUGIN_IID)},
+                    {QStringLiteral("actualIid"), actualIid}});
+            continue;
+        }
         QObject* instance = loader->instance();
         if (!instance) {
             qWarning() << "[Plugins] Failed to load" << fileInfo.fileName() << ":" << loader->errorString();

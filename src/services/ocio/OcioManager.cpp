@@ -21,6 +21,8 @@
 #include <QGroupBox>
 #include <QSettings>
 #include <QDebug>
+#include <cmath>
+#include <algorithm>
 
 #ifdef CGPLAY_OCIO_ENABLED
   #include <OpenColorIO/OpenColorIO.h>
@@ -205,10 +207,32 @@ tl::OCIOOptions OcioManager::currentOptions() const
     opts.display  = _p->display.toStdString();
     opts.view     = _p->view.toStdString();
     // Note: OCIOOptions in this tlRender version does not have
-    // exposure/gamma fields. These are managed via OcioManager
-    // internally and applied through separate color adjustments.
+    // exposure/gamma fields. ViewerWidget applies them separately via
+    // DisplayOptions, and exportColorSnapshot carries the same values.
 #endif
     return opts;
+}
+
+ColorTransformSnapshot OcioManager::exportColorSnapshot() const
+{
+    const auto options = currentOptions();
+    ColorTransformSnapshot snapshot;
+    snapshot.enabled = options.enabled;
+    snapshot.configPath = _p->configPath;
+    snapshot.input = _p->input;
+    snapshot.display = _p->display;
+    snapshot.view = _p->view;
+#if CGPLAY_HAS_TLRENDER
+    snapshot.look = QString::fromStdString(options.look);
+#endif
+    snapshot.exposure = _p->exposure;
+    snapshot.gamma = _p->gamma;
+#ifdef CGPLAY_OCIO_ENABLED
+    if (snapshot.enabled && _p->config) {
+        snapshot.configCacheId = QString::fromUtf8(_p->config->getCacheID());
+    }
+#endif
+    return snapshot;
 }
 
 QString OcioManager::currentConfigPath() const { return _p->configPath; }
@@ -342,13 +366,15 @@ void OcioManager::setView(const QString& view)
 
 void OcioManager::setExposure(float ev)
 {
-    _p->exposure = ev;
+    if (!std::isfinite(ev)) return;
+    _p->exposure = std::clamp(ev, -10.F, 10.F);
     _rebuildOptions();
 }
 
 void OcioManager::setGamma(float g)
 {
-    _p->gamma = g;
+    if (!std::isfinite(g)) return;
+    _p->gamma = std::clamp(g, .01F, 4.F);
     _rebuildOptions();
 }
 

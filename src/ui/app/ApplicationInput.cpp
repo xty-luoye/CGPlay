@@ -1,4 +1,5 @@
 #include "ApplicationInternal.h"
+#include "services/recording/RecordingService.h"
 
 namespace cgplay {
 
@@ -100,6 +101,17 @@ void MainWindow::_saveState()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    // Keep the window/player alive until recorder flush, remux and process
+    // cleanup finish. This precedes the existing subtitle close watchdog.
+    if (_deferCloseForRecording()) { event->ignore(); return; }
+    // The legacy subtitle-close path below quits the whole process. It must
+    // not interrupt a recording/finalizer owned by another player window.
+    if (_p->subtitleSession.state().subtitleGenerationBusy && RecordingService::hasActiveSessions()) {
+        if (statusBar()) statusBar()->showMessage(
+            QStringLiteral("其他窗口仍在录屏或保存录像，请先停止并保存后再退出。"), 6000);
+        event->ignore();
+        return;
+    }
     _p->updateClosing = true;
     if (_p->updateCheckState) {
         _p->updateCheckState->cancelled.store(true);

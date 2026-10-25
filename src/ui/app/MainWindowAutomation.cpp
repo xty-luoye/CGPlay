@@ -10,6 +10,13 @@
 #include "annotation/AnnotationToolbar.h"
 #include "annotation/ReviewPanel.h"
 #include "common/core/ServiceLocator.h"
+#include "cache/CacheManager.h"
+#if CGPLAY_HAS_TLRENDER
+#include <tlRender/Timeline/Player.h>
+#endif
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 #include "common/events/api/EventTypes.h"
 #include "common/events/api/IEventBus.h"
 #include "plugins/PluginManager.h"
@@ -52,6 +59,7 @@
 #include <QThread>
 #include <QToolButton>
 #include <QTextStream>
+#include <cmath>
 
 #include <algorithm>
 #include <limits>
@@ -741,6 +749,11 @@ QJsonObject MainWindow::runPlayerSmokeChecks(const QString& mediaPath)
                 for (const auto& result : _runMediaStateSmokeChecks(mediaPath)) results.append(result);
             } else if (group == QStringLiteral("sequence-time")) {
                 for (const auto& result : _runSequenceTimeSmokeChecks(mediaPath)) results.append(result);
+            } else if (group == QStringLiteral("cache")) {
+                for (const auto& result : _runCacheRuntimeSmokeChecks(mediaPath)) results.append(result);
+            } else if (group == QStringLiteral("settings")) {
+                results.append(_runMediaOpenSmokeCheck(mediaPath));
+                for (const auto& result : _runSettingsSmokeChecks()) results.append(result);
             } else if (group == QStringLiteral("in-out")) {
                 for (const auto& result : _runInOutSmokeChecks(mediaPath)) results.append(result);
             } else if (group == QStringLiteral("session-restore")) {
@@ -2980,7 +2993,7 @@ void MainWindow::prepareCaptureDemoState(const QString& preferredMedia)
 
     const int currentFrame = _p->playbackCtrl ? _p->playbackCtrl->currentFrame() : 0;
     if (_p->reviewPanel) {
-        _p->reviewPanel->refresh(_annoMgr->all(), currentFrame);
+        _p->reviewPanel->refresh(_annoMgr->all(), currentFrame, _p->playbackCtrl && _p->playbackCtrl->isValid() ? _p->playbackCtrl->fps() : 0.0);
     }
 }
 

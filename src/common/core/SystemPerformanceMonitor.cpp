@@ -1,9 +1,25 @@
 #include "SystemPerformanceMonitor.h"
 
-#include <QTimer>
+#include <QCoreApplication>
+#include <QDebug>
+#include <QMetaObject>
+#include <QPointer>
+#include <QThread>
 #include <QtGlobal>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
 
 #ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #ifndef PDH_MORE_DATA
 #define PDH_MORE_DATA 0x800007D2L
@@ -17,11 +33,8 @@
 
 namespace cgplay {
 
-class SystemPerformanceMonitor::Private
-{
-public:
-    QTimer* timer = nullptr;
-
+namespace {
+struct SamplerCounters {
 #ifdef Q_OS_WIN
     quint64 lastIdle100ns = 0;
     quint64 lastKernel100ns = 0;
@@ -33,8 +46,6 @@ public:
     PDH_HCOUNTER gpuCounter = nullptr;
 #endif
 };
-
-namespace {
 
 #ifdef Q_OS_WIN
 quint64 _fileTimeToUInt64(const FILETIME& value)
@@ -194,60 +205,261 @@ double _sampleSystemMemoryPercent()
 }
 #endif
 
+struct SampleValues {
+    double cpu = 0.0;
+    double gpu = 0.0;
+    double memory = 0.0;
+    double durationMs = 0.0;
+    quint64 sequence = 0;
+};
+
+SampleValues collectSample(SamplerCounters& counters)
+{
+    SampleValues sample;
+#ifdef Q_OS_WIN
+    sample.cpu = _sampleSystemCpuPercent(counters.lastIdle100ns,
+        counters.lastKernel100ns, counters.lastUser100ns);
+    sample.gpu = _sampleSystemGpuPercent(counters.gpuQuery, counters.gpuCounter);
+    sample.memory = _sampleSystemMemoryPercent();
+#endif
+    return sample;
+}
+
+struct SamplerSession {
+    std::mutex mutex;
+    std::condition_variable wake;
+    bool stopRequested = false;
+    int intervalMs = 1000;
+    quint64 revision = 0;
+    std::atomic_bool finished{false};
+    std::atomic_int inFlight{0};
+    std::atomic_int maxConcurrentSamples{0};
+    std::thread worker;
+    std::function<void()> notify;
+    std::mutex mailboxMutex;
+    SampleValues latest;
+    bool pendingNotification = false;
+    quint64 superseded = 0;
+    QString samplerThreadId;
+    double maxSampleMs = 0.0;
+
+    void requestStop() {
+        { std::lock_guard<std::mutex> lock(mutex); stopRequested = true; }
+        wake.notify_one();
+    }
+    bool stopping() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return stopRequested;
+    }
+    void setInterval(int value) {
+        { std::lock_guard<std::mutex> lock(mutex); intervalMs = value; ++revision; }
+        wake.notify_one();
+    }
+    void run() {
+        // Native handles, CPU baselines and buffer allocations belong only to
+        // this worker. Delivery only posts to a separate context; window guards
+        // are inspected on the consumer thread, never inside native sampling.
+        SamplerCounters counters;
+        {
+            std::lock_guard<std::mutex> lock(mailboxMutex);
+            samplerThreadId = QString::number(reinterpret_cast<quintptr>(QThread::currentThreadId()));
+        }
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            wake.wait_for(lock, std::chrono::milliseconds(250), [this] { return stopRequested; });
+        }
+        while (!stopping()) {
+            const auto started = std::chrono::steady_clock::now();
+            const int concurrent = inFlight.fetch_add(1) + 1;
+            int previousMax = maxConcurrentSamples.load();
+            while (previousMax < concurrent &&
+                !maxConcurrentSamples.compare_exchange_weak(previousMax, concurrent)) {}
+            SampleValues sample;
+            try { sample = collectSample(counters); }
+            catch (...) { /* A failed native sample must not terminate the worker. */ }
+            inFlight.fetch_sub(1);
+            sample.durationMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - started).count();
+            bool post = false;
+            {
+                std::lock_guard<std::mutex> lock(mailboxMutex);
+                sample.sequence = latest.sequence + 1;
+                latest = sample;
+                maxSampleMs = std::max(maxSampleMs, sample.durationMs);
+                if (pendingNotification) ++superseded;
+                else { pendingNotification = true; post = true; }
+            }
+            if (post) notify(); // Never invoke external code while holding a lock.
+            std::unique_lock<std::mutex> lock(mutex);
+            auto seenRevision = revision;
+            while (!stopRequested) {
+                if (!wake.wait_for(lock, std::chrono::milliseconds(intervalMs),
+                    [this, seenRevision] { return stopRequested || revision != seenRevision; })) break;
+                seenRevision = revision;
+            }
+        }
+#ifdef Q_OS_WIN
+        _closeGpuQuery(counters.gpuQuery, counters.gpuCounter);
+#endif
+        finished.store(true);
+        notify(); // Also wakes a pending stop/start handoff with no GUI polling.
+    }
+};
+
+// A consumer can disappear during PDH enumeration. Keep the thread and delivery
+// context independent of that window, and join every worker before app teardown.
+struct SamplerRegistry {
+    std::mutex mutex;
+    std::vector<std::shared_ptr<SamplerSession>> sessions;
+    std::unique_ptr<QObject> deliveryContext;
+    std::atomic_bool closing{false};
+    ~SamplerRegistry() { shutdown(); }
+    QObject* context() {
+        if (!deliveryContext) deliveryContext = std::make_unique<QObject>();
+        return deliveryContext.get();
+    }
+    void reap() {
+        std::vector<std::shared_ptr<SamplerSession>> completed;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            for (auto it = sessions.begin(); it != sessions.end();) {
+                if ((*it)->finished.load()) {
+                    completed.push_back(*it);
+                    it = sessions.erase(it);
+                } else ++it;
+            }
+        }
+        // Even a finished worker may still be returning from its final queued
+        // notification. Never join while holding the registry mutex.
+        for (const auto& session : completed)
+            if (session->worker.joinable()) session->worker.join();
+    }
+    void shutdown() {
+        closing.store(true);
+        std::vector<std::shared_ptr<SamplerSession>> owned;
+        { std::lock_guard<std::mutex> lock(mutex); owned.swap(sessions); }
+        for (const auto& session : owned) session->requestStop();
+        for (const auto& session : owned) if (session->worker.joinable()) session->worker.join();
+        deliveryContext.reset();
+    }
+};
+
+SamplerRegistry& registry() {
+    static SamplerRegistry value;
+    return value;
+}
+
 } // namespace
+
+class SystemPerformanceMonitor::Private {
+public:
+    std::shared_ptr<SamplerSession> session;
+    bool active = false;
+    bool restartPending = false;
+    int intervalMs = 1000;
+    quint64 deliveredSequence = 0;
+};
 
 SystemPerformanceMonitor::SystemPerformanceMonitor(QObject* parent)
     : QObject(parent)
     , _p(new Private)
-{
-    _p->timer = new QTimer(this);
-    connect(_p->timer, &QTimer::timeout, this, [this] { _sample(); });
-}
+{}
 
 SystemPerformanceMonitor::~SystemPerformanceMonitor()
 {
-#ifdef Q_OS_WIN
-    _closeGpuQuery(_p->gpuQuery, _p->gpuCounter);
-#endif
+    stop();
     delete _p;
 }
 
 void SystemPerformanceMonitor::start(int intervalMs)
 {
-    const bool wasActive = _p->timer->isActive();
-    _p->timer->start(qMax(250, intervalMs));
-    if (!wasActive) {
-        // Windows PDH/GPU enumeration can block for hundreds of milliseconds.
-        // Do not run it inside MainWindow construction; the labels already have
-        // safe defaults and will be refreshed once the event loop is running.
-        QTimer::singleShot(250, this, [this] {
-            if (_p->timer->isActive()) {
-                _sample();
-            }
-        });
+    Q_ASSERT(QThread::currentThread() == thread());
+    auto& owner = registry();
+    if (owner.closing.load()) return;
+    _p->active = true;
+    _p->intervalMs = qMax(250, intervalMs);
+    if (_p->session && !_p->session->finished.load()) {
+        if (_p->session->stopping()) _p->restartPending = true;
+        else _p->session->setInterval(_p->intervalMs);
+        return;
+    }
+    owner.reap();
+    _p->restartPending = false;
+    _p->deliveredSequence = 0;
+    auto session = std::make_shared<SamplerSession>();
+    session->intervalMs = _p->intervalMs;
+    QObject* context = owner.context();
+    const QPointer<SystemPerformanceMonitor> receiver(this);
+    session->notify = [receiver, context] {
+        if (registry().closing.load()) return;
+        QMetaObject::invokeMethod(context, [receiver] {
+            if (receiver) receiver->_sample();
+            registry().reap();
+        }, Qt::QueuedConnection);
+    };
+    _p->session = session;
+    { std::lock_guard<std::mutex> lock(owner.mutex); owner.sessions.push_back(session); }
+    try { session->worker = std::thread([session] { session->run(); }); }
+    catch (const std::exception& error) {
+        session->finished.store(true);
+        _p->active = false;
+        owner.reap();
+        qWarning() << "[PerformanceMonitor] Cannot start sampling worker:" << error.what();
     }
 }
 
 void SystemPerformanceMonitor::stop()
 {
-    _p->timer->stop();
+    _p->active = false;
+    _p->restartPending = false;
+    if (_p->session) _p->session->requestStop();
 }
 
 void SystemPerformanceMonitor::_sample()
 {
-#ifdef Q_OS_WIN
-    const double cpuPercent = _sampleSystemCpuPercent(
-        _p->lastIdle100ns,
-        _p->lastKernel100ns,
-        _p->lastUser100ns);
-    const double gpuPercent = _sampleSystemGpuPercent(_p->gpuQuery, _p->gpuCounter);
-    const double memoryPercent = _sampleSystemMemoryPercent();
-#else
-    const double cpuPercent = 0.0;
-    const double gpuPercent = 0.0;
-    const double memoryPercent = 0.0;
-#endif
-    Q_EMIT sampleReady(cpuPercent, gpuPercent, memoryPercent);
+    if (!_p->session) return;
+    if (_p->restartPending) {
+        if (_p->active && _p->session->finished.load()) start(_p->intervalMs);
+        return; // An in-flight sample from the stopped session is stale.
+    }
+    SampleValues sample;
+    {
+        std::lock_guard<std::mutex> lock(_p->session->mailboxMutex);
+        sample = _p->session->latest;
+        _p->session->pendingNotification = false;
+    }
+    if (!_p->active || sample.sequence <= _p->deliveredSequence) return;
+    _p->deliveredSequence = sample.sequence;
+    Q_EMIT sampleReady(sample.cpu, sample.gpu, sample.memory);
+}
+
+QJsonObject SystemPerformanceMonitor::diagnostics() const
+{
+    Q_ASSERT(QThread::currentThread() == thread());
+    QJsonObject out{{"guiThreadId", QString::number(reinterpret_cast<quintptr>(QThread::currentThreadId()))},
+        {"active", _p->active}, {"restartPending", _p->restartPending},
+        {"deliveredSequence", static_cast<double>(_p->deliveredSequence)}};
+    if (_p->session) {
+        std::lock_guard<std::mutex> lock(_p->session->mailboxMutex);
+        out["samplerThreadId"] = _p->session->samplerThreadId;
+        out["sampleCount"] = static_cast<double>(_p->session->latest.sequence);
+        out["maxSampleMs"] = _p->session->maxSampleMs;
+        out["inFlight"] = _p->session->inFlight.load() != 0;
+        out["workerFinished"] = _p->session->finished.load();
+        out["pendingNotifications"] = _p->session->pendingNotification ? 1 : 0;
+        out["supersededSamples"] = static_cast<double>(_p->session->superseded);
+        out["maxConcurrentSamples"] = _p->session->maxConcurrentSamples.load();
+    }
+    return out;
+}
+
+void SystemPerformanceMonitor::shutdownWorkers() { registry().shutdown(); }
+int SystemPerformanceMonitor::activeWorkerCount()
+{
+    auto& owner = registry();
+    std::lock_guard<std::mutex> lock(owner.mutex);
+    return static_cast<int>(std::count_if(owner.sessions.begin(), owner.sessions.end(),
+        [](const auto& session) { return !session->finished.load(); }));
 }
 
 } // namespace cgplay

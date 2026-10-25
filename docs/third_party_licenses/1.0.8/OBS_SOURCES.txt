@@ -1,0 +1,128 @@
+CGPlay 1.0.8: isolated OBS recorder source and build provenance
+
+OBS Studio 33.0.0, commit 72e86655715d9a25d69ce446aa4dd44ba58e10d2
+https://github.com/obsproject/obs-studio/tree/72e86655715d9a25d69ce446aa4dd44ba58e10d2
+Original archive: obs-studio-72e86655715d9a25d69ce446aa4dd44ba58e10d2.zip
+SHA256: 12ae20d77f51c39ffa889407f690192bfebcdb40f5ba5c8c46971b1e8d78dbd8
+CGPlay changes: five complete patches and matching original files accompany the source bundle (patches/obs-studio). These alter the two capture plugins; the original source archive is retained unchanged. Application source contains the complete build and patch scripts under tools/recorder, including build_recorder.ps1, prepare_runtime.py, patch_win_capture.py, patch_win_wasapi.py and CMakeLists.txt.
+
+Official obs-deps tag 2026-10-23, commit cbf0a3d8a0a34c07e822bda22a5f8214f91801d7
+https://github.com/obsproject/obs-deps/tree/cbf0a3d8a0a34c07e822bda22a5f8214f91801d7
+Recipe archive: obs-deps-cbf0a3d8a0a34c07e822bda22a5f8214f91801d7.zip
+SHA256: 6e5c4c97c203742113aedb9b2a0c30f60aee80abc54e7c3b57619bd56ff067ef
+The archive retains every dependency build recipe, checksum, patch, workflow and license collection. Source retrieval uses the exact commits/checksums below and recursively initializes Git submodules.
+
+Windows recipe: .github/workflows/main.yaml -> .github/actions/build-ffmpeg/action.yaml -> Build-Dependencies.ps1. Upstream target x64, Release, MSVC /MD; FFmpeg itself is shared, and --pkg-config-flags=--static links selected codec dependencies. x264/librist/SRT retain the recipe forced-shared behavior. The full configure flags are preserved in OBS_SOURCE_MANIFEST.json.
+
+Actual private avcodec-62.dll: 62.28.102; license GPL version 3 or later. Actual build flags include --enable-gpl --enable-version3 --enable-libx264. The GPLv3 and LGPL texts are included in the notice collection. Do not infer this configuration for the separate playback/export FFmpeg runtimes.
+
+Binary provenance: all 16 top-level recorder runtime DLLs exactly match the original official OBS33 Windows archive. The 12 dependencies present in windows-deps-2026-10-23-x64.zip match the recorder PE bytes exactly after excluding appended Authenticode certificates and the PE checksum/security-directory fields (no code or data bytes are ignored). Complete-file hashes differ because the OBS distribution adds these certificates. This comparison does not execute any DLL and does not claim signature trust verification or an independent rebuild.
+
+Exact dependency source pins:
+- zlib 1.3.1: https://github.com/madler/zlib.git
+  pin/checksum: 51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf
+  recipe: deps.ffmpeg/10-zlib.ps1; archive: zlib-51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf.zip
+  retained archive SHA256: 8be92f276c1280aa4f46a878008c7bf295b6ca8da0eb27b41e3666d894f0d32c
+- libpng 1.6.47: https://sourceforge.net/projects/libpng/files/libpng16/1.6.47/lpng1647.zip
+  pin/checksum: 883340209fccd5353e406a79e22a2d226fc61666b83e700ab1e367bc1a679101
+  recipe: deps.ffmpeg/20-libpng.ps1; archive: libpng-1.6.47.zip
+  retained archive SHA256: NOT RETAINED; see manifest missingFacts
+  Original compressed release file not retained; complete source is retained as commit-equivalent libpng-commit-equivalent-872555f4ba910252783af1507f9e7fe1653be252.zip
+  Actual archive SHA256 4be9c828039d66b92468d022bf96f1231df2efb97cbeacd7d771e0d738cd88fd; authoritative commit 872555f4ba910252783af1507f9e7fe1653be252; computed Git tree a5611ed79a18f8f4b9f2f21724499172d92896b0 matches authoritative tree exactly. This is not asserted to be the original release ZIP.
+- opus 1.5.2: https://github.com/xiph/opus.git
+  pin/checksum: ddbe48383984d56acd9e1ab6a090c54ca6b735a6
+  recipe: deps.ffmpeg/20-opus.ps1; archive: opus-ddbe48383984d56acd9e1ab6a090c54ca6b735a6.zip
+  retained archive SHA256: 81a6f094567b3174294db2fa74ac113b4fb3e8aa2b283f89247168668e18cc73
+- libogg 1.3.5: https://github.com/xiph/ogg.git
+  pin/checksum: fa80aae9d50096160f2b56ada35527d7aee3f746
+  recipe: deps.ffmpeg/30-libogg.ps1; archive: libogg-fa80aae9d50096160f2b56ada35527d7aee3f746.zip
+  retained archive SHA256: 640ef16e7607265a008e9d482893f65462e2f4f96b1c80f6229426cc0c147aa2
+- libvorbis 1.3.7: https://gitlab.xiph.org/xiph/vorbis.git
+  pin/checksum: 2eac96b03ff67953354cb0a649c08aa3a23267ef
+  recipe: deps.ffmpeg/30-libvorbis.ps1; archive: libvorbis-2eac96b03ff67953354cb0a649c08aa3a23267ef.zip
+  retained archive SHA256: 3a320b80f22be25315b34466d9e6c6997cc9839d1f9b4bc3693ad843c7ab6d09
+- libvpx 1.14.1: https://github.com/webmproject/libvpx/archive/refs/tags/v1.14.1.zip
+  pin/checksum: f40e4c7e7b4025d18be17a8225f8be2f26b349715399cd36c2de573fe976dfd7
+  recipe: deps.ffmpeg/30-libvpx.ps1; archive: libvpx-1.14.1.zip
+  retained archive SHA256: f40e4c7e7b4025d18be17a8225f8be2f26b349715399cd36c2de573fe976dfd7
+- svt-av1 2.3.0: https://gitlab.com/AOMediaCodec/SVT-AV1.git
+  pin/checksum: 6e69def4ec283fe0b71195671245c3b768bebdef
+  recipe: deps.ffmpeg/30-svt-av1.ps1; archive: svt-av1-6e69def4ec283fe0b71195671245c3b768bebdef.zip
+  retained archive SHA256: c80610967e53c773c0d71fed81f4c1ec55b8419d5bc8e15d99485c5842afa41e
+- aom 3.13.1: https://aomedia.googlesource.com/aom.git
+  pin/checksum: d772e334cc724105040382a977ebb10dfd393293
+  recipe: deps.ffmpeg/40-aom.ps1; archive: aom-d772e334cc724105040382a977ebb10dfd393293.tar.gz
+  retained archive SHA256: NOT RETAINED; see manifest missingFacts
+  Original compressed release file not retained; complete source is retained as commit-equivalent aom-commit-equivalent-d772e334cc724105040382a977ebb10dfd393293.zip
+  Actual archive SHA256 8360b6782ee8f9e29e852dfe3620d41fd23af05a742f76568adb330296255b7c; authoritative commit d772e334cc724105040382a977ebb10dfd393293; computed Git tree 3a742c6fb952d1ea921b282b1cab4b62ff5db863 matches authoritative tree exactly. This is not asserted to be the original release ZIP.
+- gas-preprocessor 0.0.0: https://github.com/FFmpeg/gas-preprocessor.git
+  pin/checksum: 9309c67acb535ca6248f092e96131d8eb07eefc1
+  recipe: deps.ffmpeg/40-gas-preprocessor.ps1; archive: gas-preprocessor-9309c67acb535ca6248f092e96131d8eb07eefc1.zip
+  retained archive SHA256: d87e6f589aa8549e4a8bde8eaba186407ae3dc3448efeec7bbafa8789e81cea1
+- x264 r3106: https://github.com/mirror/x264.git
+  pin/checksum: eaa68fad9e5d201d42fde51665f2d137ae96baf0
+  recipe: deps.ffmpeg/40-x264.ps1; archive: x264-eaa68fad9e5d201d42fde51665f2d137ae96baf0.zip
+  retained archive SHA256: 98f68a9874ef4ae279e8ed84dcba035766c22ef726c58d427fe1ba8983a9bd84
+- libtheora 1.1.1: https://ftp.osuosl.org/pub/xiph/releases/theora/libtheora-1.1.1.zip
+  pin/checksum: f644fef154f7a80e7258c8baec5c510f594d720835855cddce322b924934ba36
+  recipe: deps.ffmpeg/50-libtheora.ps1; archive: libtheora-1.1.1.zip
+  retained archive SHA256: NOT RETAINED; see manifest missingFacts
+  Original compressed release file not retained; complete source is retained as commit-equivalent libtheora-commit-equivalent-7ffd8b2ecfc2d93ae5e16028e7528e609266bfbf.zip
+  Actual archive SHA256 3d08c7d6b3d7e962eeac58e8fd184e026d16fe4e3984477f9f3be1f80b9414f0; authoritative commit 7ffd8b2ecfc2d93ae5e16028e7528e609266bfbf; computed Git tree eebb7fd6966a926e05e1a5387e4589b0a17c19c9 matches authoritative tree exactly. This is not asserted to be the original release ZIP.
+- lame 3.100: https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+  pin/checksum: ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+  recipe: deps.ffmpeg/60-lame.ps1; archive: lame-3.100.tar.gz
+  retained archive SHA256: ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+- mbedtls 3.6.4: https://github.com/Mbed-TLS/mbedtls.git
+  pin/checksum: c765c831e5c2a0971410692f92f7a81d6ec65ec2
+  recipe: deps.ffmpeg/60-mbedtls.ps1; archive: mbedtls-c765c831e5c2a0971410692f92f7a81d6ec65ec2.zip
+  retained archive SHA256: 2b6fec921ebff67ef0980bce2e1bb7684fdde4057a81dc9c5ab97782e8fab6e5
+  Exact submodule mbedtls/framework at gitlink 2a3e2c5ea053c14b745dbdf41f609b1edc6a72fa: mbedtls-framework-commit-equivalent-2a3e2c5ea053c14b745dbdf41f609b1edc6a72fa.zip; SHA256 9bd5d3cee26f2476bc9989454df99327599c0b5c835c4ebc91007727458164d9; complete Git tree verified.
+- srt 1.5.2: https://github.com/Haivision/srt/archive/refs/tags/v1.5.2.zip
+  pin/checksum: 2686f75533bd53ec917dab6129186b124b4d105eadaa6a84e83719ac3b5ae6bd
+  recipe: deps.ffmpeg/60-srt.ps1; archive: srt-1.5.2.zip
+  retained archive SHA256: 2686f75533bd53ec917dab6129186b124b4d105eadaa6a84e83719ac3b5ae6bd
+- libdatachannel v0.24.2: https://github.com/paullouisageneau/libdatachannel.git
+  pin/checksum: 4e4f4892dccb2a57fe3a490d0c9d958de4244e74
+  recipe: deps.ffmpeg/70-libdatachannel.ps1; archive: libdatachannel-4e4f4892dccb2a57fe3a490d0c9d958de4244e74.zip
+  retained archive SHA256: 9afb7aa4cbba31a11275bdada10e976400a13bdebb6737307e052903021320cb
+  Exact submodule libdatachannel/deps/json at gitlink 55f93686c01528224f448c19128836e7df245f72: libdatachannel-deps-json-commit-equivalent-55f93686c01528224f448c19128836e7df245f72.zip; SHA256 0746352e4e9532e7aeabbcbaa79079b6bc6008e9261e4d459c9486a9b48a172e; complete Git tree verified.
+  Exact submodule libdatachannel/deps/libjuice at gitlink 5948a4162d37bc213d6051b67ee2876ccc5a99a6: libdatachannel-deps-libjuice-commit-equivalent-5948a4162d37bc213d6051b67ee2876ccc5a99a6.zip; SHA256 5e3cfe806f2721ae6e52d180bb6d9d4e95fc3840fb4433005e33ad980223d5c7; complete Git tree verified.
+  Exact submodule libdatachannel/deps/libsrtp at gitlink ee1a77c9f9dc02c42bda9901038c500c5efe4cfa: libdatachannel-deps-libsrtp-commit-equivalent-ee1a77c9f9dc02c42bda9901038c500c5efe4cfa.zip; SHA256 1a2e7563c1d7be4c2a69eb6b113c6b1b36ee952e3aae09852aeef959384adb64; complete Git tree verified.
+  Exact submodule libdatachannel/deps/plog at gitlink 94899e0b926ac1b0f4750bfbd495167b4a6ae9ef: libdatachannel-deps-plog-commit-equivalent-94899e0b926ac1b0f4750bfbd495167b4a6ae9ef.zip; SHA256 195415f664dccc6682c344ca0e1966674555f0be07e9552d4f760860acce719d; complete Git tree verified.
+  Exact submodule libdatachannel/deps/usrsctp at gitlink fec583d54493f879d2ae44a743423bf8a04371ab: libdatachannel-deps-usrsctp-commit-equivalent-fec583d54493f879d2ae44a743423bf8a04371ab.zip; SHA256 752b4337bece1138f4f4151cec4240956a7230b007e11bc1a6915cbda58d7086; complete Git tree verified.
+- librist 0.2.7: https://code.videolan.org/rist/librist.git
+  pin/checksum: 809390b3b75a259a704079d0fb4d8f1b5f7fa956
+  recipe: deps.ffmpeg/70-librist.ps1; archive: librist-809390b3b75a259a704079d0fb4d8f1b5f7fa956.zip
+  retained archive SHA256: 84fa0587b90aa061903a5be9bf28cedf73ec9e6a59b518d13a09776a082e52ea
+- nv-codec-headers 13.0.19.0: https://github.com/FFmpeg/nv-codec-headers.git
+  pin/checksum: e844e5b26f46bb77479f063029595293aa8f812d
+  recipe: deps.ffmpeg/70-nv-codec.ps1; archive: nv-codec-headers-e844e5b26f46bb77479f063029595293aa8f812d.zip
+  retained archive SHA256: 9bd3e083aa8f62c63df396ebce876d5772089632057f0b80188df0cfd7bf39eb
+- amf 1.5.0: https://github.com/GPUOpen-LibrariesAndSDKs/AMF.git
+  pin/checksum: afed28d37aca1938da2eedc50599bb3535a987ec
+  recipe: deps.ffmpeg/80-amf.ps1; archive: amf-afed28d37aca1938da2eedc50599bb3535a987ec.zip
+  retained archive SHA256: 1b9eba47f642d48e55dbcf4c855edfc44753dbdc9c61ec4029b2d73fc96b6ed6
+- FFmpeg 8.1.2: https://github.com/FFmpeg/FFmpeg.git
+  pin/checksum: 38b88335f99e76ed89ff3c93f877fdefce736c13
+  recipe: deps.ffmpeg/99-ffmpeg.ps1; archive: FFmpeg-38b88335f99e76ed89ff3c93f877fdefce736c13.zip
+  retained archive SHA256: c3453fbfc7ca25423f4984a83ceda01949d458a8bc04f9d68fab7c392f75b3ab
+- curl 8.12.1: https://github.com/curl/curl.git
+  pin/checksum: 57495c64871d18905a0941db9196ef90bafe9a29
+  recipe: deps.windows/30-curl.ps1; archive: curl-57495c64871d18905a0941db9196ef90bafe9a29.zip
+  retained archive SHA256: fb1f9d844ef020abc99757cb22ba0ad46b83452c3566db0c5f0507b40778e286
+- jansson 2.14.1: https://github.com/akheron/jansson.git
+  pin/checksum: 96d160df90016066d04d493d1d69639474ba4f20
+  recipe: deps.windows/30-jansson.ps1; archive: jansson-96d160df90016066d04d493d1d69639474ba4f20.zip
+  retained archive SHA256: 8b68ef7494550971eda661b28f2a57767a852073a2045333379c961a52a54644
+- wil v1.0.240803.1: https://github.com/microsoft/wil.git
+  pin/checksum: f0c6a81c0c9a4b23b6801f40554b8bec425a83b4
+  recipe: deps.windows/80-wil.ps1; archive: wil-f0c6a81c0c9a4b23b6801f40554b8bec425a83b4.zip
+  retained archive SHA256: fbb70eb36b6e0ca2315480ebf87839f98835736a888ecd2de5a5c590153b8b16
+
+Source-boundary and validation notes:
+- toolchain: Upstream recipe and binary association are verified; no independent clean-machine rebuild or bit-for-bit reproducibility was performed. Use the retained Windows Release x64 MSVC/MD recipe and original dependency pins on a separate clean build host; record toolchain/system package versions and resulting binary identity.
+
+The original binary archive and its official digest can establish vendor association; they do not prove an independent rebuild. The source-bundle manifest reports any download/submodule gaps explicitly. No clean-machine or bit-identical rebuild is claimed.
+
+Upstream full licenses are preserved in OBS_COPYING.txt, OBS_GPLv3.txt and OBS_THIRD_PARTY.txt. Source pins, full patches and build instructions accompany the corresponding source bundle.

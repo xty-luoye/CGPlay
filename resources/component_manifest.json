@@ -1,8 +1,7 @@
 {
   "manifestVersion": 1,
-  "manifestUrl": "https://cgplay-app.netlify.app/manifest.json",
+  "manifestUrl": "https://github.com/xty-luoye/CGPlay/releases/latest/download/manifest.json",
   "manifestUrls": [
-    "https://cgplay-app.netlify.app/manifest.json",
     "https://github.com/xty-luoye/CGPlay/releases/latest/download/manifest.json"
   ],
   "components": {
@@ -35,6 +34,18 @@
       "installSubdir": "tools",
       "requiredFiles": [
         "cgplay/export/export_engine.py"
+      ]
+    },
+    "recording-runtime": {
+      "version": "33.0.0-cgplay1",
+      "url": "",
+      "sha256": "",
+      "archiveName": "cgplay-recording-runtime-win64.zip",
+      "installSubdir": "runtime/recorder",
+      "optional": true,
+      "requiredFiles": [
+        "CGPlayRecorder.exe",
+        "runtime-manifest.json"
       ]
     },
     "core": {

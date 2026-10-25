@@ -2,6 +2,8 @@
 // CGPlay OcioManager.h
 // OpenColorIO v2 wrapper — manages config, views, displays, exposure, gamma
 
+#include "ColorTransformSnapshot.h"
+
 #include <QObject>
 #include <QImage>
 #include <QString>
@@ -61,6 +63,7 @@ public:
 
     // ── Current options ───────────────────────────────────────────────────────
     tl::OCIOOptions currentOptions() const;
+    ColorTransformSnapshot exportColorSnapshot() const;
 
     // ── Color space / display / view ──────────────────────────────────────────
     QStringList availableColorSpaces()  const;

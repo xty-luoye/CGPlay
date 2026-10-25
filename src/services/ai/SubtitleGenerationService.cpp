@@ -71,42 +71,17 @@ constexpr auto kQwenDefaultAsrModel = "qwen3-asr-flash";
 
 using namespace subtitle_generation_support;
 
-QStringList pythonCandidates()
+QStringList pythonCandidates(const ComponentRuntimePaths& runtime)
 {
-    const QString appDir = QCoreApplication::applicationDirPath();
-    QStringList candidates{
-        QProcessEnvironment::systemEnvironment().value(QStringLiteral("CGPLAY_PYTHON_EXE")).trimmed(),
-        QDir(appDir).filePath(QStringLiteral("runtime/python/python.exe")),
-        QDir(appDir).filePath(QStringLiteral("python/python.exe")),
-        QDir(appDir).filePath(QStringLiteral("../runtime/python/python.exe")),
-        QStandardPaths::findExecutable(QStringLiteral("python")),
-        QStandardPaths::findExecutable(QStringLiteral("python3"))
-    };
-    candidates.erase(
-        std::remove_if(candidates.begin(), candidates.end(), [](const QString& path) {
-            return path.trimmed().isEmpty() || !QFileInfo::exists(path);
-        }),
-        candidates.end());
-    candidates.removeDuplicates();
-    return candidates;
+    const QString selected = runtime.pythonFor(QStringLiteral("CGPLAY_PYTHON_EXE"));
+    return selected.isEmpty() ? QStringList{} : QStringList{selected};
 }
 
-QString localTranscribeScriptPath()
+QString localTranscribeScriptPath(const ComponentRuntimePaths& runtime)
 {
-    const QString appDir = QCoreApplication::applicationDirPath();
-    const QStringList candidates{
-        QProcessEnvironment::systemEnvironment().value(QStringLiteral("CGPLAY_LOCAL_TRANSCRIBE_SCRIPT")).trimmed(),
-        QDir(appDir).filePath(QStringLiteral("tools/cgplay/ai/local_transcribe.py")),
-        QDir(appDir).filePath(QStringLiteral("../tools/cgplay/ai/local_transcribe.py")),
-        QDir(appDir).filePath(QStringLiteral("../../tools/cgplay/ai/local_transcribe.py")),
-        QDir(appDir).filePath(QStringLiteral("../../../tools/cgplay/ai/local_transcribe.py"))
-    };
-    for (const QString& candidate : candidates) {
-        if (QFileInfo::exists(candidate)) {
-            return QFileInfo(candidate).absoluteFilePath();
-        }
-    }
-    return {};
+    if (!runtime.localTranscribeOverride.isEmpty() && QFileInfo(runtime.localTranscribeOverride).isFile())
+        return runtime.localTranscribeOverride;
+    return runtime.script(QStringLiteral("cgplay/ai/local_transcribe.py"));
 }
 
 QJsonObject runLocalTranscribeScript(
@@ -116,8 +91,9 @@ QJsonObject runLocalTranscribeScript(
     int timeoutMs,
     QString* errorMessage)
 {
-    const QString scriptPath = localTranscribeScriptPath();
-    const QStringList pythons = pythonCandidates();
+    const ComponentRuntimePaths runtime = captureComponentRuntimePaths();
+    const QString scriptPath = localTranscribeScriptPath(runtime);
+    const QStringList pythons = pythonCandidates(runtime);
     if (scriptPath.isEmpty() || pythons.isEmpty()) {
         if (errorMessage) {
             *errorMessage = QStringLiteral("API transcription failed and local transcriber is unavailable");
@@ -739,8 +715,10 @@ QVector<GeneratedSubtitleCue> SubtitleGenerationService::readSubtitleFile(const 
     return cues;
 }
 
-SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGenerationRequest& request) const
+SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGenerationRequest& inputRequest) const
 {
+    SubtitleGenerationRequest request = inputRequest;
+    if (!request.runtime.captured) request.runtime = captureComponentRuntimePaths();
     QElapsedTimer timer;
     timer.start();
 
@@ -1170,7 +1148,7 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
                             chunk.startSeconds,
                             chunk.durationSeconds,
                             chunk.audioPath,
-                            &error)) {
+                            &error, request.runtime.ffmpegExecutable)) {
                         if (transcriptionErrorLooksLikeEmptyAudioChunk(error)) {
                             chunk.extractionRetryCount = 1;
                             QThread::msleep(120 + (chunk.order % 3) * 40);
@@ -1180,7 +1158,7 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
                                     chunk.startSeconds,
                                     chunk.durationSeconds,
                                     chunk.audioPath,
-                                    &retryError)) {
+                                    &retryError, request.runtime.ffmpegExecutable)) {
                                 error.clear();
                             } else {
                                 error = retryError.trimmed().isEmpty() ? error : retryError;
@@ -1410,8 +1388,10 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
     return result;
 }
 
-SubtitleRefinementResult SubtitleGenerationService::refine(const SubtitleRefinementRequest& request) const
+SubtitleRefinementResult SubtitleGenerationService::refine(const SubtitleRefinementRequest& inputRequest) const
 {
+    SubtitleRefinementRequest request = inputRequest;
+    if (!request.runtime.captured) request.runtime = captureComponentRuntimePaths();
     QElapsedTimer timer;
     timer.start();
 
@@ -1827,9 +1807,10 @@ bool SubtitleGenerationService::_extractAudioChunk(
     double startSeconds,
     double durationSeconds,
     const QString& outputPath,
-    QString* errorMessage) const
+    QString* errorMessage,
+    const QString& ffmpegPath) const
 {
-    const QString ffmpeg = MediaProbe::locateFfmpeg();
+    const QString ffmpeg = ffmpegPath;
     if (ffmpeg.isEmpty()) {
         if (errorMessage) {
             *errorMessage = QStringLiteral("ffmpeg not found");
@@ -2368,6 +2349,7 @@ bool SubtitleGenerationService::_refineCuesWithContext(
         !providerId.trimmed().isEmpty() &&
         !modelLooksUnsuitableForSubtitleTranslation(model);
     SubtitleGenerationRequest subtitleFallbackRequest;
+    subtitleFallbackRequest.runtime = request.runtime;
     subtitleFallbackRequest.targetLanguage = request.targetLanguage;
     const QString subtitleFallbackModel = _translationModel(subtitleFallbackRequest);
 

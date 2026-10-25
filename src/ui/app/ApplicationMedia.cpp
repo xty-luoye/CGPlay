@@ -53,6 +53,7 @@ void MainWindow::openFile(const QString& path)
     _p->mediaProbeJob = job;
     connect(job, &JobHandle::finished, this,
         [this, job, path, sequenceFpsOverride, generation, mediaInfo](const JobOutcome& outcome) {
+            job->deleteLater();
             if (_p->mediaProbeJob == job) {
                 _p->mediaProbeJob.clear();
             }
@@ -312,7 +313,7 @@ void MainWindow::_autoLoadReview()
         annotationService->replaceAnnotations(anns);
     }
     if (_p->reviewPanel) {
-        _p->reviewPanel->refresh(anns, _p->playbackCtrl->currentFrame());
+        _p->reviewPanel->refresh(anns, _p->playbackCtrl->currentFrame(), _p->playbackCtrl->isValid() ? _p->playbackCtrl->fps() : 0.0);
     }
 }
 

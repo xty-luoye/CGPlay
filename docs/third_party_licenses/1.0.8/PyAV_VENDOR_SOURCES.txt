@@ -1,0 +1,50 @@
+CGPlay1.0.8 PyAV18.1 Windows FFmpeg corresponding source
+
+Official recipe tag 8.1.2-1, commit a71bf9279f7a4659154b68ba6783e89be460bcd5
+https://github.com/PyAV-Org/pyav-ffmpeg/tree/a71bf9279f7a4659154b68ba6783e89be460bcd5
+The full original recipe archive and tree, including cibuildpkg.py, pkg.py, build-ffmpeg.py and all five patches, are retained unchanged. No vendor script was executed by this source audit.
+Windows x86_64 selects FFmpeg, codec_group, nv-codec-headers, amf-headers and libvpl. Linux-only GnuTLS/ALSA packages are not selected. MSYS2 MINGW64 supplies GCC, nasm and the copied runtime DLLs. x265 builds 12-bit and 10-bit static archives and links them into the 8-bit shared multi-lib output.
+
+Fixed upstream original source archives and expected SHA256:
+- nv-codec-headers: https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n13.0.19.0.tar.gz
+  n13.0.19.0.tar.gz: 86d15d1a7c0ac73a0eafdfc57bebfeba7da8264595bf531cf4d8db1c22940116; retained=True
+- amf-headers: https://github.com/GPUOpen-LibrariesAndSDKs/AMF/releases/download/v1.5.0/AMF-headers-v1.5.0.tar.gz
+  AMF-headers-v1.5.0.tar.gz: d569647fa26f289affe81a206259fa92f819d06db1e80cc334559953e82a3f01; retained=True
+- libvpl: https://github.com/intel/libvpl/archive/refs/tags/v2.16.0.tar.gz
+  v2.16.0.tar.gz: d60931937426130ddad9f1975c010543f0da99e67edb1c6070656b7947f633b6; retained=True
+- ffmpeg: https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz
+  ffmpeg-8.1.2.tar.xz: 464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c; retained=True
+- lame: http://deb.debian.org/debian/pool/main/l/lame/lame_3.100.orig.tar.gz
+  lame_3.100.orig.tar.gz: ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e; retained=True
+- opus: https://ftp.osuosl.org/pub/xiph/releases/opus/opus-1.6.1.tar.gz
+  opus-1.6.1.tar.gz: 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1; retained=True
+- dav1d: https://code.videolan.org/videolan/dav1d/-/archive/1.5.3/dav1d-1.5.3.tar.bz2
+  dav1d-1.5.3.tar.bz2: e099f53253f6c247580c554d53a13f1040638f2066edc3c740e4c2f15174ce22; retained=True
+- libsvtav1: https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v4.1.0/SVT-AV1-v4.1.0.tar.bz2
+  SVT-AV1-v4.1.0.tar.bz2: 184162d3db3a4448882b17230413b4938ca252eef6b3c5e2f1236b2fcf497881; retained=True
+- vpx: https://github.com/webmproject/libvpx/archive/refs/tags/v1.16.0.tar.gz
+  vpx-1.16.0.tar.gz: 7a479a3c66b9f5d5542a4c6a1b7d3768a983b1e5c14c60a9396edc9b649e015c; retained=True
+- png: https://downloads.sourceforge.net/project/libpng/libpng16/1.6.58/libpng-1.6.58.tar.xz
+  libpng-1.6.58.tar.xz: 28eb403f51f0f7405249132cecfe82ea5c0ef97f1b32c5a65828814ae0d34775; retained=False
+  Complete commit-equivalent source retained instead of original compressed file: libpng-1.6.58-commit-equivalent-3061454d980de7d53608f594194cfac722721d2a.zip; actual SHA256 a80101ddd57ba4bde2b4ee0ee862d8e630013a12fd2695717456bb0b2b2292b0
+  Official tag v1.6.58, commit 3061454d980de7d53608f594194cfac722721d2a; full archive computed Git tree 6937cb18b7d1402af72e93af2ef8e9772bb1d2da equals the authoritative commit tree. Do not treat this ZIP as the byte-identical original tar.xz. Use the repository's autogen.sh/autotools step if generated configure files are required before applying the unchanged upstream configure flags.
+- webp: https://github.com/webmproject/libwebp/archive/refs/tags/v1.6.0.tar.gz
+  webp-1.6.0.tar.gz: 93a852c2b3efafee3723efd4636de855b46f9fe1efddd607e1f42f60fc8f2136; retained=True
+- opencore-amr: https://downloads.sourceforge.net/project/opencore-amr/opencore-amr/opencore-amr-0.1.6.tar.gz
+  opencore-amr-0.1.6.tar.gz: 483eb4061088e2b34b358e47540b5d495a96cd468e361050fae615b1809dc4a1; retained=True
+- x264: https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2
+  x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.bz2: 6eeb82934e69fd51e043bd8c5b0d152839638d1ce7aa4eea65a3fedcf83ff224; retained=True
+- x265: https://bitbucket.org/multicoreware/x265_git/downloads/x265_4.2.tar.gz
+  x265_4.2.tar.gz: 40b1ea0453e0309f0eba934e0ddf533f8f6295966679e8894e8f1c1c8d5e1210; retained=True
+
+Exact MSYS2 runtime source packages:
+- mingw-w64-gcc 16.1.0-5: https://repo.msys2.org/mingw/sources/mingw-w64-gcc-16.1.0-5.src.tar.zst
+  retained=True; SHA256=947166ed372d28ab8ffa25a66bc5e37a60a42e96a686424ce58cad304fcaea15
+- mingw-w64-libiconv 1.19-1: https://repo.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst
+  retained=True; SHA256=74428280c17094da5b702c29b2e1a0abae59556ea5dfdd65705cc8ccc1e000fb
+- mingw-w64-zlib 1.3.2-2: https://repo.msys2.org/mingw/sources/mingw-w64-zlib-1.3.2-2.src.tar.zst
+  retained=True; SHA256=eef69dea52357e01b272d6fd6dc4d7c0773f71260cb7bcde6047c8c383518db3
+- mingw-w64-winpthreads 14.0.0.r92.g818fa6510-1: https://repo.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r92.g818fa6510-1.src.tar.zst
+  retained=True; SHA256=735596688e3a141240488a0146fa10ce93c7c60469c583efebc18329921c42fe
+
+The exact source files, original package/recipe hashes, full local upstream patches and build settings are in PYAV_VENDOR_SOURCE_MANIFEST.json. GPL text applies to the external x264/x265 libraries even though the patched FFmpeg configuration reports LGPL3+. No commercial exception or clean-machine rebuild is asserted.

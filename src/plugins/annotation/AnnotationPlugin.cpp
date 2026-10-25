@@ -776,7 +776,8 @@ void AnnotationPlugin::_syncPanelState()
     }
 
     const int frame = _viewBridge ? _viewBridge->currentFrame() : 0;
-    _panel->refresh(_annotationManager ? _annotationManager->all() : QVector<AnnotationItem>{}, frame);
+    const double mediaFps = _viewBridge ? _viewBridge->mediaFps() : 0.0;
+    _panel->refresh(_annotationManager ? _annotationManager->all() : QVector<AnnotationItem>{}, frame, mediaFps);
     _panel->selectById(_selectedAnnotationId);
 }
 

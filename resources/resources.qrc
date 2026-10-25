@@ -1,6 +1,13 @@
 <RCC>
   <qresource prefix="/cgplay">
     <file>CGPlay.png</file>
+    <file>demo_viewer.png</file>
+    <file>demo_viewer_ref.png</file>
+    <file>demo_thumb_1.png</file>
+    <file>demo_thumb_2.png</file>
+    <file>demo_thumb_3.png</file>
+    <file>demo_thumb_4.png</file>
+    <file>demo_thumb_5.png</file>
     <file>component_manifest.json</file>
     <file>icons/nav_playlist.svg</file>
     <file>icons/nav_review.svg</file>

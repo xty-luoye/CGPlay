@@ -1,5 +1,6 @@
 #include "ApplicationInternal.h"
 #include "services/platform/WindowsFileAssociations.h"
+#include "media/ThumbnailDiskCache.h"
 #include <QListWidget>
 #include <QStandardItemModel>
 #include <QScopeGuard>
@@ -148,6 +149,69 @@ QJsonArray MainWindow::_runSettingsSmokeChecks()
         dialog->reject();
         return results;
     }
+
+    auto* hardwareRequest = dialog->findChild<QComboBox*>(QStringLiteral("hardwareDecodeRequest"));
+    auto* hardwareStatus = dialog->findChild<QLabel*>(QStringLiteral("hardwareDecodeStatus"));
+    auto* hardwareModel = hardwareRequest ? qobject_cast<QStandardItemModel*>(hardwareRequest->model()) : nullptr;
+    bool onlySoftwareEnabled = hardwareModel && hardwareRequest->count() == static_cast<int>(HwAccelType::Auto) + 1;
+    if (hardwareModel) for (int index = 0; index < hardwareRequest->count(); ++index)
+        onlySoftwareEnabled = onlySoftwareEnabled && hardwareModel->item(index) &&
+            hardwareModel->item(index)->isEnabled() == (index == static_cast<int>(HwAccelType::None));
+    auto* application = qobject_cast<Application*>(qApp);
+    const auto hw = application ? application->hwDecodeManager() : nullptr;
+    add(QStringLiteral("Settings requested decoder and verified software backend"), onlySoftwareEnabled && hw &&
+        !hw->isEnabled() && hw->currentAccelFFmpeg().isEmpty() && hardwareStatus &&
+        hardwareStatus->text().contains(QStringLiteral("软件（CPU）")) &&
+        hardwareRequest->currentData().toInt() == static_cast<int>(hw->hwAccelType()),
+        {{"requested", hw ? hw->requestedAccelName() : QString()}, {"actual", hw ? hw->currentAccelName() : QString()}});
+
+    auto* diskControls = dialog->findChild<QWidget*>(QStringLiteral("ThumbnailDiskCacheSettings"));
+    auto* diskChoose = dialog->findChild<QPushButton*>(QStringLiteral("thumbnailCacheChooseDirectory"));
+    auto* diskClear = dialog->findChild<QPushButton*>(QStringLiteral("thumbnailCacheClear"));
+    auto* diskRefresh = dialog->findChild<QPushButton*>(QStringLiteral("thumbnailCacheRefresh"));
+    auto* diskQuota = dialog->findChild<QSpinBox*>(QStringLiteral("thumbnailCacheQuotaGB"));
+    auto* diskUsage = dialog->findChild<QLabel*>(QStringLiteral("thumbnailCacheUsage"));
+    const auto originalDiskPolicy = ThumbnailDiskCache::policy();
+    const QStringList diskKeys{QStringLiteral("cache/thumbnails/baseDirectory"), QStringLiteral("cache/thumbnails/quotaBytes")};
+    QMap<QString, QVariant> diskValues;
+    QSet<QString> presentDiskKeys;
+    for (const auto& key : diskKeys) {
+        diskValues.insert(key, _p->userSettings->value(key));
+        if (_p->userSettings->contains(key)) presentDiskKeys.insert(key);
+    }
+    const auto diskSettingsCleanup = qScopeGuard([&] {
+        ThumbnailDiskCache::configure(originalDiskPolicy);
+        for (const auto& key : diskKeys) {
+            if (presentDiskKeys.contains(key)) _p->userSettings->setValue(key, diskValues.value(key));
+            else _p->userSettings->remove(key);
+        }
+        _p->userSettings->sync();
+    });
+    const auto waitDisk = [&] {
+        QElapsedTimer elapsed; elapsed.start();
+        while (diskControls && diskControls->property("cgplay.thumbnailCacheBusy").toBool() && elapsed.elapsed() < 10000)
+            settleSettings(5);
+        return diskControls && !diskControls->property("cgplay.thumbnailCacheBusy").toBool();
+    };
+    bool diskPassed = diskChoose && diskClear && diskRefresh && diskQuota && diskUsage && waitDisk();
+    QString testThumbnail;
+    if (diskPassed) {
+        const QString selectedRoot = outputDir.filePath(QStringLiteral("native_thumbnail_cache"));
+        diskControls->setProperty("cgplay.thumbnailCacheSelectedDirectory", selectedRoot);
+        diskChoose->click();
+        diskPassed = waitDisk() && _p->userSettings->value(diskKeys[0]).toString() == QFileInfo(selectedRoot).canonicalFilePath();
+        diskQuota->setValue(3);
+        QMetaObject::invokeMethod(diskQuota, "editingFinished", Qt::DirectConnection);
+        diskPassed = waitDisk() && diskPassed && _p->userSettings->value(diskKeys[1]).toULongLong() == 3ULL * 1024 * 1024 * 1024;
+        testThumbnail = ThumbnailDiskCache::path(ThumbnailDiskCache::policy(), QByteArray(40, 'e'), 0);
+        QImage fixture(32, 18, QImage::Format_RGB32); fixture.fill(Qt::blue);
+        diskPassed = fixture.save(testThumbnail, "JPG") && diskPassed;
+        diskRefresh->click(); diskPassed = waitDisk() && diskPassed && diskUsage->text().contains(QStringLiteral("1 张"));
+        diskClear->click(); diskPassed = waitDisk() && diskPassed && !QFileInfo::exists(testThumbnail) &&
+            diskUsage->text().contains(QStringLiteral("本次清理"));
+    }
+    add(QStringLiteral("Settings disk thumbnail location quota usage and clear"), diskPassed,
+        {{"fixture", testThumbnail}, {"status", diskUsage ? diskUsage->text() : QString()}, {"oldCacheAutomaticallyMoved", false}});
 
     auto* automaticUpdates = dialog->findChild<QCheckBox*>(QStringLiteral("AutomaticUpdateCheck"));
     const bool automaticDefault = automaticUpdates && automaticUpdates->isChecked();

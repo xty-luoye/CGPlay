@@ -1,20 +1,30 @@
-CGPLAY LEGACY LICENSE NOTICE
-============================
+CGPlay DISTRIBUTION AND OPTIONAL COMMERCIAL SERVICES
+===================================================
 
-This filename is retained only for compatibility with older documentation.
-It is not a commercial end-user license agreement for this source release.
+CGPlay 1.0.8 application source is distributed under GNU GPL version 3
+(GPL-3.0-only). The complete license is in the application LICENSE.txt.
+You may use CGPlay commercially and exercise the copying, distribution,
+modification and source rights granted by that license. These supplemental
+terms do not restrict those rights. Earlier MIT grants remain effective for
+copies received under that grant; its historical text is retained separately.
+
+Third-party components retain their own licenses. See THIRD_PARTY_NOTICES.txt,
+FFMPEG_SOURCE_OFFER.txt, DEPENDENCY_SOURCES_1.0.8.md and the third_party/
+license directory. Source availability and exact build identities are recorded
+in DEPENDENCY_PROVENANCE_1.0.8.json; a source URL is not a claim that an
+independent clean-machine rebuild has been verified.
+
+Optional paid support, customization or service contracts may specify prices
+and service commitments. They do not impose seat, resale, redistribution,
+reverse-engineering or hosted-service restrictions on the GPL-covered program.
+No trademark, third-party API account, media-content or service entitlement
+is granted by purchasing such services.
+
+Warranty and liability are governed by the applicable program/component
+licenses, except for a separate written service commitment that does not
+reduce recipients' open-source rights.
+
+Source and support contact:
+  https://github.com/xty-luoye/CGPlay/issues
 
 Copyright (c) 2026 CGPlay Team.
-This source release is distributed under the GNU General Public License
-version 3 only (SPDX-License-Identifier: GPL-3.0-only). The complete license
-is in the repository root LICENSE.txt. The former draft commercial
-restrictions are not terms of this release.
-
-The MIT license text found in the local development tree is preserved in
-third_party_licenses/LICENSE_CGPlay_legacy_MIT.txt. This release does not revoke
-any rights previously granted under MIT or assert that all older installers
-used MIT. Third-party components retain their own licenses and notices;
-see THIRD_PARTY_NOTICES.txt.
-
-No new installer is distributed as part of this source-only publication.
-Existing binary releases require their own matching license and source review.

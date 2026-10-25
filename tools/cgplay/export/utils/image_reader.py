@@ -10,6 +10,7 @@ import numpy as np
 from typing import Dict, Tuple, Optional, List
 
 from .tone_mapping import apply_pipeline
+from .color_pipeline import ColorConfigurationError, ColorPipeline, assert_color_layer
 
 # 尝试导入 OIIO，不可用时回退 imageio
 _HAS_OIIO = False
@@ -27,7 +28,7 @@ class ImageReader:
         pass
 
     @staticmethod
-    def read_frame(path: str) -> np.ndarray:
+    def read_frame(path: str, color_pipeline=None, *, output_float=False) -> np.ndarray:
         """
         读单帧 → RGB uint8（已做 Reinhard + sRGB）
         返回形状 (H, W, 3) numpy 数组。
@@ -37,11 +38,13 @@ class ImageReader:
         if os.path.splitext(path)[1].lower() == ".exr":
             if not _HAS_OIIO:
                 raise RuntimeError("OpenImageIO is required for safe EXR channel interpretation")
-            return _read_oiio(path)
+            return _read_oiio(path) if color_pipeline is None and not output_float else _read_oiio(path, color_pipeline, output_float=output_float)
 
         if _HAS_OIIO:
             try:
-                return _read_oiio(path)
+                return _read_oiio(path) if color_pipeline is None and not output_float else _read_oiio(path, color_pipeline, output_float=output_float)
+            except ColorConfigurationError:
+                raise
             except Exception as e:
                 # OIIO 本身出错（格式不支持等），回退 imageio
                 sys.stderr.write(f"[ImageReader] OIIO failed for {path}: {e}\n")
@@ -49,7 +52,7 @@ class ImageReader:
 
         # 回退到 imageio
         try:
-            return _read_imageio(path)
+            return _read_imageio(path) if color_pipeline is None and not output_float else _read_imageio(path, color_pipeline, output_float=output_float)
         except ImportError:
             raise ImportError(
                 "No image reader available. "
@@ -131,7 +134,7 @@ class ImageReader:
 # Internal readers
 # ═══════════════════════════════════════════════════════════════════════════════════
 
-def _read_oiio(path: str) -> np.ndarray:
+def _read_oiio(path: str, color_pipeline=None, *, output_float=False) -> np.ndarray:
     """用 OIIO 读帧"""
     img = oiio.ImageInput.open(path)
     if not img:
@@ -144,7 +147,13 @@ def _read_oiio(path: str) -> np.ndarray:
                 raise ValueError("Multi-part EXR export requires an explicit part selection")
             if not img.seek_subimage(0, 0):
                 raise IOError(f"OIIO: cannot read first EXR part: {path}")
+            # Export accepts flat color pixels only. Reject metadata before
+            # read_image: a flat-read failure is not a deep decoder boundary.
+            if img.spec().deep:
+                raise ValueError("Deep EXR export requires flattening to a selected color image first")
             channels = _exr_color_channels(tuple(img.spec().channelnames))
+        color_space = img.spec().get_string_attribute("oiio:ColorSpace")
+        encoding = _source_encoding(path, color_space, color_pipeline)
         data = img.read_image(oiio.FLOAT)
         if data is None:
             raise IOError(f"OIIO: cannot read {path}: {img.geterror()}")
@@ -153,7 +162,7 @@ def _read_oiio(path: str) -> np.ndarray:
     finally:
         img.close()
 
-    return _process_pixels(data)
+    return _process_pixels(data, source_encoding=encoding, color_pipeline=color_pipeline, output_float=output_float)
 
 
 def _exr_color_channels(names) -> List[int]:
@@ -170,10 +179,11 @@ def _exr_color_channels(names) -> List[int]:
             component = "A"
         layer = layers.setdefault(prefix, {})
         layer.setdefault(component, []).append(index)
-    color_layers = [layer for layer in layers.values() if all(c in layer for c in "RGB")]
+    color_layers = [(prefix, layer) for prefix, layer in layers.items() if all(c in layer for c in "RGB")]
     if len(color_layers) != 1:
         raise ValueError("EXR export requires exactly one named RGB layer; select a color layer first")
-    layer = color_layers[0]
+    prefix, layer = color_layers[0]
+    assert_color_layer(prefix)
     if any(len(indices) != 1 for indices in layer.values()):
         raise ValueError("Ambiguous EXR channel in the selected RGB layer")
     channels = [layer[c][0] for c in "RGB"]
@@ -182,15 +192,34 @@ def _exr_color_channels(names) -> List[int]:
     return channels
 
 
-def _read_imageio(path: str) -> np.ndarray:
+def _source_encoding(path, color_space="", color_pipeline=None):
+    extension = os.path.splitext(path)[1].lower()
+    if color_pipeline is not None and color_pipeline.settings.mode != "auto":
+        # A user-selected input color space or explicit bypass is authoritative.
+        return "scene-linear" if extension == ".exr" else "display"
+    tag = re.sub(r"[^a-z0-9]", "", color_space.casefold())
+    if tag in ("linear", "scenelinear", "linrec709scene", "linearrec709", "linearrec709srgb"):
+        return "scene-linear"
+    if tag in ("srgb", "srgbrec709scene", "srgbtexture", "utilitysrgbtexture", "outputsrgb"):
+        return "display"
+    if tag:
+        raise ColorConfigurationError(f"Image color space requires explicit export settings: {color_space}")
+    if extension == ".exr":
+        return "scene-linear"
+    if extension in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"):
+        return "display"
+    raise ColorConfigurationError(f"Image transfer is unknown; provide explicit export color settings: {path}")
+
+
+def _read_imageio(path: str, color_pipeline=None, *, output_float=False) -> np.ndarray:
     """用 imageio 读帧（回退方案）"""
     import imageio.v3 as iio
 
     data = iio.imread(path)
-    return _process_pixels(data)
+    return _process_pixels(data, source_encoding=_source_encoding(path, color_pipeline=color_pipeline), color_pipeline=color_pipeline, output_float=output_float)
 
 
-def _process_pixels(data: np.ndarray) -> np.ndarray:
+def _process_pixels(data: np.ndarray, *, source_encoding="scene-linear", color_pipeline=None, output_float=False) -> np.ndarray:
     """统一处理：通道 → 色调映射 → sRGB → RGB uint8
     
     注：PyAV 需要 BGR uint8 输入，所以此处返回 BGR 顺序。
@@ -212,17 +241,20 @@ def _process_pixels(data: np.ndarray) -> np.ndarray:
         rgb = rgb.astype(np.float32, copy=False)
 
     # 色调映射 + sRGB
-    rgb = apply_pipeline(rgb)
+    rgb = ((color_pipeline or ColorPipeline()).apply_float(rgb, source_encoding=source_encoding)
+           if output_float else apply_pipeline(rgb, color_pipeline=color_pipeline, source_encoding=source_encoding))
 
     # RGB → BGR uint8 (PyAV 需要 BGR)
     bgr = np.stack([rgb[:, :, 2], rgb[:, :, 1], rgb[:, :, 0]], axis=2)
-    result = (np.clip(bgr, 0, 1) * 255).astype(np.uint8)
+    result = bgr if output_float else np.rint(np.clip(bgr, 0, 1) * 255).astype(np.uint8)
     if data.ndim == 3 and data.shape[2] >= 4:
         alpha = data[:, :, 3]
         if np.issubdtype(source_dtype, np.integer):
             alpha = alpha.astype(np.float32) / np.iinfo(source_dtype).max
         else:
             alpha = alpha.astype(np.float32, copy=False)
-        alpha_u8 = (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
+        if not np.all(np.isfinite(alpha)):
+            raise ColorConfigurationError("Alpha contains non-finite values")
+        alpha_u8 = alpha if output_float else (np.clip(alpha, 0, 1) * 255).astype(np.uint8)
         result = np.dstack([result, alpha_u8])
     return result

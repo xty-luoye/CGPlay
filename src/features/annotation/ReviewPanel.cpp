@@ -2,6 +2,7 @@
 
 #include "AnnotationItem.h"
 #include "AnnotationManager.h"
+#include "core/playback/api/Timecode.h"
 
 #include <QEvent>
 #include <QFrame>
@@ -45,21 +46,6 @@ static QColor surfaceColor(const char* propertyName, const QColor& fallback, con
 }
 
 namespace {
-
-QString timecodeFromFrame(int frame, int fps = 24)
-{
-    fps = std::max(1, fps);
-    const int ff = frame % fps;
-    const int totalSeconds = frame / fps;
-    const int ss = totalSeconds % 60;
-    const int mm = (totalSeconds / 60) % 60;
-    const int hh = totalSeconds / 3600;
-    return QStringLiteral("%1:%2:%3:%4")
-        .arg(hh, 2, 10, QChar('0'))
-        .arg(mm, 2, 10, QChar('0'))
-        .arg(ss, 2, 10, QChar('0'))
-        .arg(ff, 2, 10, QChar('0'));
-}
 
 QColor statusColor(ReviewStatus status)
 {
@@ -315,7 +301,11 @@ void ReviewPanel::_populateCards(const QVector<AnnotationItem>& anns)
         dot->setStyleSheet(QString("background:%1;border-radius:5px;").arg(sc.name()));
         topRow->addWidget(dot);
 
-        auto* tc = new QLabel(timecodeFromFrame(ann.frame), card);
+        const QString cardTime = _mediaFps > 0.0
+            ? formatFrameTimecode(ann.frame, _mediaFps)
+            : QStringLiteral("帧 %1（帧率未就绪）").arg(ann.frame);
+        auto* tc = new QLabel(cardTime, card);
+        tc->setObjectName(QStringLiteral("annotationTimecode"));
         tc->setStyleSheet(QString(
             "color:%1;font-size:11px;font-weight:700;background:rgba(13,18,23,0.78);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:4px 10px;")
             .arg(kText));
@@ -415,10 +405,12 @@ void ReviewPanel::_setupSettingsTab(QWidget* tab)
     layout->addStretch();
 }
 
-void ReviewPanel::refresh(const QVector<AnnotationItem>& all, int currentFrame)
+void ReviewPanel::refresh(const QVector<AnnotationItem>& all, int currentFrame, double mediaFps)
 {
     _currentFrame = currentFrame;
-    QString signature;
+    _mediaFps = std::isfinite(mediaFps) && mediaFps > 0.0 && mediaFps <= 1000000.0 ? mediaFps : 0.0;
+    // A rate change must refresh cards even if annotation content is unchanged.
+    QString signature = QString::number(_mediaFps, 'g', 17) + QLatin1Char('|');
     signature.reserve(all.size() * 32);
     for (const auto& ann : all) {
         signature += ann.id;

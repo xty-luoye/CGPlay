@@ -2,8 +2,12 @@
 
 #include <memory>
 
+namespace tl { class Player; }
+namespace ftk { class Context; class Style; }
+
+// Public consumers exchange opaque ownership handles. Native implementation
+// headers belong to the implementation, not every plugin using playback APIs.
 #if __has_include(<tlRender/Timeline/Player.h>)
-  #include <tlRender/Timeline/Player.h>
   #ifndef CGPLAY_HAS_TLRENDER
     #define CGPLAY_HAS_TLRENDER 1
   #endif
@@ -18,8 +22,6 @@
 #endif
 
 #if __has_include(<ftk/Core/Context.h>)
-  #include <ftk/Core/Context.h>
-  #include <ftk/UI/Style.h>
   #ifndef CGPLAY_HAS_FTK
     #define CGPLAY_HAS_FTK 1
   #endif

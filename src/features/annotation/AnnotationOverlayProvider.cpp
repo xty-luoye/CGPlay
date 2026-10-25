@@ -304,6 +304,11 @@ int AnnotationOverlayProvider::currentFrame() const
     return _playbackService ? _playbackService->currentFrame() : 0;
 }
 
+double AnnotationOverlayProvider::mediaFps() const
+{
+    return _playbackService && _playbackService->isValid() ? _playbackService->fps() : 0.0;
+}
+
 int AnnotationOverlayProvider::mediaWidth() const
 {
     return _mediaWidth;

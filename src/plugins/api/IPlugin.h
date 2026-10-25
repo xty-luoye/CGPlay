@@ -19,5 +19,6 @@ public:
 
 } // namespace cgplay
 
-#define CGPLAY_IPLUGIN_IID "com.cgplay.IPlugin"
+// ABI2 fixes the public playback layout and accompanies the matched native SDK.
+#define CGPLAY_IPLUGIN_IID "com.cgplay.IPlugin/2.0"
 Q_DECLARE_INTERFACE(cgplay::IPlugin, CGPLAY_IPLUGIN_IID)

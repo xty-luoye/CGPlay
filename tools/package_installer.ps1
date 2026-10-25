@@ -1,9 +1,10 @@
 [CmdletBinding()]
 param(
-    [string]$ProjectRoot = "",
+    [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
     [string]$ReleaseDir = "",
     [string]$PythonRuntime = "",
     [string]$CodexRuntime = "",
+    [string]$RecordingRuntime = "",
     [string]$FfmpegBinDir = "",
     [ValidateSet("full","lite")]
     [string]$PackageMode = "full",
@@ -14,12 +15,28 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$explicitFfmpegSource = -not [string]::IsNullOrWhiteSpace($FfmpegBinDir) -or -not [string]::IsNullOrWhiteSpace($env:CGPLAY_FFMPEG_BIN_DIR)
+$explicitCodexSource = -not [string]::IsNullOrWhiteSpace($CodexRuntime)
+if (-not $ReleaseDir) { $ReleaseDir = Join-Path $ProjectRoot "build_win_full\bin\Release" }
+if (-not $PythonRuntime) { $PythonRuntime = $env:CGPLAY_PYTHON_RUNTIME_DIR }
+if (-not $CodexRuntime) { $CodexRuntime = Join-Path $ProjectRoot "build_win_full\runtime\codex" }
+if (-not $RecordingRuntime) { $RecordingRuntime = $env:CGPLAY_RECORDING_RUNTIME_DIR }
+if (-not $FfmpegBinDir) { $FfmpegBinDir = $env:CGPLAY_FFMPEG_BIN_DIR }
+if (-not $FfmpegBinDir) { $FfmpegBinDir = Join-Path $ProjectRoot "build_win_full\runtime\ffmpeg" }
+
+$selectedRelease = [IO.Path]::GetFullPath($ReleaseDir).TrimEnd('\','/')
+$selectedBin = Split-Path -Parent $selectedRelease
+if ((Split-Path -Leaf $selectedRelease) -ine "Release" -or (Split-Path -Leaf $selectedBin) -ine "bin") {
+    throw "Selected ReleaseDir must use the configured build's bin/Release layout: $ReleaseDir"
+}
+$selectedBuildDir = Split-Path -Parent $selectedBin
 
 function Write-Step([string]$Message) {
     Write-Host "==> $Message"
 }
 
 function Reset-Dir([string]$Path) {
+    Assert-PackageStagingPath $Path
     if (Test-Path -LiteralPath $Path) {
         Remove-Item -LiteralPath $Path -Recurse -Force
     }
@@ -106,8 +123,35 @@ function Test-CodexRuntimeCompleteness([string]$Root) {
 }
 
 function Remove-PathIfExists([string]$Path) {
+    Assert-PackageStagingPath $Path
     if (Test-Path -LiteralPath $Path) {
         Remove-Item -LiteralPath $Path -Recurse -Force
+    }
+}
+
+function Assert-PackageStagingPath([string]$Path) {
+    $packageBase = [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot "build_win_full\package")).TrimEnd('\','/') + [System.IO.Path]::DirectorySeparatorChar
+    $target = [System.IO.Path]::GetFullPath($Path)
+    if (-not $target.StartsWith($packageBase, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to remove a path outside the project's package staging directory: $target"
+    }
+    $cursor = $target
+    while ($cursor) {
+        if (Test-Path -LiteralPath $cursor) {
+            $item = Get-Item -LiteralPath $cursor -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Refusing recursive package cleanup through a reparse point: $cursor"
+            }
+        }
+        $cursor = Split-Path -Parent $cursor
+    }
+    # With every existing ancestor verified as non-reparse, Resolve-Path is the
+    # real filesystem location rather than an unchecked junction destination.
+    if (Test-Path -LiteralPath $target) {
+        $resolved = (Resolve-Path -LiteralPath $target).ProviderPath
+        if (-not $resolved.StartsWith($packageBase, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Resolved package cleanup target escaped staging: $resolved"
+        }
     }
 }
 
@@ -318,9 +362,13 @@ function Validate-StagedPackage(
         (Join-Path $AppRoot "resources\icudtl.dat"),
         (Join-Path $AppRoot "resources\qtwebengine_resources.pak"),
         (Join-Path $AppRoot "tools\cgplay\export\export_engine.py"),
-        (Join-Path $AppRoot "LICENSE.txt"),
+        (Join-Path $AppRoot "tools\cgplay\export\compare_engine.py"),
+        (Join-Path $AppRoot "tools\cgplay\export\recording_finalize.py"),
+        (Join-Path $AppRoot "licenses\CGPlay_Commercial_EULA.txt"),
         (Join-Path $AppRoot "licenses\THIRD_PARTY_NOTICES.txt"),
         (Join-Path $AppRoot "licenses\FFMPEG_SOURCE_OFFER.txt"),
+        (Join-Path $AppRoot "licenses\DEPENDENCY_SOURCES_$appVersion.md"),
+        (Join-Path $AppRoot "licenses\DEPENDENCY_PROVENANCE_$appVersion.json"),
         (Join-Path $AppRoot "licenses\third_party"),
         (Join-Path $AppRoot "resources"),
         (Join-Path $AppRoot "presets"),
@@ -330,6 +378,8 @@ function Validate-StagedPackage(
     if ($PackageMode -eq "full") {
         $requiredPaths += @(
             (Join-Path $AppRoot "runtime\python\python.exe"),
+            (Join-Path $AppRoot "runtime\recorder\CGPlayRecorder.exe"),
+            (Join-Path $AppRoot "runtime\recorder\runtime-manifest.json"),
             (Join-Path $AppRoot "runtime\codex\codex.exe"),
             (Join-Path $AppRoot "runtime\codex\codex-code-mode-host.exe"),
             (Join-Path $AppRoot "runtime\codex\LICENSE-OPENAI-CODEX.txt"),
@@ -347,35 +397,6 @@ function Validate-StagedPackage(
 
 $versionRollbackSnapshot = $null
 $packagingComplete = $false
-if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
-    $ProjectRoot = Split-Path -Parent $PSScriptRoot
-}
-if ([string]::IsNullOrWhiteSpace($ReleaseDir)) {
-    $ReleaseDir = Join-Path $ProjectRoot "build_win_full\bin\Release"
-}
-if ([string]::IsNullOrWhiteSpace($CodexRuntime)) {
-    $CodexRuntime = Join-Path $ProjectRoot "build_win_full\runtime\codex"
-}
-if ([string]::IsNullOrWhiteSpace($PythonRuntime)) {
-    $PythonRuntime = $env:CGPLAY_PYTHON_RUNTIME
-}
-if ([string]::IsNullOrWhiteSpace($FfmpegBinDir)) {
-    $FfmpegBinDir = $env:CGPLAY_FFMPEG_BIN_DIR
-}
-if ($PackageMode -eq "full") {
-    if (-not (Test-PythonRuntimeCompleteness (Join-Path $ReleaseDir "runtime\python")) -and
-        -not (Test-PythonRuntimeCompleteness $PythonRuntime)) {
-        throw "A complete Python runtime is required. Pass -PythonRuntime or set CGPLAY_PYTHON_RUNTIME."
-    }
-    foreach ($ffmpegName in @("ffmpeg.exe", "ffprobe.exe")) {
-        if (-not (Test-Path -LiteralPath (Join-Path $ReleaseDir $ffmpegName) -PathType Leaf)) {
-            if ([string]::IsNullOrWhiteSpace($FfmpegBinDir) -or
-                -not (Test-Path -LiteralPath (Join-Path $FfmpegBinDir $ffmpegName) -PathType Leaf)) {
-                throw "$ffmpegName is required. Pass -FfmpegBinDir or set CGPLAY_FFMPEG_BIN_DIR."
-            }
-        }
-    }
-}
 trap {
     if ($null -ne $versionRollbackSnapshot -and -not $packagingComplete) {
         Write-Warning "Packaging failed; restoring version source files."
@@ -405,7 +426,7 @@ if ($versionBumped) {
     foreach ($process in @(Get-Process -Name CGPlay -ErrorAction SilentlyContinue)) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     }
-    $buildDir = Join-Path $ProjectRoot "build_win_full"
+    $buildDir = $selectedBuildDir
     Write-Step "Rebuilding Release binaries for $appVersion"
     & cmake -S $ProjectRoot -B $buildDir
     if ($LASTEXITCODE -ne 0) { throw "CMake reconfiguration failed with exit code $LASTEXITCODE" }
@@ -424,6 +445,7 @@ $appRoot = Join-Path $stagingRoot "CGPlay"
 $runtimeRoot = Join-Path $appRoot "runtime"
 $pythonTarget = Join-Path $runtimeRoot "python"
 $codexTarget = Join-Path $runtimeRoot "codex"
+$recordingTarget = Join-Path $runtimeRoot "recorder"
 $toolsTarget = Join-Path $appRoot "tools"
 $licensesTarget = Join-Path $appRoot "licenses"
 $resourcesTarget = Join-Path $appRoot "resources"
@@ -448,7 +470,8 @@ Ensure-Dir $validationArtifactRoot
 Write-Step "Validating official Release/tlRender build configuration"
 & $officialConfigValidator `
     -ProjectRoot $ProjectRoot `
-    -BuildDir (Join-Path $ProjectRoot "build_win_full") `
+    -BuildDir $selectedBuildDir `
+    -ReleaseDir $ReleaseDir `
     -RequireBuiltApps `
     -ReportPath (Join-Path $validationArtifactRoot "package_official_build_config_validation.json") | Out-Host
 
@@ -481,20 +504,24 @@ if (Test-Path -LiteralPath $releaseToolsDir) {
 
 if ($PackageMode -eq "full") {
     $releasePythonDir = Join-Path $ReleaseDir "runtime\python"
-    if (Test-PythonRuntimeCompleteness $releasePythonDir) {
+    if ($PythonRuntime) {
+        if (-not (Test-PythonRuntimeCompleteness $PythonRuntime)) { throw "Explicit Python runtime is incomplete: $PythonRuntime" }
+        Write-Step "Copying explicitly selected Python runtime"
+        Copy-DirContents $PythonRuntime $pythonTarget
+    } elseif (Test-PythonRuntimeCompleteness $releasePythonDir) {
         Write-Step "Copying bundled Python runtime from release output"
         Copy-DirContents $releasePythonDir $pythonTarget
-    } elseif (Test-PythonRuntimeCompleteness $PythonRuntime) {
-        Write-Step "Release output runtime is incomplete; falling back to local runtime source"
-        Copy-DirContents $PythonRuntime $pythonTarget
     } elseif (Test-Path -LiteralPath (Join-Path $releasePythonDir "python.exe")) {
         throw "Release output Python runtime exists but is incomplete, and fallback runtime source is also incomplete: $releasePythonDir"
     } else {
-        throw "No complete Python runtime source is available. Checked: $releasePythonDir and $PythonRuntime"
+        throw "No complete Python runtime is available at $releasePythonDir. Pass -PythonRuntime or set CGPLAY_PYTHON_RUNTIME_DIR."
     }
 
     $releaseCodexDir = Join-Path $ReleaseDir "runtime\codex"
-    if (Test-CodexRuntimeCompleteness $releaseCodexDir) {
+    if ($explicitCodexSource) {
+        if (-not (Test-CodexRuntimeCompleteness $CodexRuntime)) { throw "Explicit Codex runtime is incomplete: $CodexRuntime" }
+        Copy-DirContents $CodexRuntime $codexTarget
+    } elseif (Test-CodexRuntimeCompleteness $releaseCodexDir) {
         Write-Step "Copying bundled Codex CLI runtime from release output"
         Copy-DirContents $releaseCodexDir $codexTarget
     } elseif (Test-CodexRuntimeCompleteness $CodexRuntime) {
@@ -503,6 +530,15 @@ if ($PackageMode -eq "full") {
     } else {
         throw "No complete Codex CLI runtime is available. Checked: $releaseCodexDir and $CodexRuntime"
     }
+    $releaseRecordingDir = Join-Path $ReleaseDir "runtime\recorder"
+    $recordingSource = if (-not [string]::IsNullOrWhiteSpace($RecordingRuntime)) { $RecordingRuntime } else { $releaseRecordingDir }
+    foreach ($requiredRecorderFile in @("CGPlayRecorder.exe", "runtime-manifest.json")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $recordingSource $requiredRecorderFile) -PathType Leaf)) {
+            throw "The full recording-enabled package requires $requiredRecorderFile in $recordingSource"
+        }
+    }
+    Write-Step "Copying isolated recording runtime"
+    Copy-DirContents $recordingSource $recordingTarget
 }
 
 Write-Step "Staging distributed resources"
@@ -520,6 +556,13 @@ if ($PackageMode -eq "full") {
     Write-Step "Ensuring ffmpeg binaries are present"
     $ffmpegTarget = Join-Path $appRoot "ffmpeg.exe"
     $ffprobeTarget = Join-Path $appRoot "ffprobe.exe"
+    if ($explicitFfmpegSource) {
+        foreach ($name in @("ffmpeg.exe", "ffprobe.exe")) {
+            if (-not (Copy-IfExists (Join-Path $FfmpegBinDir $name) $appRoot)) {
+                throw "Explicit FFmpeg source is missing $name in $FfmpegBinDir. Pass the qualified CLI directory with -FfmpegBinDir."
+            }
+        }
+    }
     if (-not (Test-Path -LiteralPath $ffmpegTarget)) {
         Copy-IfExists (Join-Path $FfmpegBinDir "ffmpeg.exe") $appRoot | Out-Null
     }
@@ -528,15 +571,16 @@ if ($PackageMode -eq "full") {
     }
 }
 
-Write-Step "Bundling CGPlay GPLv3 license"
-if (-not (Copy-IfExists (Join-Path $ProjectRoot "LICENSE.txt") $appRoot)) {
-    throw "Missing required CGPlay license: $(Join-Path $ProjectRoot 'LICENSE.txt')"
-}
+Write-Step "Bundling license file"
+Copy-IfExists (Join-Path $ProjectRoot "LICENSE.txt") $appRoot | Out-Null
 
-Write-Step "Bundling third-party notices and source information"
+Write-Step "Bundling commercial and third-party license materials"
 foreach ($legalName in @(
+    "CGPlay_Commercial_EULA.txt",
     "THIRD_PARTY_NOTICES.txt",
-    "FFMPEG_SOURCE_OFFER.txt"
+    "FFMPEG_SOURCE_OFFER.txt",
+    "DEPENDENCY_SOURCES_$appVersion.md",
+    "DEPENDENCY_PROVENANCE_$appVersion.json"
 )) {
     $legalSource = Join-Path (Join-Path $ProjectRoot "docs") $legalName
     if (-not (Copy-IfExists $legalSource $licensesTarget)) {
@@ -625,6 +669,11 @@ if ($PackageMode -eq "full") {
 }
 
 Validate-StagedPackage -AppRoot $appRoot -PackageMode $PackageMode
+
+Write-Step "Validating release source and license materials"
+& (Join-Path $ProjectRoot "tools\validate_commercial_release.ps1") `
+    -AppRoot $appRoot `
+    -ReportPath (Join-Path $validationArtifactRoot "package_source_materials_validation.json") | Out-Host
 
 $payloadValidator = Join-Path $ProjectRoot "tools\validate_package_payload.ps1"
 if (-not (Test-Path -LiteralPath $payloadValidator -PathType Leaf)) {

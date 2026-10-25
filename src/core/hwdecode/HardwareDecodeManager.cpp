@@ -5,6 +5,7 @@
 
 #include <QSettings>
 #include <QDebug>
+#include <QCoreApplication>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -38,16 +39,14 @@ void HardwareDecodeManager::probe()
 #endif
 
     _probed    = true;
-    _available = !_gpus.empty();
-
-    // 如果没有 GPU 支持，回退到纯软件
-    if (!_available) {
-        _hwType = HwAccelType::None;
-    }
+    // Adapter inventory does not establish decoder support. The bundled reader
+    // never creates AVHWDeviceContext/get_format/download state.
+    _available = false;
 
     Q_EMIT probeFinished(_available);
     qDebug() << "[HWDecode] Probe complete:"
-             << _gpus.size() << "GPU(s), hwAccel=" << currentAccelName();
+             << _gpus.size() << "GPU(s), requested=" << requestedAccelName()
+             << "actual=" << currentAccelName() << fallbackReason();
 }
 
 // ─── Windows GPU 探测 ─────────────────────────────────────────────
@@ -75,22 +74,17 @@ void HardwareDecodeManager::_probeWindows()
         // Detect vendor
         if (desc.VendorId == 0x10DE) {
             gpu.vendor = "NVIDIA";
-            gpu.supportsNvdec = true;    // NVIDIA GPU supports NVDEC
         } else if (desc.VendorId == 0x1002) {
             gpu.vendor = "AMD";
-            gpu.supportsAmf = true;
         } else if (desc.VendorId == 0x8086) {
             gpu.vendor = "Intel";
-            gpu.supportsQuickSync = true;
         } else if (desc.VendorId == 0x1414) {
             gpu.vendor = "Microsoft";
         } else {
             gpu.vendor = "Unknown";
         }
 
-        // All modern Windows GPUs support D3D11VA and DXVA2
-        gpu.supportsD3d11va = true;
-        gpu.supportsDxva2   = true;
+        // Do not infer a usable codec/device path from the vendor identifier.
 
         _gpus.push_back(gpu);
 
@@ -132,30 +126,19 @@ void HardwareDecodeManager::_probeCpu()
 // ─── 可用解码器列表 ──────────────────────────────────────────────
 QStringList HardwareDecodeManager::availableAccelTypes() const
 {
-    QStringList list;
-    list << hwAccelName(HwAccelType::None);
-    list << hwAccelName(HwAccelType::Auto);
+    return {hwAccelName(HwAccelType::None)};
+}
 
-    // Always available on Windows
-    list << hwAccelName(HwAccelType::D3D11VA);
-    list << hwAccelName(HwAccelType::DXVA2);
-
-    // Check GPU-specific decoders
-    for (const auto& g : _gpus) {
-        if (g.supportsNvdec && !list.contains(hwAccelName(HwAccelType::NVDEC)))
-            list << hwAccelName(HwAccelType::NVDEC);
-        if (g.supportsAmf && !list.contains(hwAccelName(HwAccelType::AMF)))
-            list << hwAccelName(HwAccelType::AMF);
-        if (g.supportsQuickSync && !list.contains(hwAccelName(HwAccelType::QuickSync)))
-            list << hwAccelName(HwAccelType::QuickSync);
-    }
-
-    return list;
+QString HardwareDecodeManager::fallbackReason() const
+{
+    return _hwType == HwAccelType::None ? QString() :
+        QStringLiteral("当前播放内核未接入硬件解码，已使用软件解码；保留原请求设置。");
 }
 
 // ─── 配置 ──────────────────────────────────────────────────────────
 void HardwareDecodeManager::setHwAccelType(HwAccelType t)
 {
+    if (static_cast<int>(t) < 0 || t > HwAccelType::Auto) return;
     if (_hwType == t) return;
     _hwType = t;
     _saveSettings();
@@ -172,7 +155,8 @@ void HardwareDecodeManager::recordFrameDecoded(bool hw)
 // ─── 持久化 ────────────────────────────────────────────────────────
 void HardwareDecodeManager::_loadSettings()
 {
-    QSettings s("CGPlay", "CGPlay");
+    const QString application = QCoreApplication::applicationName();
+    QSettings s("CGPlay", application.startsWith("CGPlayAutomation_") ? application : "CGPlay");
     int hw = s.value("hwdecode/type", static_cast<int>(HwAccelType::Auto)).toInt();
     if (hw >= 0 && hw <= static_cast<int>(HwAccelType::Auto))
         _hwType = static_cast<HwAccelType>(hw);
@@ -180,7 +164,8 @@ void HardwareDecodeManager::_loadSettings()
 
 void HardwareDecodeManager::_saveSettings()
 {
-    QSettings s("CGPlay", "CGPlay");
+    const QString application = QCoreApplication::applicationName();
+    QSettings s("CGPlay", application.startsWith("CGPlayAutomation_") ? application : "CGPlay");
     s.setValue("hwdecode/type", static_cast<int>(_hwType));
 }
 

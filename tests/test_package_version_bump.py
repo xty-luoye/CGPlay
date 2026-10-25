@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ARTIFACTS = ROOT / "tests/artifacts/migration_1_0_8_20261025/release_source_closure/version_harness"
 
 
 class PackageVersionBumpContracts(unittest.TestCase):
@@ -21,11 +22,18 @@ class PackageVersionBumpContracts(unittest.TestCase):
     @staticmethod
     def invoke_version_functions(body: str) -> subprocess.CompletedProcess[str]:
         script_path = ROOT / "tools/package_installer.ps1"
+        escaped_script = str(script_path).replace("'", "''")
         bootstrap = rf"""
-$source = [System.IO.File]::ReadAllText('{script_path}')
-$marker = '$versionRollbackSnapshot = $null'
-$prefix = $source.Substring(0, $source.IndexOf($marker))
-Invoke-Expression $prefix
+$ErrorActionPreference = 'Stop'
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile('{escaped_script}', [ref]$tokens, [ref]$errors)
+if ($errors.Count) {{ throw 'Invalid packager PowerShell syntax' }}
+$names = @('Get-ProjectVersion', 'Get-NextProjectVersion', 'Set-ProjectVersion')
+$functions = @($ast.FindAll({{ param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $names
+}}, $true))
+if ($functions.Count -ne $names.Count) {{ throw 'Required version functions missing' }}
+foreach ($function in $functions) {{ . ([scriptblock]::Create($function.Extent.Text)) }}
 {body}
 """
         return subprocess.run(
@@ -35,6 +43,7 @@ Invoke-Expression $prefix
             text=True,
             encoding="utf-8",
             errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             check=False,
         )
 
@@ -79,7 +88,8 @@ Invoke-Expression $prefix
         self.assertIn(f"PRODUCTVERSION {resource_version}", rc)
 
     def test_next_version_and_replacements_execute_without_group_ambiguity(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        ARTIFACTS.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ARTIFACTS) as temp_dir:
             fixture = Path(temp_dir)
             for relative in (
                 "CMakeLists.txt",

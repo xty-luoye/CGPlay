@@ -64,34 +64,16 @@ QString onlineVttTime(double seconds)
         .arg(ms, 3, 10, QLatin1Char('0'));
 }
 
-QString defaultOnlineHelperPath()
+QString defaultOnlineHelperPath(const ComponentRuntimePaths& runtime)
 {
-    const QStringList candidates{
-        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("tools/cgplay/ai/online_subtitle_search.py")),
-        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("../../../tools/cgplay/ai/online_subtitle_search.py")),
-        QDir::current().filePath(QStringLiteral("tools/cgplay/ai/online_subtitle_search.py"))
-    };
-    for (const QString& candidate : candidates) {
-        if (QFileInfo::exists(candidate)) {
-            return QFileInfo(candidate).absoluteFilePath();
-        }
-    }
-    return candidates.last();
+    const ComponentRuntimePaths paths = runtime.captured ? runtime : captureComponentRuntimePaths();
+    return paths.script(QStringLiteral("cgplay/ai/online_subtitle_search.py"));
 }
 
-QString defaultOcrHelperPath()
+QString defaultOcrHelperPath(const ComponentRuntimePaths& runtime)
 {
-    const QStringList candidates{
-        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("tools/cgplay/ai/subtitle_ocr_extract.py")),
-        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("../../../tools/cgplay/ai/subtitle_ocr_extract.py")),
-        QDir::current().filePath(QStringLiteral("tools/cgplay/ai/subtitle_ocr_extract.py"))
-    };
-    for (const QString& candidate : candidates) {
-        if (QFileInfo::exists(candidate)) {
-            return QFileInfo(candidate).absoluteFilePath();
-        }
-    }
-    return candidates.last();
+    const ComponentRuntimePaths paths = runtime.captured ? runtime : captureComponentRuntimePaths();
+    return paths.script(QStringLiteral("cgplay/ai/subtitle_ocr_extract.py"));
 }
 
 QString defaultCodexExecutablePath()
@@ -118,34 +100,16 @@ QString subtitleCodexHomePath()
         .filePath(QStringLiteral("subtitle-codex-home"));
 }
 
-QString defaultLongAsrHelperPath()
+QString defaultLongAsrHelperPath(const ComponentRuntimePaths& runtime)
 {
-    const QStringList candidates{
-        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("tools/cgplay/ai/long_window_asr_worker.py")),
-        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("../../../tools/cgplay/ai/long_window_asr_worker.py")),
-        QDir::current().filePath(QStringLiteral("tools/cgplay/ai/long_window_asr_worker.py"))
-    };
-    for (const QString& candidate : candidates) {
-        if (QFileInfo::exists(candidate)) {
-            return QFileInfo(candidate).absoluteFilePath();
-        }
-    }
-    return candidates.last();
+    const ComponentRuntimePaths paths = runtime.captured ? runtime : captureComponentRuntimePaths();
+    return paths.script(QStringLiteral("cgplay/ai/long_window_asr_worker.py"));
 }
 
-QString defaultLongAsrTranslateHelperPath()
+QString defaultLongAsrTranslateHelperPath(const ComponentRuntimePaths& runtime)
 {
-    const QStringList candidates{
-        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("tools/cgplay/ai/local_text_translate.py")),
-        QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("../../../tools/cgplay/ai/local_text_translate.py")),
-        QDir::current().filePath(QStringLiteral("tools/cgplay/ai/local_text_translate.py"))
-    };
-    for (const QString& candidate : candidates) {
-        if (QFileInfo::exists(candidate)) {
-            return QFileInfo(candidate).absoluteFilePath();
-        }
-    }
-    return candidates.last();
+    const ComponentRuntimePaths paths = runtime.captured ? runtime : captureComponentRuntimePaths();
+    return paths.script(QStringLiteral("cgplay/ai/local_text_translate.py"));
 }
 
 QString ocrIntakeJsonPath(const QString& ocrSourcePath)
@@ -305,8 +269,10 @@ QString translateSubtitleTextWithHelper(
     const QString& text,
     const QString& sourceLanguage,
     const QString& targetLanguage,
-    QString* errorMessage)
+    QString* errorMessage,
+    const ComponentRuntimePaths& runtime)
 {
+    const ComponentRuntimePaths paths = runtime.captured ? runtime : captureComponentRuntimePaths();
     if (text.trimmed().isEmpty()) {
         if (errorMessage) {
             *errorMessage = QStringLiteral("empty-translation-input");
@@ -320,10 +286,10 @@ QString translateSubtitleTextWithHelper(
         return {};
     }
     QProcess process;
-    QProcessEnvironment processEnv = QProcessEnvironment::systemEnvironment();
+    QProcessEnvironment processEnv = paths.pythonEnvironment(QStringLiteral("SUBTITLE_ONLINE_PYTHON"));
     processEnv.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
     process.setProcessEnvironment(processEnv);
-    const QString python = QProcessEnvironment::systemEnvironment().value(QStringLiteral("SUBTITLE_ONLINE_PYTHON"), QStringLiteral("python"));
+    const QString python = paths.pythonFor(QStringLiteral("SUBTITLE_ONLINE_PYTHON"));
     process.start(python, { helperPath, text, sourceLanguage, targetLanguage });
     if (!process.waitForStarted(5000)) {
         if (errorMessage) {

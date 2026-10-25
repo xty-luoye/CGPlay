@@ -105,7 +105,7 @@ tl::CompareOptions CompareToolbar::compareOptions() const
 {
     tl::CompareOptions opts;
     switch (_p->currentMode) {
-    case 0: opts.compare = tl::Compare::A;          break;
+    case 0: opts.compare = tl::Compare::First;      break;
     case 1: opts.compare = tl::Compare::B;          break;
     case 2: opts.compare = tl::Compare::Wipe;       break;
     case 3: opts.compare = tl::Compare::Overlay;    break;
@@ -113,7 +113,7 @@ tl::CompareOptions CompareToolbar::compareOptions() const
     case 5: opts.compare = tl::Compare::Horizontal; break;
     case 6: opts.compare = tl::Compare::Vertical;   break;
     case 7: opts.compare = tl::Compare::Tile;       break;
-    default: opts.compare = tl::Compare::A;         break;
+    default: opts.compare = tl::Compare::First;     break;
     }
 
     if (_p->wipeXSlider) {

@@ -16,11 +16,16 @@ option(CGPLAY_ENABLE_AGENT_CONSOLE "Build the isolated Agent Console scaffold" O
 option(CGPLAY_REQUIRE_RUNTIME
        "Fail configuration when bundled FFmpeg/Codex runtimes are missing"
        OFF)
+option(CGPLAY_REQUIRE_RECORDING_RUNTIME
+       "Fail a full release build when the private recording runtime is missing"
+       ${CGPLAY_REQUIRE_RUNTIME})
 
 set(CGPLAY_SOURCES
     main.cpp
 
     ui/app/Application.cpp
+    ui/app/ApplicationCompareExport.cpp
+    ui/app/ApplicationRecording.cpp
     ui/app/ApplicationEnhancement.cpp
     ui/app/ApplicationInput.cpp
     ui/app/ApplicationMedia.cpp
@@ -35,6 +40,9 @@ set(CGPLAY_SOURCES
     ui/app/ApplicationRuntimeAutomation.cpp
     ui/app/ApplicationRuntimeSupport.cpp
     ui/app/MainWindowAutomation.cpp
+    ui/app/MainWindowAutomationCache.cpp
+    ui/app/MainWindowAutomationCompareExport.cpp
+    ui/app/MainWindowAutomationRecording.cpp
     ui/app/MainWindowAutomationFullscreen.cpp
     ui/app/MainWindowAutomationState.cpp
     ui/app/MainWindowAutomationSession.cpp
@@ -44,6 +52,11 @@ set(CGPLAY_SOURCES
     ui/app/MainWindowAutomationSubtitles.cpp
     ui/app/Application.h
     ui/app/ApplicationPrivate.h
+    ui/recording/RecordingPanel.cpp
+    ui/recording/RecordingPanel.h
+    services/recording/RecordingService.cpp
+    services/recording/RecordingService.h
+    services/recording/api/RecordingTypes.h
     ui/app/AIAgentWorkspace.cpp
     ui/app/AIAgentWorkspaceActions.cpp
     ui/app/AIAgentWorkspaceControl.cpp
@@ -188,6 +201,8 @@ set(CGPLAY_SOURCES
     services/ai/discovery/AIProviderDetector.h
 
     ui/viewer/TlViewport.cpp
+    ui/viewer/NativeGLLoader.cpp
+    ui/viewer/NativeGLLoader.h
     ui/viewer/TlViewport.h
     ui/viewer/ViewerWidget.cpp
     ui/viewer/ViewerWidget.h
@@ -216,6 +231,10 @@ set(CGPLAY_SOURCES
     services/media/MediaProbe.h
     services/media/ThumbnailService.cpp
     services/media/ThumbnailService.h
+    services/media/ThumbnailDiskCache.cpp
+    services/media/ThumbnailDiskCache.h
+    features/settings/ThumbnailCacheSettings.cpp
+    features/settings/ThumbnailCacheSettings.h
     services/media/ThumbnailPipeline.cpp
     services/media/ThumbnailPipeline.h
 
@@ -249,6 +268,8 @@ set(CGPLAY_SOURCES
     features/annotation/AnnotationStorage.h
     features/annotation/ReviewExport.cpp
     features/annotation/ReviewExport.h
+    features/annotation/CompareExportSnapshot.cpp
+    features/annotation/CompareExportSnapshot.h
 
     features/otio/OtioImporter.cpp
     features/otio/OtioImporter.h
@@ -281,6 +302,8 @@ set(CGPLAY_QUICKLOOK_SOURCES
     plugins/quicklook/QuickLookKeyboardHook.h
 
     ui/viewer/TlViewport.cpp
+    ui/viewer/NativeGLLoader.cpp
+    ui/viewer/NativeGLLoader.h
     ui/viewer/TlViewport.h
     ui/viewer/ViewerWidget.cpp
     ui/viewer/ViewerWidget.h
@@ -743,7 +766,11 @@ if(WIN32)
         )
     endif()
 
+    if(CGPLAY_PYTHON_RUNTIME_DIR AND NOT EXISTS "${CGPLAY_PYTHON_RUNTIME_DIR}/python.exe")
+        message(FATAL_ERROR "CGPLAY_PYTHON_RUNTIME_DIR does not contain python.exe; refusing a silent fallback.")
+    endif()
     set(_cgplay_python_runtime_candidates
+        "${CGPLAY_PYTHON_RUNTIME_DIR}"
         "${CMAKE_BINARY_DIR}/package/full/CGPlay/runtime/python"
         "${CMAKE_BINARY_DIR}/package/CGPlay/runtime/python"
     )
@@ -762,6 +789,10 @@ if(WIN32)
            AND EXISTS "${_cgplay_python_runtime_dir}/Lib/site-packages/urllib3/__init__.py"
            AND EXISTS "${_cgplay_python_runtime_dir}/Lib/site-packages/typing_extensions.py")
             add_custom_command(TARGET CGPlay POST_BUILD
+                COMMAND "${_cgplay_python_runtime_dir}/python.exe" -I -B
+                    "${CGPLAY_SOURCE_ROOT}/../tools/validate_runtime_overlay.py"
+                    --source "${_cgplay_python_runtime_dir}"
+                    --destination "$<TARGET_FILE_DIR:CGPlay>/runtime/python"
                 COMMAND ${CMAKE_COMMAND} -E make_directory
                     "$<TARGET_FILE_DIR:CGPlay>/runtime"
                 COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -772,6 +803,22 @@ if(WIN32)
             break()
         endif()
     endforeach()
+
+    if(EXISTS "${CGPLAY_RECORDING_RUNTIME_DIR}/CGPlayRecorder.exe"
+       AND EXISTS "${CGPLAY_RECORDING_RUNTIME_DIR}/runtime-manifest.json")
+        add_custom_target(CGPlayRecordingRuntimeDeploy
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:CGPlay>/runtime/recorder"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CGPLAY_RECORDING_RUNTIME_DIR}"
+                "$<TARGET_FILE_DIR:CGPlay>/runtime/recorder"
+            COMMENT "Deploying the private CGPlay recording runtime"
+            VERBATIM)
+        add_dependencies(CGPlay CGPlayRecordingRuntimeDeploy)
+    elseif(CGPLAY_REQUIRE_RECORDING_RUNTIME)
+        message(FATAL_ERROR
+            "A full recording-enabled release requires CGPLAY_RECORDING_RUNTIME_DIR with CGPlayRecorder.exe and runtime-manifest.json. Build tools/recorder in its isolated dependency prefix first.")
+    endif()
 
     set(_cgplay_component_manifest
         "${CGPLAY_SOURCE_ROOT}/../resources/component_manifest.json")

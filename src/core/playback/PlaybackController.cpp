@@ -1,4 +1,4 @@
-// CGPlay PlaybackController.cpp
+﻿// CGPlay PlaybackController.cpp
 // Uses tl::Player directly (like DJV) — no Qt wrappers.
 
 #include "PlaybackController.h"
@@ -39,6 +39,8 @@
   #include <tlRender/Timeline/PlayerOptions.h>
   #include <tlRender/Timeline/System.h>
   #include <tlRender/Timeline/Init.h>
+  #include <tlRender/Core/Version.h>
+  #include <tlRender/IO/System.h>
 #endif
 
 #if CGPLAY_HAS_FTK
@@ -79,6 +81,18 @@ bool isAv1Codec(const QString& value)
 }
 
 #if CGPLAY_HAS_TLRENDER
+ftk::Path nativePlaybackPath(const std::shared_ptr<ftk::Context>& context,
+    const QString& fileName, const tl::Options& options)
+{
+    ftk::Path path(fileName.toStdString());
+#if TLRENDER_VERSION_MAJOR > 0 || TLRENDER_VERSION_MINOR >= 27
+    const auto io = context->getSystem<tl::ReadSystem>();
+    if (io && io->getFileType(QString::fromStdString(path.getExt()).toLower().toStdString()) == tl::FileType::Seq)
+        path = ftk::expandSeq(path, options.pathOptions);
+#endif
+    return path;
+}
+
 int playbackStateToInt(tl::Playback playback)
 {
     if (playback == tl::Playback::Forward) {
@@ -420,6 +434,16 @@ PlaybackController::PlaybackController(
 {
     _p->cache = std::move(cache);
     _p->ocio  = std::move(ocio);
+    if (_p->cache) {
+        connect(_p->cache.get(), &CacheManager::optionsChanged, this, [this] {
+            _applyCacheOptions();
+        });
+        connect(_p->cache.get(), &CacheManager::playbackCacheClearRequested, this, [this] {
+#if CGPLAY_HAS_TLRENDER
+            if (_p->player) _p->player->clearCache();
+#endif
+        });
+    }
     _p->stats = new PlaybackStats(this);
     _p->signalProxy = new PlaybackServiceSignals(this);
 
@@ -671,17 +695,18 @@ void PlaybackController::_createPlayer(
             size_t ramGB = _p->cache->ramCacheSizeGB();
             pOpts.cache.videoGB = static_cast<float>(ramGB);
 
-            double fpsEstimate = 24.0;
-            float readBehindSec = _p->cache->readBehindFrames() / static_cast<float>(fpsEstimate);
-            pOpts.cache.readBehind = std::max(0.5F, readBehindSec);
-
-            pOpts.videoRequestMax = std::max<size_t>(16, _p->cache->readAheadFrames());
+            // videoRequestMax has no runtime setter in this tlRender API.
+            // The settings UI explicitly says this limit applies on reopen.
+            pOpts.videoRequestMax = std::max<size_t>(1, _p->cache->readAheadFrames());
         }
 
         // Create timeline (like DJV)
         tl::Options tlOpts;
         if (sequenceFpsOverride > 0.0) {
             tlOpts.ioOptions["SeqIO/DefaultSpeed"] = QString::number(sequenceFpsOverride, 'f', 3).toStdString();
+#if TLRENDER_VERSION_MAJOR > 0 || TLRENDER_VERSION_MINOR >= 27
+            tlOpts.ioOptions["SeqIO/SpeedOverride"] = QString::number(sequenceFpsOverride, 'g', 17).toStdString();
+#endif
         }
         const bool hintedVpFamily = isVpFamilyCodec(codecHint);
         const bool hintedAv1 = isAv1Codec(codecHint);
@@ -694,7 +719,7 @@ void PlaybackController::_createPlayer(
             tlOpts.ioOptions["FFmpeg/ThreadCount"] = "4";
         }
         auto timeline = tl::Timeline::create(
-            _p->context, ftk::Path(mediaPath.toStdString()), tlOpts);
+            _p->context, nativePlaybackPath(_p->context, mediaPath, tlOpts), tlOpts);
 
         if (!timeline) {
             qCritical() << "[PlaybackController] Timeline::create returned null for:"
@@ -712,7 +737,7 @@ void PlaybackController::_createPlayer(
                 tlOpts.ioOptions["FFmpeg/YUVToRGB"] = "1";
                 tlOpts.ioOptions["FFmpeg/ThreadCount"] = "4";
                 timeline = tl::Timeline::create(
-                    _p->context, ftk::Path(mediaPath.toStdString()), tlOpts);
+                    _p->context, nativePlaybackPath(_p->context, mediaPath, tlOpts), tlOpts);
                 if (!timeline) {
                     qCritical() << "[PlaybackController] VP RGB fallback failed for:" << mediaPath;
                     return false;
@@ -723,7 +748,7 @@ void PlaybackController::_createPlayer(
                 tlOpts.ioOptions["FFmpeg/YUVToRGB"] = "1";
                 tlOpts.ioOptions["FFmpeg/ThreadCount"] = "4";
                 timeline = tl::Timeline::create(
-                    _p->context, ftk::Path(mediaPath.toStdString()), tlOpts);
+                    _p->context, nativePlaybackPath(_p->context, mediaPath, tlOpts), tlOpts);
                 if (!timeline) {
                     qCritical() << "[PlaybackController] AV1 RGB compatibility path failed for:" << mediaPath;
                     return false;
@@ -757,6 +782,7 @@ void PlaybackController::_createPlayer(
             _p->cache->onCacheInfoChanged(0.0f, 0.0f);
         }
         _connectPlayer();
+        _applyCacheOptions(); // the actual media rate is now available
         _applyPlaybackOptions();
 
         Q_EMIT fileOpened(sourcePath);
@@ -780,6 +806,7 @@ void PlaybackController::_createPlayer(
             _p->transcodeJob = job;
             connect(job, &JobHandle::finished, this,
                 [this, job, path, sourcePath, sequenceFpsOverride, generation](const JobOutcome& outcome) {
+                    job->deleteLater();
                     if (_p->transcodeJob == job) _p->transcodeJob.clear();
                     if (generation != _p->openGeneration || _p->currentPath != sourcePath) return;
                     if (!outcome.succeeded()) {
@@ -818,6 +845,7 @@ void PlaybackController::_createPlayer(
         _p->transcodeJob = job;
         connect(job, &JobHandle::finished, this,
             [this, job, path, sourcePath, sequenceFpsOverride, generation](const JobOutcome& outcome) {
+                job->deleteLater();
                 if (_p->transcodeJob == job) {
                     _p->transcodeJob.clear();
                 }
@@ -868,6 +896,21 @@ void PlaybackController::_destroyPlayer()
 #endif
     _p->stateStub = 0;
     _updateTimerCadence();
+}
+
+void PlaybackController::_applyCacheOptions()
+{
+#if CGPLAY_HAS_TLRENDER
+    if (!_p->player || !_p->cache) return;
+    auto options = _p->player->getCacheOptions();
+    options.videoGB = static_cast<float>(_p->cache->ramCacheSizeGB());
+    const double mediaRate = _p->player->getTimeRange().duration().rate();
+    if (std::isfinite(mediaRate) && mediaRate > 0.0) {
+        options.readBehind = static_cast<float>(_p->cache->readBehindFrames() / mediaRate);
+    }
+    // Preserve native audioGB and the current playhead/playback/compare state.
+    _p->player->setCacheOptions(options);
+#endif
 }
 
 void PlaybackController::_connectPlayer()
@@ -1264,7 +1307,7 @@ void PlaybackController::setCompareFile(const QString& path)
     try {
         tl::Options tlOpts;
         auto compareTimeline = tl::Timeline::create(
-            _p->context, ftk::Path(path.toStdString()), tlOpts);
+            _p->context, nativePlaybackPath(_p->context, path, tlOpts), tlOpts);
 
         if (compareTimeline) {
             std::vector<std::shared_ptr<tl::Timeline>> compareList;

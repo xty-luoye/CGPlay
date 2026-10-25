@@ -1,4 +1,5 @@
 #pragma once
+#include "component/ComponentRuntimePaths.h"
 
 #include "ai/api/AIProviderTypes.h"
 
@@ -30,6 +31,7 @@ struct GeneratedSubtitleCue
 
 struct SubtitleGenerationRequest
 {
+    ComponentRuntimePaths runtime;
     QString mediaPath;
     QString outputDirectory;
     QString subtitleSourcePath;
@@ -108,6 +110,7 @@ struct SubtitleGenerationResult
 
 struct SubtitleRefinementRequest
 {
+    ComponentRuntimePaths runtime;
     QString mediaPath;
     QString outputDirectory;
     QString targetLanguage = QStringLiteral("zh-Hans");
@@ -211,7 +214,8 @@ private:
         double startSeconds,
         double durationSeconds,
         const QString& outputPath,
-        QString* errorMessage) const;
+        QString* errorMessage,
+        const QString& ffmpegPath) const;
     QVector<GeneratedSubtitleCue> _transcribeChunk(
         const QString& audioPath,
         double offsetSeconds,

@@ -10,14 +10,16 @@ ARTIFACT = ROOT / "tests" / "artifacts" / "optimization_round2_20260922"
 
 
 class StartupRound2Tests(unittest.TestCase):
-    def test_performance_sampler_does_not_sample_synchronously_on_start(self) -> None:
+    def test_performance_sampler_keeps_native_work_off_gui_and_defers_first_sample(self) -> None:
         source = (ROOT / "src/common/core/SystemPerformanceMonitor.cpp").read_text(encoding="utf-8")
         start = source.index("void SystemPerformanceMonitor::start")
         stop = source.index("void SystemPerformanceMonitor::stop", start)
         body = source[start:stop]
-        self.assertNotIn("_sample();\n    }\n    _p->timer->start", body)
-        self.assertIn("QTimer::singleShot(250, this", body)
-        self.assertIn("_p->timer->isActive()", body)
+        self.assertNotIn("collectSample(", body)
+        self.assertIn("std::thread", body)
+        self.assertIn("std::chrono::milliseconds(250)", source)
+        self.assertIn("Qt::QueuedConnection", body)
+        self.assertIn("registry().closing.load()", body)
 
     def test_startup_benchmark_is_background_and_lazy(self) -> None:
         report = ARTIFACT / "startup" / "startup_summary.json"

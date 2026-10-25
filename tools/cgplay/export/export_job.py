@@ -1,6 +1,7 @@
 """ExportJob — main export flow + annotation rendering"""
 import sys, os, math, logging
 from pathlib import Path
+from dataclasses import replace
 import numpy as np
 
 try:
@@ -8,17 +9,31 @@ try:
     from .utils.image_reader import ImageReader
     from .exporters.ffmpeg_exporter import FFmpegExporter
     from .utils.video_reader import VideoReader
+    from .utils.output_transaction import OutputTransaction, assert_distinct_output
+    from .utils.color_pipeline import ColorPipeline
+    from .utils.image_reader import _process_pixels
 except ImportError:
     from cgplay.export.models.export_settings import ExportSettings
     from cgplay.export.utils.image_reader import ImageReader
     from cgplay.export.exporters.ffmpeg_exporter import FFmpegExporter
     from cgplay.export.utils.video_reader import VideoReader
+    from cgplay.export.utils.output_transaction import OutputTransaction, assert_distinct_output
+    from cgplay.export.utils.color_pipeline import ColorPipeline
+    from cgplay.export.utils.image_reader import _process_pixels
 
 _VIDEO_EXTS = {'.mp4','.mov','.avi','.mkv','.mxf','.webm','.flv','.wmv','.m4v'}
 _ANNOTATION_MIN_POINTS = {0: 2, 1: 2, 2: 1, 3: 1, 4: 2, 5: 1}
 
 def _is_video(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in _VIDEO_EXTS
+
+
+def _set_sdr_metadata(settings, color_pipeline=None):
+    encoding = color_pipeline.settings.outputEncoding if color_pipeline is not None else "srgb"
+    settings.color_range = 1
+    settings.color_space = 1
+    settings.color_primaries = 1
+    settings.color_transfer = 1 if encoding == "rec709" else 13
 
 def setup_logging(log_file: str = None):
     fmt = "%(asctime)s [EXPORT] %(levelname)s: %(message)s"
@@ -106,25 +121,26 @@ def _render_annotations(frame: np.ndarray, fidx: int, annotations: list):
     if not fa: return
     original_dtype = frame.dtype
     channels = frame.shape[2] if frame.ndim == 3 else 1
-    if original_dtype == np.float32:
-        d = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
-    else:
-        d = frame.copy()
-    if channels == 1:
-        d = np.repeat(d[:, :, None] if d.ndim == 2 else d, 3, axis=2)
-    # The export pipeline stores frames as BGR/BGRA for PyAV. Draw on a
-    # transparent RGBA overlay so annotations also become visible in Alpha.
-    if channels > 3:
-        rgba = d[:, :, [2, 1, 0, 3]]
-    else:
-        rgb = d[:, :, ::-1]
-        rgba = np.dstack([rgb, np.full(rgb.shape[:2], 255, dtype=np.uint8)])
-    img = Image.fromarray(rgba, "RGBA")
-    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay, "RGBA")
     ww, hh = frame.shape[1], frame.shape[0]
-    try: font = ImageFont.truetype("segoeui.ttf", max(14, ww // 80))
-    except Exception: font = ImageFont.load_default()
+    img = None
+    if original_dtype != np.float32:
+        d = frame.copy()
+        if channels == 1:
+            d = np.repeat(d[:, :, None] if d.ndim == 2 else d, 3, axis=2)
+        rgba = d[:, :, [2, 1, 0, 3]] if channels > 3 else np.dstack([d[:, :, ::-1], np.full(d.shape[:2],255,dtype=np.uint8)])
+        img = Image.fromarray(rgba, "RGBA")
+    # Only the annotation overlay is 8-bit. Keep the source float pixels until
+    # final encoder quantization, including all pixels outside the drawn mask.
+    overlay = Image.new("RGBA", (ww, hh), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay, "RGBA")
+    font = None
+    for name in (str(Path(os.environ.get("WINDIR", "C:/Windows"))/"Fonts/msyh.ttc"), "segoeui.ttf"):
+        try:
+            font = ImageFont.truetype(name, max(14, ww // 80))
+            break
+        except OSError:
+            pass
+    if font is None: font = ImageFont.load_default()
     for a in fa:
         hc = a.get("color", "#FF8A3D")
         try: r, g, b = int(hc[1:3], 16), int(hc[3:5], 16), int(hc[5:7], 16)
@@ -172,50 +188,93 @@ def _render_annotations(frame: np.ndarray, fidx: int, annotations: list):
         if cmt and t != 3:
             y = max(0, min(_pt(pts[0])[1] - 24 if pts else 30, hh - 40))
             draw.text((10, y), f"[{a.get('author','')}] {cmt[:60]}", fill=(255,255,255,220), font=font, stroke_width=2, stroke_fill=(0,0,0,180))
-    res = np.array(Image.alpha_composite(img, overlay))
-    bgr = res[:, :, [2, 1, 0]]
     if original_dtype == np.float32:
+        drawn = np.asarray(overlay).astype(np.float32) / 255.0
+        overlay_alpha = drawn[:, :, 3:4]
+        source_alpha = np.clip(frame[:, :, 3:4],0.0,1.0) if channels > 3 else np.ones((hh,ww,1),dtype=np.float32)
+        alpha = overlay_alpha + source_alpha * (1.0-overlay_alpha)
+        rgb = (drawn[:, :, [2,1,0]] * overlay_alpha + frame[:, :, :3] * source_alpha * (1.0-overlay_alpha)) / np.maximum(alpha,1e-20)
+        mask = overlay_alpha[:, :, 0] > 0.0
+        frame[:, :, :3][mask] = rgb[mask]
         if channels > 3:
-            frame[:, :, :3] = bgr.astype(np.float32) / 255.0
-            frame[:, :, 3] = res[:, :, 3].astype(np.float32) / 255.0
-        else:
-            frame[:] = bgr.astype(np.float32) / 255.0
-    else:
-        if channels > 3:
-            frame[:, :, :3] = bgr
-            frame[:, :, 3] = res[:, :, 3]
-        else:
-            frame[:] = bgr
+            frame[:, :, 3][mask] = alpha[:, :, 0][mask]
+        return
+    res = np.array(Image.alpha_composite(img, overlay))
+    frame[:, :, :3] = res[:, :, [2,1,0]]
+    if channels > 3: frame[:, :, 3] = res[:, :, 3]
 
 # ─── Main Export ─────────────────────────────────────────────────────────
-def export_frames(input_path, settings, progress_callback=None, start_frame=None, end_frame=None, annotations=None, frame_numbering="source"):
+def export_frames(input_path, settings, progress_callback=None, start_frame=None, end_frame=None, annotations=None, frame_numbering="source", staging_dir=None, protected_paths=(), color_settings=None):
     if frame_numbering not in ("source", "relative"):
         raise ValueError(f"Unknown frame numbering: {frame_numbering}")
-    setup_logging(settings.log_file)
-    logger = logging.getLogger(__name__)
-    logger.info(f"Export: {input_path} -> {settings.output_path}")
-    if annotations: logger.info(f"Annotations: {len(annotations)} items")
-    if progress_callback: progress_callback(0, "Analyzing...")
-    if _is_video(input_path):
-        return _export_video_file(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations)
-    else:
-        try: return _export_image_sequence(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations, frame_numbering)
-        except ValueError as e:
-            if "no frame" in str(e).lower():
-                return _export_video_file(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations)
-            raise
+    color_pipeline = ColorPipeline(color_settings) if color_settings is not None else None
+    # Protect all sequence members, including those outside the selected range.
+    # Cache the scan so source protection does not scan a large sequence twice.
+    protected = [input_path, *protected_paths]
+    frames = None
+    if not _is_video(input_path):
+        frames = ImageReader().scan_sequence(input_path)
+        protected.extend(frames.values())
+    if settings.log_file:
+        assert_distinct_output(settings.log_file, [settings.output_path, *protected])
 
-def _export_image_sequence(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations=None, frame_numbering="source"):
+    def notify(percent, message):
+        # Readers/exporters may report completion before their context exits.
+        # 100% belongs to the outer, successfully committed transaction only.
+        if progress_callback:
+            progress_callback(min(percent, 99), "Finalizing..." if percent >= 100 else message)
+
+    with OutputTransaction(settings.output_path, protected, staging_dir) as transaction:
+        staged_settings = replace(settings, output_path=str(transaction.staged_path))
+        setup_logging(settings.log_file)
+        logger = logging.getLogger(__name__)
+        logger.info(f"Export: {input_path} -> {settings.output_path}")
+        if annotations:
+            logger.info(f"Annotations: {len(annotations)} items")
+        notify(0, "Analyzing...")
+        if _is_video(input_path):
+            _export_video_file(input_path, staged_settings, logger, notify, start_frame, end_frame, annotations, color_pipeline)
+        else:
+            try:
+                _export_image_sequence(input_path, staged_settings, logger, notify, start_frame, end_frame,
+                                       annotations, frame_numbering, frames, color_pipeline)
+            except ValueError as error:
+                if "no frame" not in str(error).lower():
+                    raise
+                _export_video_file(input_path, staged_settings, logger, notify, start_frame, end_frame, annotations, color_pipeline)
+        # Both the reader and encoder (including flush/container close) have
+        # completed. An interrupting callback still leaves the old target intact.
+        notify(99, "Finalizing...")
+        transaction.commit()
+
+    if progress_callback:
+        try:
+            progress_callback(100, "Done")
+        except Exception:
+            # The atomic commit is the point of success. A failing observer must
+            # not report a failed export after the new target is already visible.
+            logger.exception("Export committed, but completion notification failed")
+    return settings.output_path
+
+
+def _export_image_sequence(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations=None, frame_numbering="source", frames=None, color_pipeline=None):
     if progress_callback: progress_callback(0, "Scanning...")
     reader = ImageReader()
-    frames = reader.scan_sequence(input_path)
+    if frames is None:
+        frames = reader.scan_sequence(input_path)
     start, end, frame_paths = reader.get_sequence_range(
         frames, start_frame, end_frame, frame_numbering=frame_numbering)
     total = len(frame_paths)
     if total == 0: raise ValueError("No frames found")
     annotations = _normalize_annotations(annotations, (number for number, _ in frame_paths))
     logger.info(f"Found {total} frames ({start}-{end})")
-    first = reader.read_frame(frame_paths[0][1])
+    high_precision = settings.normalized_codec() in ("prores_422", "prores_hq", "prores_4444")
+    def read(path):
+        if high_precision:
+            return reader.read_frame(path, color_pipeline=color_pipeline, output_float=True)
+        return reader.read_frame(path, color_pipeline=color_pipeline) if color_pipeline is not None else reader.read_frame(path)
+    first = read(frame_paths[0][1])
+    _set_sdr_metadata(settings, color_pipeline)
     h,w = first.shape[:2]; settings.width=w; settings.height=h
     logger.info(f"Resolution: {w}x{h}")
     if progress_callback: progress_callback(5, f"Encoding... 0/{total}")
@@ -226,8 +285,10 @@ def _export_image_sequence(input_path, settings, logger, progress_callback, star
                 frame = first
                 first = None
             else:
-                frame = reader.read_frame(path)
+                frame = read(path)
             _render_annotations(frame, frame_number, annotations)
+            if high_precision:
+                frame = np.rint(np.clip(frame,0.0,1.0)*65535.0).astype(np.uint16)
             exporter.write_frame(frame)
             if progress_callback: progress_callback(int(5+90*(i+1)/total), f"Encoding... {i+1}/{total}")
     except Exception as e:
@@ -242,7 +303,7 @@ def _export_image_sequence(input_path, settings, logger, progress_callback, star
     if progress_callback: progress_callback(100, "Done")
     return settings.output_path
 
-def _export_video_file(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations=None):
+def _export_video_file(input_path, settings, logger, progress_callback, start_frame, end_frame, annotations=None, color_pipeline=None):
     if progress_callback: progress_callback(0, "Opening video...")
     with VideoReader() as vreader:
         vreader.open(input_path)
@@ -250,6 +311,10 @@ def _export_video_file(input_path, settings, logger, progress_callback, start_fr
         logger.info(f"Video: {w}x{h}, {vreader.fps:.1f}fps, {total} frames")
         for name, value in vreader.color_metadata.items():
             setattr(settings, name, value)
+        if settings.color_transfer in (16, 18) or settings.color_primaries == 9 or settings.color_space in (9, 10, 12, 13, 14):
+            raise ValueError("HDR/wide-gamut video export requires a validated high-bit-depth tone-mapping path; this exporter currently supports SDR video")
+        if color_pipeline is not None and color_pipeline.settings.mode == "ocio":
+            _set_sdr_metadata(settings, color_pipeline)
         logger.info(
             "Color: range=%s space=%s transfer=%s primaries=%s",
             settings.color_range,
@@ -273,6 +338,11 @@ def _export_video_file(input_path, settings, logger, progress_callback, start_fr
         encoded = 0
         try:
             for i, frame in enumerate(vreader.read_frames(start_frame=s, end_frame=e)):
+                if color_pipeline is not None:
+                    color = color_pipeline.settings
+                    if color.mode == "ocio" or color.exposure != 0.0 or color.gamma != 1.0:
+                        rgb = frame[:, :, [2, 1, 0, 3]] if frame.shape[2] == 4 else frame[:, :, ::-1]
+                        frame = _process_pixels(rgb, source_encoding="display", color_pipeline=color_pipeline)
                 _render_annotations(frame, s+i, annotations)
                 exporter.write_frame(frame)
                 encoded = i + 1

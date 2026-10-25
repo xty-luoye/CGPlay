@@ -1,4 +1,4 @@
-// CGPlay ReviewExport.cpp
+﻿// CGPlay ReviewExport.cpp
 
 #include "ReviewExport.h"
 #include "AnnotationItem.h"
@@ -10,6 +10,7 @@
 #include <QFile>
 #include <QSaveFile>
 #include <QTemporaryFile>
+#include <QTemporaryDir>
 #include <QFileInfo>
 #include <QDir>
 #include <QDirIterator>
@@ -31,9 +32,13 @@
 #include <QStandardPaths>
 #include <QApplication>
 #include <QTimer>
+#include <QThread>
 #include <QRegularExpression>
 #include <QDebug>
 #include <limits>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 
 #ifdef CGPLAY_OCIO_ENABLED
   #include <OpenColorIO/OpenColorIO.h>
@@ -499,68 +504,25 @@ QString ReviewExport::locateFfmpeg()
 }
 
 // ─── Python-based export engine ──────────────────────────────────────────────────
-static QString locatePython()
+bool ReviewExport::prepareVideoExportRuntime(QWidget* parent, ComponentRuntimePaths* runtime, QString* error)
 {
-    const QString appDir = QCoreApplication::applicationDirPath();
-
-    const QString componentPython =
-        ComponentManager::instance().componentExecutablePath(QStringLiteral("python-runtime"), QStringLiteral("python.exe"));
-    if (!componentPython.isEmpty()) {
-        QProcess test;
-        test.start(componentPython, {"--version"}, QIODevice::ReadOnly);
-        if (waitForBoundedProcess(test, kProbeTimeoutMs).succeeded()) {
-            return componentPython;
-        }
+    if (!qApp || QThread::currentThread() != qApp->thread() || !runtime) {
+        if (error) *error = QObject::tr("导出组件必须先在界面线程准备。");
+        return false;
     }
-
-    // 优先使用已知可用的 Python，避免 Windows Store 存根
-    QStringList candidates = {
-        QDir(appDir).filePath("runtime/python/python.exe"),
-        QDir(appDir).filePath("python/python.exe"),
-        QDir(appDir).filePath("../runtime/python/python.exe"),
-        "C:/Users/1/.workbuddy/binaries/python/versions/3.11.9/python.exe",
-        "C:/Users/1/.workbuddy/binaries/python/versions/3.13.12/python.exe",
-        QStandardPaths::findExecutable("python"),
-        QStandardPaths::findExecutable("python3"),
-    };
-    for (const auto& p : candidates) {
-        if (p.isEmpty()) continue;
-        if (!QFileInfo::exists(p)) continue;
-        // 验证 Python 可执行（排除 Windows Store 存根）
-        QProcess test;
-        test.start(p, {"--version"}, QIODevice::ReadOnly);
-        if (waitForBoundedProcess(test, kProbeTimeoutMs).succeeded())
-            return p;
+    for (const QString& id : {QStringLiteral("python-runtime"), QStringLiteral("tools")}) {
+        if (!ComponentManager::instance().ensureComponent(id, parent, true, error)) return false;
     }
-    return {};
-}
-
-static QString findToolsDir()
-{
-    const QString componentTools = ComponentManager::instance().componentRootPath(QStringLiteral("tools"));
-    if (!componentTools.isEmpty()) {
-        const QString exportEngine =
-            QDir(componentTools).filePath(QStringLiteral("cgplay/export/export_engine.py"));
-        if (QFileInfo::exists(exportEngine)) {
-            return QFileInfo(componentTools).absoluteFilePath();
-        }
+    *runtime = captureComponentRuntimePaths();
+    if (runtime->pythonExecutable.isEmpty() || runtime->script(QStringLiteral("cgplay/export/export_engine.py")).isEmpty()) {
+        if (error) *error = QObject::tr("导出组件不完整，请修复 Python 和导出脚本组件。");
+        return false;
     }
-
-    QString exeDir = QCoreApplication::applicationDirPath();
-    QStringList paths = {
-        QDir(exeDir).filePath("tools"),
-        QDir(exeDir).filePath("../tools"),
-        QDir(exeDir).filePath("../../../tools"),
-        QDir(exeDir).filePath("../../tools"),
-    };
-    for (const auto& p : paths) {
-        if (QFileInfo::exists(p)) return QFileInfo(p).absoluteFilePath();
-    }
-    return {};
+    return true;
 }
 
 // Run Python export engine, parse PROGRESS/DONE/ERROR_LOG lines
-static QString s_lastExportError;  // stored error log content
+static thread_local QString s_lastExportError;  // stored error log content
 
 static bool runPythonExport(QProcess& proc, std::function<void(double)> progress,
                             const std::atomic_bool* cancel)
@@ -584,6 +546,7 @@ static bool runPythonExport(QProcess& proc, std::function<void(double)> progress
         }
         transcript += line;
         transcript += '\n';
+        if (transcript.size() > 64 * 1024) transcript.remove(0, transcript.size() - 64 * 1024);
         if (line.startsWith("PROGRESS ")) {
             const auto parts = line.mid(9).split(' ');
             if (!parts.isEmpty()) {
@@ -618,7 +581,7 @@ static bool runPythonExport(QProcess& proc, std::function<void(double)> progress
         consumeLine(line);
     }
 
-    if (outcome.succeeded() && doneReported) {
+    if (doneReported && proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0) {
         context.reportProgress(100, QStringLiteral("review.export.complete"));
         return true;
     }
@@ -645,12 +608,79 @@ static bool runPythonExport(QProcess& proc, std::function<void(double)> progress
     return false;
 }
 
+bool ReviewExport::exportVideoCompare(const QJsonObject& job,
+                                     const ComponentRuntimePaths& paths,
+                                     std::function<void(double)> progress,
+                                     const std::atomic_bool* cancel)
+{
+    s_lastExportError.clear();
+    if (cancel && cancel->load(std::memory_order_relaxed)) {
+        s_lastExportError = QObject::tr("导出已取消。");
+        return false;
+    }
+    if (!paths.captured || paths.pythonExecutable.isEmpty() ||
+        paths.script(QStringLiteral("cgplay/export/compare_engine.py")).isEmpty()) {
+        s_lastExportError = QObject::tr("A/B 导出组件不完整，请修复导出脚本和 Python 组件。");
+        return false;
+    }
+    const QString output = job.value(QStringLiteral("output")).toObject().value(QStringLiteral("path")).toString();
+    if (output.trimmed().isEmpty()) {
+        s_lastExportError = QObject::tr("请选择 A/B 视频输出位置。");
+        return false;
+    }
+    QDir outputDirectory(QFileInfo(output).absolutePath());
+    if (!outputDirectory.mkpath(QStringLiteral("."))) {
+        s_lastExportError = QObject::tr("无法创建输出目录。");
+        return false;
+    }
+    // The same-volume supervisor survives the single Python worker until all
+    // file handles are closed, including cancellation/forced process shutdown.
+    QTemporaryDir staging(outputDirectory.filePath(QStringLiteral(".cgplay-compare-job-XXXXXX")));
+    if (!staging.isValid()) {
+        s_lastExportError = QObject::tr("无法创建 A/B 导出暂存目录。");
+        return false;
+    }
+    const QString jobPath = QDir(staging.path()).filePath(QStringLiteral("compare-job.json"));
+    QSaveFile file(jobPath);
+    file.setDirectWriteFallback(false);
+    const QByteArray bytes = QJsonDocument(job).toJson(QJsonDocument::Compact);
+    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
+        s_lastExportError = QObject::tr("无法保存本次 A/B 导出设置。");
+        return false;
+    }
+    QProcess proc;
+    proc.setProcessChannelMode(QProcess::MergedChannels);
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    const QString oldPath = env.value(QStringLiteral("PYTHONPATH"));
+    env.insert(QStringLiteral("PYTHONPATH"), oldPath.isEmpty() ? paths.toolsRoot
+        : paths.toolsRoot + QDir::listSeparator() + oldPath);
+    env.insert(QStringLiteral("PYTHONDONTWRITEBYTECODE"), QStringLiteral("1"));
+    if (!paths.pythonHome.isEmpty()) env.insert(QStringLiteral("PYTHONHOME"), paths.pythonHome);
+    proc.setProcessEnvironment(env);
+    proc.setWorkingDirectory(paths.toolsRoot);
+#ifdef Q_OS_WIN
+    proc.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* arguments) {
+        arguments->flags |= CREATE_NO_WINDOW;
+    });
+#endif
+    proc.start(paths.pythonExecutable, {QStringLiteral("-B"), QStringLiteral("-m"),
+        QStringLiteral("cgplay.export.compare_engine"), QStringLiteral("--job"), jobPath,
+        QStringLiteral("--staging-dir"), staging.path()}, QIODevice::ReadOnly);
+    if (!proc.waitForStarted(15000)) {
+        s_lastExportError = QObject::tr("A/B 导出运行时启动失败。");
+        return false;
+    }
+    return runPythonExport(proc, std::move(progress), cancel);
+}
+
 // Unified export via Python engine
 static bool exportWithPython(const QString& srcMedia, const QString& outVideo,
                                int startFrame, int endFrame, double fps,
                                std::function<void(double)> progress, const std::atomic_bool* cancel,
                               VideoExportCodec codec,
-                              const QString& annoJson = QString())
+                              const QString& annoJson = QString(),
+                              const ComponentRuntimePaths& runtime = {},
+                              std::optional<ColorTransformSnapshot> colorSnapshot = std::nullopt)
 {
     s_lastExportError.clear();
     const QString codecId = videoExportCodecId(codec);
@@ -662,32 +692,12 @@ static bool exportWithPython(const QString& srcMedia, const QString& outVideo,
         s_lastExportError = QObject::tr("批注数据文件不存在，已取消导出以避免生成无批注视频。");
         return false;
     }
-    QString componentError;
-    if (!ComponentManager::instance().ensureComponent(
-            QStringLiteral("python-runtime"),
-            QApplication::activeWindow(),
-            true,
-            &componentError)) {
-        s_lastExportError = componentError.isEmpty()
-            ? QObject::tr("缺少 Python 导出运行时组件。")
-            : componentError;
-        return false;
-    }
-    if (!ComponentManager::instance().ensureComponent(
-            QStringLiteral("tools"),
-            QApplication::activeWindow(),
-            true,
-            &componentError)) {
-        s_lastExportError = componentError.isEmpty()
-            ? QObject::tr("缺少导出脚本组件。")
-            : componentError;
-        return false;
-    }
-
-    QString python = locatePython();
-    QString toolsDir = findToolsDir();
-    const QString appDir = QCoreApplication::applicationDirPath();
-
+    // No GUI/component install is reachable from this worker. Normal UI calls
+    // pass a GUI-prepared snapshot; headless callers may resolve existing files
+    // once, but a missing component always returns an error without prompting.
+    const ComponentRuntimePaths paths = runtime.captured ? runtime : captureComponentRuntimePaths();
+    const QString python = paths.pythonExecutable;
+    const QString toolsDir = paths.toolsRoot;
     if (python.isEmpty()) {
         s_lastExportError = QObject::tr(
             "未找到可用的导出运行时 Python。\n"
@@ -703,6 +713,35 @@ static bool exportWithPython(const QString& srcMedia, const QString& outVideo,
         return false;
     }
 
+    const QFileInfo outputInfo(outVideo);
+    const QString sourceCanonical = QFileInfo(srcMedia).canonicalFilePath();
+    if (!sourceCanonical.isEmpty() && sourceCanonical.compare(outputInfo.canonicalFilePath(), Qt::CaseInsensitive) == 0) {
+        s_lastExportError = QObject::tr("输出不能覆盖源素材，请选择其他文件。");
+        return false;
+    }
+    QDir outputDirectory(outputInfo.absolutePath());
+    if (!outputDirectory.mkpath(QStringLiteral("."))) {
+        s_lastExportError = QObject::tr("无法创建输出目录。");
+        return false;
+    }
+    // This supervisor directory outlives QProcess, including a forced kill;
+    // Python only cleans its own child. The final target is never a temp file.
+    QTemporaryDir staging(outputDirectory.filePath(QStringLiteral(".cgplay-export-job-XXXXXX")));
+    if (!staging.isValid()) {
+        s_lastExportError = QObject::tr("无法创建导出暂存目录。");
+        return false;
+    }
+    QString colorFile;
+    if (colorSnapshot) {
+        colorFile = QDir(staging.path()).filePath(QStringLiteral("color-settings.json"));
+        QSaveFile file(colorFile);
+        file.setDirectWriteFallback(false);
+        const QByteArray bytes = QJsonDocument(colorSnapshot->toJson()).toJson(QJsonDocument::Compact);
+        if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
+            s_lastExportError = QObject::tr("无法保存本次导出颜色设置。");
+            return false;
+        }
+    }
     // Use -m mode for proper package imports (from .models... etc.)
     QProcess proc;
     proc.setProcessChannelMode(QProcess::MergedChannels);
@@ -711,9 +750,7 @@ static bool exportWithPython(const QString& srcMedia, const QString& outVideo,
     env.insert("PYTHONPATH",
                existingPyPath.isEmpty() ? toolsDir
                                         : toolsDir + QDir::listSeparator() + existingPyPath);
-    if (python.startsWith(QDir(appDir).filePath("runtime/python"), Qt::CaseInsensitive)) {
-        env.insert("PYTHONHOME", QFileInfo(python).absolutePath());
-    }
+    if (!paths.pythonHome.isEmpty()) env.insert("PYTHONHOME", paths.pythonHome);
     proc.setProcessEnvironment(env);
     proc.setWorkingDirectory(toolsDir);
 
@@ -721,18 +758,20 @@ static bool exportWithPython(const QString& srcMedia, const QString& outVideo,
         "-m", "cgplay.export.export_engine",
         srcMedia,
         outVideo,
-        QString::number(fps, 'f', 3),
+        QString::number(fps, 'g', 17),
         QString::number(startFrame),
         QString::number(endFrame),
         QStringLiteral("20M"),
         codecId,
         // UI ranges and annotation frames are zero-based timeline positions,
         // even when sequence filenames start at 1001 or another source frame.
-        QStringLiteral("--relative-frames")
+        QStringLiteral("--relative-frames"),
+        QStringLiteral("--staging-dir"), staging.path()
     };
     if (!annoJson.isEmpty()) {
         pyArgs << "--annotations" << annoJson;
     }
+    if (!colorFile.isEmpty()) pyArgs << QStringLiteral("--color-settings") << colorFile;
     proc.start(python, pyArgs, QIODevice::ReadOnly);
 
     if (!proc.waitForStarted(15000)) {
@@ -917,11 +956,13 @@ bool ReviewExport::exportVideoClean(const QString& srcMedia,
                                      double fps,
                                      VideoExportCodec codec,
                                      std::function<void(double)> progress,
-                                     const std::atomic_bool* cancel)
+                                     const std::atomic_bool* cancel,
+                                     const ComponentRuntimePaths& runtime,
+                                     std::optional<ColorTransformSnapshot> colorSnapshot)
 {
     if (fps <= 0) fps = detectFps(srcMedia);
     return exportWithPython(srcMedia, outVideo,
-        frameRange.first, frameRange.second, fps, progress, cancel, codec);
+        frameRange.first, frameRange.second, fps, progress, cancel, codec, {}, runtime, std::move(colorSnapshot));
 }
 
 // Helper: draw annotations into a QImage at media resolution
@@ -1069,7 +1110,9 @@ bool ReviewExport::exportVideoAnnotated(const QVector<AnnotationItem>& annotatio
                                  const tl::OCIOOptions& ocio,
                                  VideoExportCodec codec,
                                  std::function<void(double)> progress,
-                                const std::atomic_bool* cancel)
+                                const std::atomic_bool* cancel,
+                                const ComponentRuntimePaths& runtime,
+                                std::optional<ColorTransformSnapshot> colorSnapshot)
 {
     if (fps <= 0) fps = detectFps(srcMedia);
     if (annotations.isEmpty()) {
@@ -1136,8 +1179,20 @@ bool ReviewExport::exportVideoAnnotated(const QVector<AnnotationItem>& annotatio
             return false;
         }
     }
+    if (!colorSnapshot && ocio.enabled) {
+        ColorTransformSnapshot legacy;
+        legacy.enabled = true;
+        legacy.configPath = QString::fromStdString(ocio.fileName);
+        legacy.input = QString::fromStdString(ocio.input);
+        legacy.display = QString::fromStdString(ocio.display);
+        legacy.view = QString::fromStdString(ocio.view);
+#if CGPLAY_HAS_TLRENDER
+        legacy.look = QString::fromStdString(ocio.look);
+#endif
+        colorSnapshot = std::move(legacy);
+    }
     const bool success = exportWithPython(srcMedia, outVideo,
-        frameRange.first, frameRange.second, fps, progress, cancel, codec, annoJson);
+        frameRange.first, frameRange.second, fps, progress, cancel, codec, annoJson, runtime, std::move(colorSnapshot));
     return success;
 }
 

@@ -11,7 +11,7 @@ class MainWindowAutomationSplitContracts(unittest.TestCase):
     def test_translation_units_stay_below_owner_limit(self):
         sources = sorted(APP_DIR.glob("MainWindowAutomation*.cpp"))
         self.assertEqual(
-            ["MainWindowAutomation.cpp", "MainWindowAutomationCoverage.cpp", "MainWindowAutomationFullscreen.cpp", "MainWindowAutomationMedia.cpp", "MainWindowAutomationSettings.cpp", "MainWindowAutomationState.cpp", "MainWindowAutomationSubtitles.cpp"],
+            ["MainWindowAutomation.cpp", "MainWindowAutomationCache.cpp", "MainWindowAutomationCompareExport.cpp", "MainWindowAutomationCoverage.cpp", "MainWindowAutomationFullscreen.cpp", "MainWindowAutomationMedia.cpp", "MainWindowAutomationRecording.cpp", "MainWindowAutomationSession.cpp", "MainWindowAutomationSettings.cpp", "MainWindowAutomationState.cpp", "MainWindowAutomationSubtitles.cpp"],
             [source.name for source in sources],
         )
         for source in sources:
@@ -26,6 +26,10 @@ class MainWindowAutomationSplitContracts(unittest.TestCase):
         expected_owners = {
             "captureRuntimeAnnotationState": "MainWindowAutomation.cpp",
             "runPlayerSmokeChecks": "MainWindowAutomation.cpp",
+            "runCompareExportSmokeChecks": "MainWindowAutomationCompareExport.cpp",
+            "runRecordingSmokeChecks": "MainWindowAutomationRecording.cpp",
+            "_runCacheRuntimeSmokeChecks": "MainWindowAutomationCache.cpp",
+            "_runSessionRestoreSmokeChecks": "MainWindowAutomationSession.cpp",
             "_automationCoverage": "MainWindowAutomationCoverage.cpp",
             "_runMediaStateSmokeChecks": "MainWindowAutomationState.cpp",
             "_runFullscreenSmokeChecks": "MainWindowAutomationFullscreen.cpp",
@@ -77,8 +81,12 @@ class MainWindowAutomationSplitContracts(unittest.TestCase):
         self.assertIsNotNone(source_list)
         for source in (
             "ui/app/MainWindowAutomation.cpp",
+            "ui/app/MainWindowAutomationCache.cpp",
+            "ui/app/MainWindowAutomationCompareExport.cpp",
             "ui/app/MainWindowAutomationFullscreen.cpp",
             "ui/app/MainWindowAutomationMedia.cpp",
+            "ui/app/MainWindowAutomationRecording.cpp",
+            "ui/app/MainWindowAutomationSession.cpp",
             "ui/app/MainWindowAutomationCoverage.cpp",
             "ui/app/MainWindowAutomationState.cpp",
             "ui/app/MainWindowAutomationSettings.cpp",

@@ -1,147 +1,43 @@
-# CGPlay Installer Build
+# CGPlay installer build
 
-## Goal
-
-This flow builds the official CGPlay installer from a staged app directory whose layout matches the runtime directory that already passes `--check-components`.
-
-Target install layout:
+Use the reviewed source and qualified Release runtime described in `OFFICIAL_BUILD.md`. Source checkout alone is not a ready-to-run installer. The full package contains player/QuickLook/plugins/Qt, Python export/ASR, FFmpeg CLI, Codex and the private recorder.
 
 ```text
 CGPlay/
-├── CGPlay.exe
-├── CGPlayQuickLook.exe
-├── plugins/
-├── runtime/
-│   └── python/
-├── tools/
-│   └── cgplay/
-├── resources/
-├── presets/
-├── translations/
-└── components/
+  CGPlay.exe, CGPlayQuickLook.exe, ffmpeg.exe, ffprobe.exe, Qt/plugins
+  runtime/python/        # retain all package metadata and private DLLs
+  runtime/codex/         # original license retained
+  runtime/recorder/      # helper, DLL/plugins/data, runtime-manifest.json
+  tools/cgplay/          # export, AB compare, recording finalizer, AI
+  resources/, presets/, translations/, components/
+  LICENSE.txt            # GPLv3
+  licenses/              # current notices, source index/provenance, third_party/
 ```
 
-## Files
+Build the matched Release applications/plugins/thumbnail provider and recorder first. The driver does not download missing SDKs. Pass selected runtime paths explicitly. Defaults derive from script/project directories. Python, recorder and FFmpeg defaults may be provided through `CGPLAY_PYTHON_RUNTIME_DIR`, `CGPLAY_RECORDING_RUNTIME_DIR` and `CGPLAY_FFMPEG_BIN_DIR`; explicit parameters take priority. Use the real E-drive project, not its compatibility junction.
 
-- Primary installer script: `scripts/installer/CGPlay.iss`
-- NSIS fallback script: `installer/CGPlay_Installer.nsi`
-- Build entrypoint: `build_installer.bat`
-- Staging + compiler driver: `tools/package_installer.ps1`
-
-## Installer selection
-
-Priority order:
-
-1. Inno Setup 6
-2. NSIS
-
-`build_installer.bat` and `tools/package_installer.ps1` use `Inno Setup` when `ISCC.exe` is installed. If Inno is not available, the flow falls back to `makensis.exe`.
-
-## Requirements
-
-Before building the installer:
-
-1. Configure/build with the official presets so both Release executables exist and tlRender is enabled.
-2. Supply a complete Python runtime with `-PythonRuntime` or `CGPLAY_PYTHON_RUNTIME` if it is not already in the Release directory.
-3. Supply the directory containing `ffmpeg.exe` and `ffprobe.exe` with `-FfmpegBinDir` or `CGPLAY_FFMPEG_BIN_DIR` if they are not already in Release. Missing inputs fail before version changes or staging.
-4. Complete the binary distribution checks in `COMMERCIAL_RELEASE_CHECKLIST.md` (historical filename). This source-only publication does not include or approve an installer.
-
-`-ProjectRoot` defaults to this checkout. `-ReleaseDir` and `-CodexRuntime`
-default to its `build_win_full/bin/Release` and `build_win_full/runtime/codex`
-directories; explicit parameters override those locations.
-
-Validate the tree before packaging:
-
-~~~powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/validate_official_build_config.ps1 -RequireBuiltApps
-~~~
-
-## Build commands
-
-Default official build:
-
-```bat
-build_installer.bat
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package_installer.ps1 -ProjectRoot <project> -ReleaseDir <verified-release> -PythonRuntime <verified-python> -CodexRuntime <codex-runtime> -RecordingRuntime <verified-recorder> -FfmpegBinDir <verified-ffmpeg-cli> -PackageMode full -Version 1.0.8
 ```
 
-Explicitly request the full package with automatic installer selection:
+`-Version` selects the already-built version without an incidental bump. The driver verifies application versions and the Release/tlRender/x64 build, stages under `build_win_full/package/full/CGPlay`, preserves complete runtime subtrees and license metadata, requires recorder/compare/finalizer files, validates payload/component/source material, runs the staged Python import smoke, and compiles with Inno Setup or NSIS fallback. Reports remain under `tests/artifacts/`. Recursive cleanup is limited to staging children after checking actual filesystem location and rejecting reparse ancestors.
 
-```bat
-build_installer.bat full auto
+Expected installer: `build_win_full/installer/full/CGPlay_Setup_1.0.8_full.exe`. Optional lite retains its own `_lite.exe` name and is never copied over the full download.
+
+Assemble the reviewed public application snapshot and checksum-fixed dependency source ZIP using `DEPENDENCY_SOURCES_1.0.8.md`. Do not include models, test environments, credentials or private artifacts. Required source/script gaps must be closed or the corresponding binary component replaced/removed before release.
+
+After full staging passes, build the five components:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/build_release_components.ps1 -ProjectRoot <project> -PackageRoot <full-stage> -OutputDir <release-dir> -Version 1.0.8
 ```
 
-Force Inno Setup:
+This creates `core`, `ffmpeg`, `python-runtime`, `tools` and `recording-runtime` archives with hashes and version-pinned GitHub URLs. Every component includes notices. Tools install `cgplay/` directly under `tools/`, without `tools/tools/`. Existing source/installers are preserved; only a fresh owned work directory is cleaned.
 
-```bat
-build_installer.bat full inno
+Review the upload plan without contacting GitHub:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/publish_github_release.ps1 -ProjectRoot <project> -ReleaseDir <release-dir> -InstallerRoot <installer-root> -Version 1.0.8 -DryRun
 ```
 
-Force NSIS fallback:
-
-```bat
-build_installer.bat full nsis
-```
-
-## What the build does
-
-`tools/package_installer.ps1` performs these steps:
-
-1. Validates the official Release/tlRender/x64 build before clearing staging
-2. Creates a clean staging directory at `build_win_full/package/full/CGPlay`
-3. Copies the validated `Release` runtime payload into staging
-3. Ensures staging contains:
-   - `CGPlay.exe`
-   - `plugins/`
-   - `runtime/python/`
-   - `tools/cgplay/`
-   - `resources/`
-   - `presets/`
-   - `translations/`
-   - bundled Qt DLLs and plugin folders
-   - bundled VC++ runtime DLLs
-5. Runs tools/validate_package_payload.ps1 and fails if either executable,
-   required application plugins, Python, FFmpeg, Qt DLLs, or qwindows.dll
-   is missing or empty
-6. Validates the staged component manifest
-7. Runs a Python runtime smoke import for the full package
-8. Compiles the installer with Inno Setup or NSIS
-
-The preflight reports are written under `tests/artifacts/productization_top10_20260710`.
-
-The strict validator can also be run directly against a Release or staged tree:
-
-~~~powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/validate_package_payload.ps1 -AppRoot build_win_full\bin\Release -PackageMode full
-~~~
-
-## Output locations
-
-Staging directory:
-
-```text
-build_win_full/package/full/CGPlay
-```
-
-Installer output:
-
-```text
-build_win_full/installer/full
-```
-
-Expected artifact names:
-
-- `CGPlay_Setup_<version>_full.exe`
-- `CGPlay_Setup_<version>_lite.exe` when building the legacy lite mode
-
-## Notes
-
-- The official package is the `full` package.
-- The staged package must contain the root `LICENSE.txt` (CGPlay GPLv3 license),
-  `licenses/THIRD_PARTY_NOTICES.txt`, `licenses/FFMPEG_SOURCE_OFFER.txt`, and
-  `licenses/third_party/` before distribution. Both installers display the GPLv3
-  license; the former draft commercial EULA is not a term of this release.
-- `tools/validate_commercial_release.ps1` retains its historical name. It checks
-  basic material presence and the standalone FFmpeg license report; a pass does
-  not verify corresponding-source completeness or approve binary publication.
-- The installer defaults to a per-user writable install directory so CGPlay component download and update flows can write into the install tree without requiring admin rights.
-- The staged package intentionally creates `presets/`, `translations/`, and `components/` even when they are empty so the installed layout stays stable.
+The real upload requires the genuine full installer, optional separately named lite installer, all five component archives, manifest/hash, current notes, source ZIP/hash and successful source integrity validation. Each asset must fit GitHub's2GiB limit. DryRun checks plan/file presence only; full source integrity is checked before any real GitHub mutation. Packaging success does not prove visual/hardware behavior or independent clean-machine reconstruction.

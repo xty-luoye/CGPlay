@@ -1,5 +1,8 @@
 #include "ApplicationInternal.h"
+#include <QPair>
+#include "annotation/VideoExportTask.h"
 #include "common/jobs/JobSystem.h"
+#include "services/recording/RecordingService.h"
 #include <cstdio>
 
 namespace cgplay {
@@ -796,7 +799,18 @@ void MainWindow::_setupMenuBar()
     });
 
     exportMenu->addSeparator();
+    auto* compareExportAction = exportMenu->addAction(QStringLiteral("导出 A/B 对比视频…"), this, [this] {
+        _executeCommandId(QStringLiteral("export.compareVideo"));
+    });
+    compareExportAction->setObjectName(QStringLiteral("CompareExportAction"));
+    compareExportAction->setProperty("commandId", QStringLiteral("export.compareVideo"));
+    connect(exportMenu, &QMenu::aboutToShow, this, [this, compareExportAction] {
+        compareExportAction->setEnabled(_p->playbackCtrl && _p->playbackCtrl->isValid() &&
+            _p->playbackCtrl->hasCompare() && !property("cgplay.compareExportBusy").toBool() &&
+            !isVideoExportTaskRunning(this));
+    });
     auto* exportVideoAction = exportMenu->addAction(QStringLiteral("导出视频..."), this, [this] {
+        if (isVideoExportTaskRunning(this)) return;
         if (_p->currentPath.isEmpty()) {
             QMessageBox::warning(this, QStringLiteral("导出视频"), QStringLiteral("请先打开一个媒体文件。"));
             return;
@@ -876,85 +890,61 @@ void MainWindow::_setupMenuBar()
         if (firstFrame > lastFrame) {
             std::swap(firstFrame, lastFrame);
         }
+        const QString sourcePath = _p->currentPath;
+        const auto colorSnapshot = _p->ocioManager
+            ? _p->ocioManager->exportColorSnapshot() : ColorTransformSnapshot{};
+        ComponentRuntimePaths exportRuntime;
+        QString runtimeError;
+        if (!ReviewExport::prepareVideoExportRuntime(this, &exportRuntime, &runtimeError)) {
+            QMessageBox::warning(this, QStringLiteral("导出组件"), runtimeError);
+            return;
+        }
         CGPLAY_LOG().exportStarted("clean", outPath, firstFrame, lastFrame);
 
-        auto* progressDlg = new QProgressDialog(
-            QStringLiteral("正在导出视频..."),
-            QStringLiteral("取消"),
-            0,
-            100,
-            this);
-        progressDlg->setWindowModality(Qt::WindowModal);
-        progressDlg->setMinimumDuration(0);
-        progressDlg->show();
-
-        std::atomic_bool cancelled{false};
-        auto future = QtConcurrent::run([&, outPath, firstFrame, lastFrame, fps, codec]() -> bool {
-            return ReviewExport::exportVideoClean(
-                _p->currentPath,
-                outPath,
-                { firstFrame, lastFrame },
-                fps,
-                codec,
-                [progressDlg](double pct) {
-                    QMetaObject::invokeMethod(
-                        progressDlg,
-                        "setValue",
-                        Qt::QueuedConnection,
-                        Q_ARG(int, static_cast<int>(pct * 100)));
-                },
-                &cancelled);
+        startVideoExportTask(this, QStringLiteral("正在导出视频..."),
+            [sourcePath, exportRuntime, outPath, firstFrame, lastFrame, fps, codec, colorSnapshot](const std::atomic_bool* cancel, const std::function<void(double)>& progress) {
+                const bool succeeded = ReviewExport::exportVideoClean(
+                    sourcePath, outPath, { firstFrame, lastFrame }, fps, codec, progress, cancel, exportRuntime, colorSnapshot);
+                return qMakePair(succeeded, succeeded ? QString{} : ReviewExport::lastError());
+            },
+            [this, outPath](const VideoExportTaskResult& exportResult, bool wasCanceled) {
+                const bool success = exportResult.first;
+                if (success) {
+                    QMessageBox::information(
+                        this,
+                        QStringLiteral("导出"),
+                        QStringLiteral("视频导出成功。\n%1").arg(outPath));
+                    CGPLAY_LOG().exportFinished(true);
+                } else if (!wasCanceled) {
+                    QString detail = exportResult.second;
+                    if (detail.isEmpty()) {
+                        detail = QStringLiteral("没有可用的详细错误信息。");
+                    }
+                    if (detail.length() > 800) {
+                        detail = QStringLiteral("...") + detail.right(800);
+                    }
+                    QString message = QStringLiteral("视频导出失败。\n\n错误详情：\n%1").arg(detail);
+                    const bool missingDependency = detail.contains(QStringLiteral("Missing dependencies"), Qt::CaseInsensitive)
+                        || detail.contains(QStringLiteral("NOT INSTALLED"), Qt::CaseInsensitive)
+                        || detail.contains(QStringLiteral("No module named"), Qt::CaseInsensitive);
+                    if (missingDependency) {
+                        message += QStringLiteral("\n\n请修复导出运行组件，或重新安装完整版。");
+                    }
+                    message += QStringLiteral("\n\n详细日志请查看输出目录中的独立错误日志。");
+                    QMessageBox::warning(
+                        this,
+                        QStringLiteral("导出"),
+                        message);
+                    CGPLAY_LOG().exportFinished(false);
+                } else {
+                    CGPLAY_LOG().exportCancelled();
+                }
         });
-
-        QFutureWatcher<bool> watcher;
-        QEventLoop exportLoop;
-        connect(progressDlg, &QProgressDialog::canceled, this, [&cancelled]() {
-            cancelled.store(true, std::memory_order_relaxed);
-        });
-        connect(&watcher, &QFutureWatcher<bool>::finished, &exportLoop, &QEventLoop::quit);
-        watcher.setFuture(future);
-        if (!future.isFinished()) {
-            exportLoop.exec();
-        }
-
-        const bool success = watcher.result();
-        progressDlg->close();
-        progressDlg->deleteLater();
-
-        if (success) {
-            QMessageBox::information(
-                this,
-                QStringLiteral("导出"),
-                QStringLiteral("视频导出成功。\n%1").arg(outPath));
-            CGPLAY_LOG().exportFinished(true);
-        } else if (!cancelled.load(std::memory_order_relaxed)) {
-            QString detail = ReviewExport::lastError();
-            if (detail.isEmpty()) {
-                detail = QStringLiteral("没有可用的详细错误信息。");
-            }
-            if (detail.length() > 800) {
-                detail = detail.left(800) + QStringLiteral("...");
-            }
-            QString message = QStringLiteral("视频导出失败。\n\n错误详情：\n%1").arg(detail);
-            const bool missingDependency = detail.contains(QStringLiteral("Missing dependencies"), Qt::CaseInsensitive)
-                || detail.contains(QStringLiteral("NOT INSTALLED"), Qt::CaseInsensitive)
-                || detail.contains(QStringLiteral("No module named"), Qt::CaseInsensitive);
-            if (missingDependency) {
-                message += QStringLiteral("\n\n依赖：pip install OpenImageIO av numpy pillow");
-            }
-            message += QStringLiteral("\n\n详细日志请查看输出目录中的 export_error.log。");
-            QMessageBox::warning(
-                this,
-                QStringLiteral("导出"),
-                message);
-            CGPLAY_LOG().exportFinished(false);
-        } else {
-            CGPLAY_LOG().exportCancelled();
-        }
     });
     exportVideoAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
 
     exportMenu->addAction(QStringLiteral("导出带批注视频..."), this, [this] {
+        if (isVideoExportTaskRunning(this)) return;
         auto* annotationService = resolveAnnotationService(_p->annotationService, _annoMgr.get());
         if (!annotationService || annotationService->count() == 0) {
             QMessageBox::information(this, QStringLiteral("导出"), QStringLiteral("当前没有可导出的批注。"));
@@ -1038,85 +1028,60 @@ void MainWindow::_setupMenuBar()
             std::swap(firstFrame, lastFrame);
         }
         const auto ocioOpts = _p->ocioManager ? _p->ocioManager->currentOptions() : tl::OCIOOptions{};
+        const QString sourcePath = _p->currentPath;
+        const auto colorSnapshot = _p->ocioManager
+            ? _p->ocioManager->exportColorSnapshot() : ColorTransformSnapshot{};
+        const auto annotationsSnapshot = annotationService ? annotationService->annotations() : QVector<AnnotationItem>{};
+        const int mediaWidthSnapshot = _p->viewer->mediaW();
+        const int mediaHeightSnapshot = _p->viewer->mediaH();
+        ComponentRuntimePaths exportRuntime;
+        QString runtimeError;
+        if (!ReviewExport::prepareVideoExportRuntime(this, &exportRuntime, &runtimeError)) {
+            QMessageBox::warning(this, QStringLiteral("导出组件"), runtimeError);
+            return;
+        }
         CGPLAY_LOG().exportStarted("annotated", outPath, firstFrame, lastFrame);
 
-        auto* progressDlg = new QProgressDialog(
-            QStringLiteral("正在导出带批注视频..."),
-            QStringLiteral("取消"),
-            0,
-            100,
-            this);
-        progressDlg->setWindowModality(Qt::WindowModal);
-        progressDlg->setMinimumDuration(0);
-        progressDlg->show();
-
-        std::atomic_bool cancelled{false};
-        auto future = QtConcurrent::run([&, outPath, firstFrame, lastFrame, fps, ocioOpts, codec]() -> bool {
-            return ReviewExport::exportVideoAnnotated(
-                annotationService ? annotationService->annotations() : QVector<AnnotationItem>{},
-                _p->currentPath,
-                outPath,
-                _p->viewer->mediaW(),
-                _p->viewer->mediaH(),
-                { firstFrame, lastFrame },
-                fps,
-                ocioOpts,
-                codec,
-                [progressDlg](double pct) {
-                    QMetaObject::invokeMethod(
-                        progressDlg,
-                        "setValue",
-                        Qt::QueuedConnection,
-                        Q_ARG(int, static_cast<int>(pct * 100)));
-                },
-                &cancelled);
+        startVideoExportTask(this, QStringLiteral("正在导出带批注视频..."),
+            [sourcePath, exportRuntime, outPath, firstFrame, lastFrame, fps, codec, colorSnapshot, annotationsSnapshot, mediaWidthSnapshot, mediaHeightSnapshot, ocioOpts](const std::atomic_bool* cancel, const std::function<void(double)>& progress) {
+                const bool succeeded = ReviewExport::exportVideoAnnotated(
+                    annotationsSnapshot, sourcePath, outPath, mediaWidthSnapshot, mediaHeightSnapshot,
+                { firstFrame, lastFrame }, fps, ocioOpts, codec, progress, cancel, exportRuntime, colorSnapshot);
+                return qMakePair(succeeded, succeeded ? QString{} : ReviewExport::lastError());
+            },
+            [this, outPath](const VideoExportTaskResult& exportResult, bool wasCanceled) {
+                const bool success = exportResult.first;
+                if (success) {
+                    QMessageBox::information(
+                        this,
+                        QStringLiteral("导出"),
+                        QStringLiteral("视频导出成功。\n%1").arg(outPath));
+                    CGPLAY_LOG().exportFinished(true);
+                } else if (!wasCanceled) {
+                    QString detail = exportResult.second;
+                    if (detail.isEmpty()) {
+                        detail = QStringLiteral("没有可用的详细错误信息。");
+                    }
+                    if (detail.length() > 800) {
+                        detail = QStringLiteral("...") + detail.right(800);
+                    }
+                    QString message = QStringLiteral("视频导出失败。\n\n错误详情：\n%1").arg(detail);
+                    const bool missingDependency = detail.contains(QStringLiteral("Missing dependencies"), Qt::CaseInsensitive)
+                        || detail.contains(QStringLiteral("NOT INSTALLED"), Qt::CaseInsensitive)
+                        || detail.contains(QStringLiteral("No module named"), Qt::CaseInsensitive);
+                    if (missingDependency) {
+                        message += QStringLiteral("\n\n请修复导出运行组件，或重新安装完整版。");
+                    }
+                    message += QStringLiteral("\n\n详细日志请查看输出目录中的独立错误日志。");
+                    QMessageBox::warning(
+                        this,
+                        QStringLiteral("导出"),
+                        message);
+                    CGPLAY_LOG().exportFinished(false);
+                } else {
+                    CGPLAY_LOG().exportCancelled();
+                }
         });
-
-        QFutureWatcher<bool> watcher;
-        QEventLoop exportLoop;
-        connect(progressDlg, &QProgressDialog::canceled, this, [&cancelled]() {
-            cancelled.store(true, std::memory_order_relaxed);
-        });
-        connect(&watcher, &QFutureWatcher<bool>::finished, &exportLoop, &QEventLoop::quit);
-        watcher.setFuture(future);
-        if (!future.isFinished()) {
-            exportLoop.exec();
-        }
-
-        const bool success = watcher.result();
-        progressDlg->close();
-        progressDlg->deleteLater();
-
-        if (success) {
-            QMessageBox::information(
-                this,
-                QStringLiteral("导出"),
-                QStringLiteral("视频导出成功。\n%1").arg(outPath));
-            CGPLAY_LOG().exportFinished(true);
-        } else if (!cancelled.load(std::memory_order_relaxed)) {
-            QString detail = ReviewExport::lastError();
-            if (detail.isEmpty()) {
-                detail = QStringLiteral("没有可用的详细错误信息。");
-            }
-            if (detail.length() > 800) {
-                detail = detail.left(800) + QStringLiteral("...");
-            }
-            QString message = QStringLiteral("视频导出失败。\n\n错误详情：\n%1").arg(detail);
-            const bool missingDependency = detail.contains(QStringLiteral("Missing dependencies"), Qt::CaseInsensitive)
-                || detail.contains(QStringLiteral("NOT INSTALLED"), Qt::CaseInsensitive)
-                || detail.contains(QStringLiteral("No module named"), Qt::CaseInsensitive);
-            if (missingDependency) {
-                message += QStringLiteral("\n\n依赖：pip install OpenImageIO av numpy pillow");
-            }
-            message += QStringLiteral("\n\n详细日志请查看输出目录中的 export_error.log。");
-            QMessageBox::warning(
-                this,
-                QStringLiteral("导出"),
-                message);
-            CGPLAY_LOG().exportFinished(false);
-        } else {
-            CGPLAY_LOG().exportCancelled();
-        }
     })->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E));
 
     fileMenu->addSeparator();
@@ -1241,6 +1206,10 @@ void MainWindow::_setupMenuBar()
     });
 
     auto* windowMenu = mb->addMenu(QStringLiteral("窗口"));
+    auto* recordingAction = windowMenu->addAction(QStringLiteral("录屏…"), this, [this] {
+        _executeCommandId(QStringLiteral("recording.open"));
+    });
+    tagCommandAction(recordingAction, QStringLiteral("recording.open"));
     windowMenu->addAction(QStringLiteral("新建窗口"), this, [this] {
         if (auto* a = qobject_cast<Application*>(qApp)) {
             a->openNewWindow();
@@ -1619,6 +1588,12 @@ void MainWindow::_loadHostExtensionContributions()
         bool captured = false;
         const bool invoked = QMetaObject::invokeMethod(workspace, "captureBrowserSnapshot", Qt::DirectConnection, Q_RETURN_ARG(bool, captured));
         return invoked && captured;
+    });
+    addBuiltIn({QStringLiteral("export.compareVideo"), QStringLiteral("导出 A/B 对比视频")}, [this](bool) {
+        return _exportCompareVideo();
+    });
+    addBuiltIn({QStringLiteral("recording.open"), QStringLiteral("录屏")}, [this](bool) {
+        return _showRecordingPanel();
     });
     addBuiltIn({QStringLiteral("export.render"), QStringLiteral("渲染当前范围")}, [this](bool) {
         if (_p->currentPath.isEmpty() || !_p->playbackCtrl || !_p->playbackCtrl->isValid()) {
@@ -2166,7 +2141,9 @@ void MainWindow::_setupStatusBar()
     connect(_p->lblUpdate, &QLabel::linkActivated, this, [this]() { _checkForUpdates(true, false); });
     _p->lblView = mk(QStringLiteral("View: %1").arg(
         _p->ocioManager ? _p->ocioManager->currentView() : QStringLiteral("sRGB")), kText);
-    auto* lblMeter = mk(QStringLiteral("L |▆▆| R |▆▆|   -20.5 LUFS"), "#7bdc8b");
+    auto* lblMeter = mk(QStringLiteral("响度：未测量"), kSec);
+    lblMeter->setObjectName(QStringLiteral("audioLoudnessStatus"));
+    lblMeter->setToolTip(QStringLiteral("当前没有接入实时响度分析；此处不代表测得的音量或 LUFS。"));
     lblMeter->setMinimumWidth(145);
     lblMeter->setMaximumWidth(190);
 
@@ -2449,6 +2426,13 @@ void MainWindow::_offerDownloadedUpdate(UpdateInstallResult installer)
     prompt.setDetailedText(QStringLiteral("安装包位置：%1").arg(installer.installerPath));
     prompt.exec();
     if (prompt.clickedButton() != install || _p->updateClosing) return;
+    // This action exits the entire application, including other player windows.
+    // Recheck after the modal prompt before starting the installer exit launcher.
+    if (RecordingService::hasActiveSessions()) {
+        QMessageBox::information(this, QStringLiteral("请先保存录屏"),
+            QStringLiteral("还有窗口正在录屏或保存录像。请先停止录屏并等待保存完成，再安装已下载的更新。"));
+        return;
+    }
     QString error;
     if (!UpdateService::launchInstaller(installer, &error)) {
         QMessageBox::warning(this, QStringLiteral("启动安装失败"), error);

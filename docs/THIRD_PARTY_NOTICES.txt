@@ -1,79 +1,61 @@
-CGPLAY THIRD-PARTY NOTICES
-==========================
+CGPlay 1.0.8 — Third-party notices
 
-Copyright (c) 2026 CGPlay Team.
-This CGPlay source release is distributed under GNU General Public License
-version 3 only (SPDX-License-Identifier: GPL-3.0-only); the full text is in the
-root LICENSE.txt. Third-party components remain under the terms stated below.
+CGPlay application source is GPL version 3 (see ../LICENSE.txt). Commercial use
+is permitted under that license. The supplemental commercial-services terms
+do not restrict GPL rights. Historical MIT grants are preserved separately in
+third_party/LICENSE_CGPlay_legacy_MIT.txt.
 
-The local development tree included an MIT license text for CGPlay. That text
-is preserved in docs/third_party_licenses/LICENSE_CGPlay_legacy_MIT.txt.
-Any rights previously granted under MIT remain valid; this does not assert
-that every older binary release was distributed under MIT. MIT-covered code
-can be included in this GPLv3 release subject to preserving its copyright
-and permission notices.
-The GPLv3 selection for this release does not claim new ownership of upstream
-or other contributors' code.
-Third-party code, assets, and runtime dependencies retain their own licenses.
-The root license does not replace third-party licenses or claim their ownership.
-This source publication does not include an installer or its dependency runtime.
+Keep all third_party notices and original Python *.dist-info license metadata
+with installers and downloadable components. DEPENDENCY_SOURCES_1.0.8.md and
+DEPENDENCY_PROVENANCE_1.0.8.json identify source archives, hashes, complete
+patches, build settings and exact remaining source/reconstruction requirements.
 
-Source dependencies
--------------------
-Keep the original LICENSE and NOTICE files wherever dependency source is
-redistributed, including nested dependencies. The bundled license texts under
-docs/third_party_licenses are retained; they are not an exhaustive binary audit.
+New or maintained components:
+- Native OpenColorIO2.5.2, OpenEXR3.3.14 and Imath3.2.3: BSD-3-Clause.
+- Native OpenImageIO3.1.18.1 and Python OpenImageIO3.2.1.3: Apache-2.0 plus
+  the complete included THIRD-PARTY notices. The Python wheel embeds EXR3.5.0,
+  Imath3.2.3 and OCIO2.5.1. These are distinct from native OCIO2.5.2 and the
+  private PyOpenColorIO2.5.2 runtime. Do not flatten their DLL directories.
+- PyAV18.1.0 bindings: BSD-3-Clause. FFmpeg and external codecs retain their
+  own licenses; see the separate records and PyAV_VENDOR notices below.
+- CTranslate2 4.8.3 itself: MIT. Its original wheel also includes Intel OpenMP
+  libiomp5md.dll (exact official intel-openmp2025.3.0 byte match) and NVIDIA
+  cudnn64_9.dll9.10.2.21. Their complete vendor license/third-party texts are
+  retained under third_party/1.0.8; these are not covered by CT2's MIT license.
+- Private OBS33.0.0 recorder: OBS GPLv2-or-later plus a GPLv3-or-later FFmpeg
+  build with x264. Retain OBS_COPYING, OBS_GPLv3, OBS_THIRD_PARTY and
+  OBS_SOURCES. OBS runs in its own helper process.
 
-- tlRender and feather-tk: BSD 3-Clause. Retain copyright and disclaimer notices,
-  including for local upstream patches.
-  https://github.com/darbyjohnston/tlRender
-  https://github.com/darbyjohnston/feather-tk
-- OpenTimelineIO: Apache-2.0. Retain its LICENSE.txt and NOTICE.txt.
-  https://github.com/AcademySoftwareFoundation/OpenTimelineIO
-- OpenColorIO and OpenEXR: BSD 3-Clause.
-  https://github.com/AcademySoftwareFoundation/OpenColorIO
-  https://github.com/AcademySoftwareFoundation/openexr
-- OpenImageIO: see the exact upstream license for the version used; the retained
-  LICENSE_OpenImageIO.md is Apache-2.0.
-  https://github.com/AcademySoftwareFoundation/OpenImageIO
-- SDL2: zlib license. yaml-cpp and nlohmann/json: MIT.
-  Preserve their own copyright notices.
-- If Codex source is included, retain its Apache-2.0 LICENSE and NOTICE as well
-  as licenses of its nested components. An optional external Codex runtime or
-  service has its own notices and usage terms.
+Four separate FFmpeg distributions:
+1. Native player DLLs: FFmpeg8.1.1/avcodec62.28.101, vcpkg8.1.1#2, reported
+   LGPL2.1+. Complete matching vcpkg port/patches/ABI/SPDX and source retained.
+2. Standalone CLI: BtbN static GPL win64
+   n8.1.3-24-g92611900bb-20261024. This is the 8.1 maintenance branch, not a
+   bare stable8.1.3 build. Exact build recipe937868360a21d711ec94a33f5591d345ad9b7754,
+   actual FFmpeg source and matching official dependency-source cache are
+   retained with complete notices. The prior Gyan binaries are not selected
+   for this release. See BtbN source/runtime notices and provenance.
+3. PyAV18.1 wheel: FFmpeg8.1.2/avcodec62.28.102, reported LGPL3+. Its vendor
+   patch changes FFmpeg's x264/x265 license-selection lists. That banner does
+   not relicense external x264/x265: retain their own original GPL licenses and
+   the complete vendor patch. This is not an all-LGPL payload.
+4. OBS33: FFmpeg8.1.2/avcodec62.28.102, GPL3+, x264r3106; its exact recipe
+   and source pins differ from the PyAV build.
 
-Qt 6.5.3 / Qt WebEngine
------------------------
-The application uses Qt and its WebEngine module. Applicable open-source Qt
-terms include LGPLv3/GPL alternatives depending on the module. Qt WebEngine
-also incorporates Chromium components with their own licenses. A binary
-publisher must retain notices and fulfill the exact source/relinking terms;
-using Qt does not replace the dependency licenses.
-  https://doc.qt.io/qt-6.5/licensing.html
-  https://doc.qt.io/qt-6.5/qtwebengine-licensing.html
+Matched engine components are Qt6.11.3/WebEngine (Qt LGPL/GPL and component
+licenses), tlRender0.27.1/feather-tk0.19.0 (BSD plus included third-party
+notices, including font, GLAD and subprocess notices). Complete original
+Qt sources, source-derived full notices and pinned supplements are retained.
+Other retained components include OTIO0.18, OpenSSL, SDL2,
+Freetype, JPEG/PNG/TIFF, zlib, yaml-cpp and image/compression dependencies.
+Existing full notices remain under third_party. WebEngine/Chromium has
+additional component notices; a few Qt GPL texts do not replace those notices.
 
-FFmpeg: distinct native-library and command-line builds
-------------------------------------------------------
-The inspected local Release avcodec-62.dll identifies LGPL version 2.1 or later.
-Its vcpkg shared-build configuration disables libx264/libx265 and does not enable
-GPL or nonfree options. The standalone ffmpeg.exe/ffprobe.exe in the existing
-full package are a different Gyan 8.1.1 build, reported as GPLv3-or-later with
-GPL features enabled. The application calls the standalone tools through
-processes. These observations do not certify future builds or relicense FFmpeg.
-See FFMPEG_SOURCE_OFFER.txt for provenance and outstanding source verification.
-  https://ffmpeg.org/legal.html
+Python packages retain original metadata and license trees in
+runtime/python/Lib/site-packages. Codex retains LICENSE-OPENAI-CODEX.txt.
+Microsoft runtime components retain their vendor terms.
 
-Other runtime dependencies
---------------------------
-A full binary package may include Python, PyAV, OpenCV, NumPy, Pillow, Torch,
-Faster Whisper, CTranslate2, and native transitive libraries such as FreeType,
-zlib, PNG, JPEG, TIFF, and OpenSSL. Preserve their original license/notice
-metadata and inventory the actual versions. Model weights and sample media
-need their own redistribution rights; a code license does not cover them.
-
-Binary publication
-------------------
-Before attaching installers, verify the exact binary payload, all applicable
-notices, and complete corresponding-source materials together. A document
-presence check or this source-only publication does not establish that the
-previously built installers meet those requirements.
+Source identity, complete corresponding source and independent machine
+reconstruction are separate checks. See the manifest's explicit source gaps
+and action items; do not represent an outstanding required source/script
+as resolved by a disclaimer.

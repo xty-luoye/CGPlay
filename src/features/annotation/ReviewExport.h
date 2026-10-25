@@ -2,12 +2,15 @@
 // CGPlay ReviewExport.h — 批注导出：JSON / HTML / 视频导出 / 视频烧录批注
 
 #include <QString>
+#include "component/ComponentRuntimePaths.h"
 #include <QVector>
 #include <QMap>
 #include <QImage>
 #include <functional>
 #include <atomic>
 #include <utility>
+#include <optional>
+#include "ocio/ColorTransformSnapshot.h"
 
 // OCIO options — use the real tlRender header when available, otherwise stub
 #if __has_include(<tlRender/Timeline/ColorOptions.h>)
@@ -49,6 +52,14 @@ QString videoExportCodecId(VideoExportCodec codec);
 class ReviewExport
 {
 public:
+    static bool prepareVideoExportRuntime(QWidget* parent, ComponentRuntimePaths* runtime, QString* error);
+
+    // The GUI captures the complete A/B state before calling this worker-only API.
+    static bool exportVideoCompare(const QJsonObject& job,
+                                   const ComponentRuntimePaths& runtime,
+                                   std::function<void(double)> progress = {},
+                                   const std::atomic_bool* cancel = nullptr);
+
     // ── JSON 导出 ─────────────────────────────────────────────────────
     static bool exportJson(const QVector<AnnotationItem>& annotations,
                            const QString& filepath);
@@ -78,7 +89,9 @@ public:
                                  double fps = 0,
                                  VideoExportCodec codec = VideoExportCodec::H264,
                                  std::function<void(double)> progress = {},
-                                 const std::atomic_bool* cancel = nullptr);
+                                 const std::atomic_bool* cancel = nullptr,
+                                 const ComponentRuntimePaths& runtime = {},
+                                 std::optional<ColorTransformSnapshot> colorSnapshot = std::nullopt);
 
     // ── 视频烧录批注导出 (需要ffmpeg) ────────────────────────────────
     static bool exportVideoAnnotated(const QVector<AnnotationItem>& annotations,
@@ -90,7 +103,9 @@ public:
                                      const tl::OCIOOptions& ocio = {},
                                      VideoExportCodec codec = VideoExportCodec::H264,
                                      std::function<void(double)> progress = {},
-                                     const std::atomic_bool* cancel = nullptr);
+                                     const std::atomic_bool* cancel = nullptr,
+                                 const ComponentRuntimePaths& runtime = {},
+                                 std::optional<ColorTransformSnapshot> colorSnapshot = std::nullopt);
 
     // ── ffmpeg 管理 ──────────────────────────────────────────────────
     // 查找 ffmpeg: 程序目录 → PATH

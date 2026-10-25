@@ -46,6 +46,8 @@ public:
     const ftk::V2I& viewPos() const;
     double zoom() const;
     bool hasFrameView() const;
+    // GUI-thread value copy for offline export; never exposes the native viewport.
+    QJsonObject exportDisplaySnapshot() const;
 
     // ── Coordinate mapping (image ↔ widget) ────────────────────────────
     QPointF imageToWidget(double ix, double iy, int imgW, int imgH) const;
@@ -85,6 +87,8 @@ Q_SIGNALS:
     void viewportResized();
 
 protected:
+    bool event(QEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void initializeGL() override;
     void resizeGL(int w, int h) override;
     void paintGL() override;
@@ -96,6 +100,11 @@ private:
     void _setGeometry();
     void _emitViewPosAndZoomChangedIfNeeded(const ftk::V2I&, double);
     void _markInteractionActive();
+    bool _displayPollingAllowed() const;
+    void _watchTopLevelWindow();
+    void _queuePresentationRefresh();
+    void _wakePausedFrame(quint64 generation);
+    void _wakeSettingsChange();
     void _refreshTimerInterval(bool pendingSizeUpdate = false);
     int _desiredPlaybackTimerIntervalMs() const;
     void _forceRender(); // 轻微改变 geometry 强制触发 Viewport::doRender

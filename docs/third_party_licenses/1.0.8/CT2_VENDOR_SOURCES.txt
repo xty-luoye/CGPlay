@@ -1,0 +1,151 @@
+{
+  "ct2Commit": "8d91aa08225004755360daa43deb62b35b1ed65d",
+  "sources": [
+    {
+      "id": "cpu_features",
+      "repo": "google/cpu_features",
+      "commit": "8a494eb1e158ec2050e5f699a504fbc9b896a43b",
+      "tree": "046abfd2832e2a8a8c56d9f38cdbd344ac8e858b",
+      "sourceUrl": "https://codeload.github.com/google/cpu_features/tar.gz/8a494eb1e158ec2050e5f699a504fbc9b896a43b",
+      "archiveBytes": 86019,
+      "sha256": "9b2019dae7608630ab985129a5c3263fc788e4f82e26965a8d8c33b8c035802e",
+      "sourceFiles": 85,
+      "reconstructedTree": "046abfd2832e2a8a8c56d9f38cdbd344ac8e858b",
+      "treeMatches": true,
+      "checkoutNormalizations": [],
+      "unexpandedOptionalGitlinks": []
+    },
+    {
+      "id": "cutlass",
+      "repo": "NVIDIA/cutlass",
+      "commit": "bbe579a9e3beb6ea6626d9227ec32d0dae119a49",
+      "tree": "57525f76de50123ecdc2b1ee90e2fb9147ac2ae4",
+      "sourceUrl": "https://codeload.github.com/NVIDIA/cutlass/tar.gz/bbe579a9e3beb6ea6626d9227ec32d0dae119a49",
+      "archiveBytes": 23365631,
+      "sha256": "9fa1da6be3d2d9207b801d5768cbced59c202444a8c84b82325b0670f47f9d48",
+      "sourceFiles": 5661,
+      "reconstructedTree": "57525f76de50123ecdc2b1ee90e2fb9147ac2ae4",
+      "treeMatches": true,
+      "checkoutNormalizations": [],
+      "unexpandedOptionalGitlinks": []
+    },
+    {
+      "id": "cxxopts",
+      "repo": "jarro2783/cxxopts",
+      "commit": "44380e5a44706ab7347f400698c703eb2a196202",
+      "tree": "c7b65e5a5e878bd7badc41ea30c4f724bd978776",
+      "sourceUrl": "https://codeload.github.com/jarro2783/cxxopts/tar.gz/44380e5a44706ab7347f400698c703eb2a196202",
+      "archiveBytes": 161641,
+      "sha256": "022c823236b96a5136b59eff12e7434cdbbdaab03969a3b71f25ff94e36307e2",
+      "sourceFiles": 35,
+      "reconstructedTree": "c7b65e5a5e878bd7badc41ea30c4f724bd978776",
+      "treeMatches": true,
+      "checkoutNormalizations": [],
+      "unexpandedOptionalGitlinks": []
+    },
+    {
+      "id": "googletest",
+      "repo": "google/googletest",
+      "commit": "f8d7d77c06936315286eb55f8de22cd23c188571",
+      "tree": "747143d14ebee24861e6ec39ac58b482cc5523fd",
+      "sourceUrl": "https://codeload.github.com/google/googletest/tar.gz/f8d7d77c06936315286eb55f8de22cd23c188571",
+      "archiveBytes": 868904,
+      "sha256": "7ff5db23de232a39cbb5c9f5143c355885e30ac596161a6b9fc50c4538bfbf01",
+      "sourceFiles": 245,
+      "reconstructedTree": "747143d14ebee24861e6ec39ac58b482cc5523fd",
+      "treeMatches": true,
+      "checkoutNormalizations": [],
+      "unexpandedOptionalGitlinks": []
+    },
+    {
+      "id": "ruy",
+      "repo": "google/ruy",
+      "commit": "363f252289fb7a1fba1703d99196524698cb884d",
+      "tree": "dcdb59f6c4a987d889361466b38d168fc1c1f2d1",
+      "sourceUrl": "https://codeload.github.com/google/ruy/tar.gz/363f252289fb7a1fba1703d99196524698cb884d",
+      "archiveBytes": 282512,
+      "sha256": "3c2181c9134896784d5d0494e2638c43127de4da2ddf81b3a64c06311fb17432",
+      "sourceFiles": 143,
+      "reconstructedTree": "dcdb59f6c4a987d889361466b38d168fc1c1f2d1",
+      "treeMatches": true,
+      "checkoutNormalizations": [],
+      "unexpandedOptionalGitlinks": [
+        {
+          "path": "third_party/cpuinfo",
+          "commit": "082deffc80ce517f81dc2f3aebe6ba671fcd09c9",
+          "expanded": false,
+          "scope": "Optional Ruy backend is disabled in the preserved Windows wheel recipe; nested repositories not linked."
+        },
+        {
+          "path": "third_party/googletest",
+          "commit": "6c58c11d5497b6ee1df3cb400ce30deb72fc28c0",
+          "expanded": false,
+          "scope": "Optional Ruy backend is disabled in the preserved Windows wheel recipe; nested repositories not linked."
+        }
+      ]
+    },
+    {
+      "id": "spdlog",
+      "repo": "gabime/spdlog",
+      "commit": "76fb40d95455f249bd70824ecfcae7a8f0930fa3",
+      "tree": "ae17110dd0d60a9e5ad605fe044a3fd4aa749e02",
+      "sourceUrl": "https://codeload.github.com/gabime/spdlog/tar.gz/76fb40d95455f249bd70824ecfcae7a8f0930fa3",
+      "archiveBytes": 368822,
+      "sha256": "4530d53b86d45228a5b8982a8f4fe7d95d3ba8e1944858d3f663732c7e949cb7",
+      "sourceFiles": 163,
+      "reconstructedTree": "ae17110dd0d60a9e5ad605fe044a3fd4aa749e02",
+      "treeMatches": true,
+      "checkoutNormalizations": [],
+      "unexpandedOptionalGitlinks": []
+    },
+    {
+      "id": "cccl",
+      "repo": "NVIDIA/cccl",
+      "commit": "b5fe509fd11a925f90d6495176707cc1184eed9d",
+      "tree": "8c5d1cadefefc61f3013deea5c3dd0d99e3c8a34",
+      "sourceUrl": "https://codeload.github.com/NVIDIA/cccl/tar.gz/b5fe509fd11a925f90d6495176707cc1184eed9d",
+      "archiveBytes": 4079012,
+      "sha256": "668fe16c9ac38924923495dedab104d45316699e039f7afb964204615901fa19",
+      "sourceFiles": 5295,
+      "reconstructedTree": "8c5d1cadefefc61f3013deea5c3dd0d99e3c8a34",
+      "treeMatches": true,
+      "checkoutNormalizations": [],
+      "unexpandedOptionalGitlinks": []
+    },
+    {
+      "id": "onednn",
+      "repo": "uxlfoundation/oneDNN",
+      "commit": "64f6bcbcbab628e96f33a62c3e975f8535a7bde4",
+      "tree": "a87ec270d00acb2cf40a5fd08df924bca2b0f592",
+      "sourceUrl": "https://codeload.github.com/uxlfoundation/oneDNN/tar.gz/64f6bcbcbab628e96f33a62c3e975f8535a7bde4",
+      "archiveBytes": 7572819,
+      "sha256": "ebac5d8a043c75aa6019c7d427b2ba36635b6469a60e304a968b85fc4998162a",
+      "sourceFiles": 3595,
+      "reconstructedTree": "a87ec270d00acb2cf40a5fd08df924bca2b0f592",
+      "treeMatches": true,
+      "checkoutNormalizations": [
+        {
+          "path": "cmake/template.vcxproj.user",
+          "kind": "tracked eol=crlf checkout policy",
+          "archiveGitBlob": "3887e0ec7cdf3d64f20629f2973cf728c0927536",
+          "trackedGitBlob": "68b6c86156399d634b13fd72a7042dbe920d9bb7"
+        }
+      ],
+      "unexpandedOptionalGitlinks": []
+    }
+  ],
+  "mklRedistributableNotices": {
+    "package": "mkl",
+    "version": "2025.3.0",
+    "sourceUrl": "https://files.pythonhosted.org/packages/75/0e/b863a60889643e21d5d8d6b619f913703257878979b1df22d344a56276d0/mkl-2025.3.0-py2.py3-none-win_amd64.whl",
+    "sha256": "2dbf81b016150c2ce418d80707dcce11d0e3c56f20e1d54813174e7665405561",
+    "wheelFullyVerifiedAgainstPyPI": false,
+    "scope": "Complete license entries read by verified HTTP206 offsets from the official Intel MKL2025.3.0 Windows redistributable, matching the major/minor toolkit version in the CT2 recipe. ZIP entry CRC and license SHA256 are verified; the whole155MB wheel was not downloaded or hash-verified, and its published PyPI digest is metadata only. Not a claim that wheel DLL bytes equal the static MKL objects inside CTranslate2. MKL is proprietary; no runtime installed or replaced.",
+    "noticeFiles": [
+      {
+        "member": "mkl-2025.3.0.dist-info/LICENSE.txt",
+        "sha256": "7721633d0ddff43fae25ebfd405f8166a0ce730cbcec44f2f3ad9d5eb8ac9a6f"
+      }
+    ]
+  }
+}

@@ -5,6 +5,11 @@
 #include <QObject>
 #include <QString>
 
+// tl::Player is a non-QObject native object. Its shared ownership handle can
+// cross queued connections without exposing the SDK to Qt-only consumers.
+Q_DECLARE_OPAQUE_POINTER(tl::Player*)
+Q_DECLARE_METATYPE(std::shared_ptr<tl::Player>)
+
 namespace cgplay {
 
 class PlaybackServiceSignals : public QObject
@@ -32,9 +37,7 @@ Q_SIGNALS:
     void audioDeviceChanged(const QString& device);
     void audioOffsetChanged(double seconds);
 
-#if CGPLAY_HAS_TLRENDER
     void playerReady(const std::shared_ptr<tl::Player>& player);
-#endif
 };
 
 } // namespace cgplay

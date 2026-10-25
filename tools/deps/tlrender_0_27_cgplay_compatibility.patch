@@ -1,0 +1,41 @@
+--- a/lib/tlRender/IO/SeqDecode.cpp
++++ b/lib/tlRender/IO/SeqDecode.cpp
+@@ -10,6 +10,7 @@
+ #include <ftk/Core/Path.h>
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <filesystem>
+ #include <sstream>
+ #include <stdexcept>
+@@ -56,7 +57,16 @@
+         }
+ 
+         _info = _probeInfo();
+-        const double speed = _decode->getSpeed(_info, defaultSpeed);
++        double speed = _decode->getSpeed(_info, defaultSpeed);
++        // An explicit user rate overrides file metadata. DefaultSpeed remains
++        // the fallback used when no rate was selected by the caller.
++        if (const auto i = options.find("SeqIO/SpeedOverride"); i != options.end())
++        {
++            std::stringstream ss(i->second);
++            if (!(ss >> speed) || !std::isfinite(speed) || speed <= 0.0 ||
++                (ss >> std::ws && !ss.eof()))
++                throw std::runtime_error("Invalid sequence speed override");
++        }
+ 
+         // The range the sequence covers, whether or not every frame in it is
+         // there. A policy that leaves frames out is settled by the timeline
+--- a/lib/tlRender/IO/FFmpeg.cpp
++++ b/lib/tlRender/IO/FFmpeg.cpp
+@@ -330,7 +330,9 @@
+             // command line path is for.
+             for (const auto& ext : {
+                 ".avi", ".avif", ".gif", ".mkv", ".mov", ".mp4", ".mxf",
+-                ".m4v", ".webm", ".y4m" })
++                ".m4v", ".webm", ".y4m", ".asf", ".m1v", ".m2ts", ".m2v",
++                ".mpeg", ".mpg", ".mts", ".ogv", ".rm", ".rmvb", ".ts",
++                ".vob", ".wmv", ".wtv" })
+             {
+                 if (extensions.find(ext) == extensions.end())
+                 {

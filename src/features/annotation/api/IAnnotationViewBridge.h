@@ -14,6 +14,7 @@ public:
     virtual ~IAnnotationViewBridge() = default;
 
     virtual int currentFrame() const = 0;
+    virtual double mediaFps() const = 0; // 0 = no known media rate
     virtual int mediaWidth() const = 0;
     virtual int mediaHeight() const = 0;
 
@@ -26,5 +27,5 @@ public:
 
 } // namespace cgplay
 
-#define CGPLAY_IANNOTATIONVIEWBRIDGE_IID "com.cgplay.IAnnotationViewBridge"
+#define CGPLAY_IANNOTATIONVIEWBRIDGE_IID "com.cgplay.IAnnotationViewBridge/2.0"
 Q_DECLARE_INTERFACE(cgplay::IAnnotationViewBridge, CGPLAY_IANNOTATIONVIEWBRIDGE_IID)

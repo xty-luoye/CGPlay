@@ -12,6 +12,7 @@ namespace cgplay {
 
 struct TranslationEnhancementScheduleRequest
 {
+    ComponentRuntimePaths runtime;
     QString playbackMode;
     QString mediaPath;
     QString quickTranslatedVttPath;

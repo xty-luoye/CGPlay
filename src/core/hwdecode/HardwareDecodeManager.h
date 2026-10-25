@@ -81,12 +81,17 @@ public:
     // ── 配置 ──────────────────────────────────────────────────────
     HwAccelType hwAccelType()          const { return _hwType; }
     void        setHwAccelType(HwAccelType t);
-    bool        isEnabled()            const { return _hwType != HwAccelType::None; }
+    // The bundled tlRender FFmpeg reader has no hardware-device/context path.
+    // Keep the saved request separate from the verified running backend.
+    bool        isEnabled()            const { return false; }
+    bool        supportsAccelType(HwAccelType t) const { return t == HwAccelType::None; }
+    QString     requestedAccelName() const { return hwAccelName(_hwType); }
+    QString     fallbackReason() const;
 
     // ── 可用硬件解码器列表 ──────────────────────────────────────
     QStringList availableAccelTypes()  const;
-    QString     currentAccelName()     const { return hwAccelName(_hwType); }
-    QString     currentAccelFFmpeg()   const { return hwAccelFFmpegName(_hwType); }
+    QString     currentAccelName()     const { return hwAccelName(HwAccelType::None); }
+    QString     currentAccelFFmpeg()   const { return {}; }
 
     // ── 统计 (运行时) ────────────────────────────────────────────
     void  recordFrameDecoded(bool hw = true);   // API 保留

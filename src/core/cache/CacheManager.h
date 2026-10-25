@@ -39,6 +39,9 @@ public:
 
     // ── Cache control ─────────────────────────────────────────────────────────
     void clear();
+    // Explicit user action: also clear the native caches of attached players.
+    // Normal source switching continues to call clear() only.
+    void clearPlaybackCaches();
 
     // ── Stats ─────────────────────────────────────────────────────────────────
     float videoUsagePercent()  const;
@@ -50,6 +53,7 @@ public Q_SLOTS:
 Q_SIGNALS:
     void cacheUpdated(float videoPercent, float audioPercent);
     void optionsChanged();
+    void playbackCacheClearRequested();
 
 private:
     void _notifyUsageIfChanged(bool force = false);

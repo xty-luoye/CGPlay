@@ -1,82 +1,29 @@
+[CmdletBinding()]
 param(
-    [string]$ProjectRoot = "C:\Users\1\Desktop\RVLite",
-    [string]$OutputDir = "C:\Users\1\Desktop\RVLite\build_win_full\release_upload"
+    [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$OutputDir = "",
+    [string]$Python = "python"
 )
-
 $ErrorActionPreference = "Stop"
-
-function Reset-Dir([string]$Path) {
-    if (Test-Path -LiteralPath $Path) {
-        Remove-Item -LiteralPath $Path -Recurse -Force
-    }
-    New-Item -ItemType Directory -Path $Path | Out-Null
-}
-
-function Copy-FileSafe([string]$Source, [string]$DestinationRoot) {
-    if (-not (Test-Path -LiteralPath $Source)) {
-        return
-    }
-    if ($Source -match '\\tests\\reports\\') { return }
-    if ($Source -match '\\tests\\media\\') { return }
-    if ($Source -match '\\backups\\') { return }
-    if ($Source -match '\\build_win_full\\release_upload\\') { return }
-    if ($Source -match '\\build_win_full\\releases\\_tmp\\') { return }
-    if ($Source -match '\\_backup_src_compare\\') { return }
-    if ($Source -match '\\ui_v1_backup\\') { return }
-    if ($Source -match '\\resources\\demo_') { return }
-    if ($Source -match '\.(pdb|pyc|log|tmp)$') { return }
-    if ($Source -match '\.(png|jpg|jpeg|bmp|webp)$' -and
-        $Source -notmatch '\\resources\\CGPlay\.png$' -and
-        $Source -notmatch '\\resources\\UI\.png$' -and
-        $Source -notmatch '\\resources\\ui\.png$' -and
-        $Source -notmatch '\\resources\\icons\\') { return }
-
-    $resolvedSource = (Resolve-Path -LiteralPath $Source).Path
-    $projectRootResolved = (Resolve-Path -LiteralPath $ProjectRoot).Path
-    $relative = $resolvedSource.Substring($projectRootResolved.Length).TrimStart('\','/')
-    $destination = Join-Path $DestinationRoot $relative
-    $destDir = Split-Path -Parent $destination
-    New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-    Copy-Item -LiteralPath $resolvedSource -Destination $destination -Force
-}
-
-Reset-Dir $OutputDir
-
-$allowList = @(
-    "README.md",
-    "LICENSE.txt",
-    "CMakeLists.txt",
-    "src",
-    "cmake",
-    "installer",
-    "tools",
-    "resources\\CGPlay.ico",
-    "resources\\CGPlay.png",
-    "resources\\CGPlay.rc",
-    "resources\\resources.qrc",
-    "resources\\icons",
-    "resources\\component_manifest.json",
-    "build_win_full\\installer\\full",
-    "build_win_full\\installer\\lite",
-    "build_win_full\\releases"
-)
-
-foreach ($entry in $allowList) {
-    $source = Join-Path $ProjectRoot $entry
-    if (-not (Test-Path -LiteralPath $source)) {
-        continue
-    }
-
-    if ((Get-Item -LiteralPath $source).PSIsContainer) {
-        $resolved = (Resolve-Path -LiteralPath $source).Path
-        Get-ChildItem -LiteralPath $resolved -Recurse -File | ForEach-Object {
-            Copy-FileSafe $_.FullName $OutputDir
-        }
-    } else {
-        Copy-FileSafe $source $OutputDir
-    }
-}
-
-Get-ChildItem -LiteralPath $OutputDir -Recurse -File |
-    Select-Object FullName, Length |
-    Format-Table -AutoSize
+if (-not $OutputDir) { $OutputDir = Join-Path $ProjectRoot "build_win_full\release_source" }
+# Source collection never clears an existing directory or collects installers,
+# credentials, build products, media or tests/artifacts. Use a fresh destination.
+if (Test-Path -LiteralPath $OutputDir) { throw "Source output already exists; choose a fresh directory: $OutputDir" }
+$program = @"
+import json, pathlib, shutil, sys
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / 'tools'))
+from prepare_release_sources import public_source_files
+root=pathlib.Path(sys.argv[1]).resolve(strict=True)
+out=pathlib.Path(sys.argv[2]).absolute()
+if out.resolve().is_relative_to(root / 'src') or root.is_relative_to(out.resolve()):
+    raise ValueError('Source output overlaps application input')
+files=public_source_files(root)
+out.mkdir(parents=True,exist_ok=False)
+for source in files:
+    destination=out/source.relative_to(root)
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    shutil.copy2(source,destination)
+print(json.dumps({'passed':True,'files':len(files),'output':str(out),'backgroundMode':True,'platformVisibleTopLevelWindows':0},indent=2))
+"@
+& $Python -c $program $ProjectRoot $OutputDir
+if ($LASTEXITCODE -ne 0) { throw "Public source collection failed." }

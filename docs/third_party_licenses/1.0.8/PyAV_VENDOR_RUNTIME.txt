@@ -1,0 +1,25 @@
+PyAV vendor binary identity and runtime notices
+
+Official Windows FFmpeg prebuilt:
+https://github.com/PyAV-Org/pyav-ffmpeg/releases/download/8.1.2-1/ffmpeg-windows-x86_64.tar.gz
+SHA256 d00e5c5ae01d5c51dd56043bc9597d9d03200ab72695e1b61565b75f02a2e380
+
+25/25 wheel av.libs DLLs have identical .text sections to this prebuilt; 11/25 are whole-file identical. All 25 import lists match the exact expected delvewheel library-name substitutions. The other 14 have real non-signature changes in .data/.idata and some .rdata; full PE equivalence is not claimed. Every changed section and both full-file hashes are recorded in the manifest. No DLL was loaded to perform these comparisons.
+
+Copied MSYS2 runtime identity (before upstream strip -s):
+- mingw-w64-x86_64-gcc-libs-16.1.0-5-any.pkg.tar.zst: libgcc_s_seh-1.dll, libstdc++-6.dll; all named runtime sections match exactly, including code/data/constants/imports/exports/unwind/relocation sections.
+  https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-gcc-libs-16.1.0-5-any.pkg.tar.zst
+  original package SHA256 aa560f5438c35b71c3e7b24fd5becbca028f70c5b4d1f1697a86ff80fec947da
+- mingw-w64-x86_64-libiconv-1.19-1-any.pkg.tar.zst: libiconv-2.dll; all named runtime sections match exactly, including code/data/constants/imports/exports/unwind/relocation sections.
+  https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libiconv-1.19-1-any.pkg.tar.zst
+  original package SHA256 21e334d0911f25de75d3e18e0697648bcecfa9658256d600cad0827d719c2f35
+- mingw-w64-x86_64-zlib-1.3.2-2-any.pkg.tar.zst: zlib1.dll; all named runtime sections match exactly, including code/data/constants/imports/exports/unwind/relocation sections.
+  https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-zlib-1.3.2-2-any.pkg.tar.zst
+  original package SHA256 9e75842a070ba648e986e12424e1c92c9d7d77200e85f6a34eeb600819f2e694
+- mingw-w64-x86_64-libwinpthread-14.0.0.r92.g818fa6510-1-any.pkg.tar.zst: libwinpthread-1.dll; all named runtime sections match exactly, including code/data/constants/imports/exports/unwind/relocation sections.
+  https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-libwinpthread-14.0.0.r92.g818fa6510-1-any.pkg.tar.zst
+  original package SHA256 c426ba9ef8870b4342d5c0843efa7a9b360361994c7556f3d18f23fd30734194
+
+MSYS2 package metadata and build recipes are preserved. GCC runtime GPL3 includes GCC Runtime Library Exception 3.1; libiconv retains LGPL2.1-or-later; winpthreads retains its own MIT/BSD notices; zlib retains the zlib notice. The original full text is in PyAV_VENDOR_LICENSES.txt. This does not alter the separate licenses of FFmpeg, x264, x265 or PyAV itself.
+
+This audit verifies source/binary association and retains corresponding content; it does not claim an independent clean-machine build, identical output from a new compiler, hardware codec availability or export function testing.

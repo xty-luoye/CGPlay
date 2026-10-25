@@ -47,6 +47,7 @@ public:
     quint64 overlayInstanceId() const override;
 
     int currentFrame() const override;
+    double mediaFps() const override;
     int mediaWidth() const override;
     int mediaHeight() const override;
     QString selectedAnnotationId() const override;

@@ -105,6 +105,12 @@ void CacheManager::clear()
     qDebug() << "[CacheManager] Cache cleared";
 }
 
+void CacheManager::clearPlaybackCaches()
+{
+    clear();
+    Q_EMIT playbackCacheClearRequested();
+}
+
 void CacheManager::onCacheInfoChanged(float videoPercent, float audioPercent)
 {
     _p->playerVideoUsagePercent = std::clamp(videoPercent, 0.0f, 100.0f);

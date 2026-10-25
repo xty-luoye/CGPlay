@@ -1008,6 +1008,15 @@ void ViewerWidget::_applyOcioOptions()
 
     if (_p->viewport) {
         tl::DisplayOptions displayOptions;
+        if (_p->ocio) {
+            const auto snapshot = _p->ocio->exportColorSnapshot();
+            const float gain = std::exp2(snapshot.exposure);
+            displayOptions.color.enabled = snapshot.exposure != 0.F;
+            displayOptions.color.brightness = ftk::V3F(gain, gain, gain);
+            displayOptions.levels.enabled = snapshot.gamma != 1.F;
+            // tlRender inverts this value when uploading the gamma uniform.
+            displayOptions.levels.gamma = snapshot.gamma;
+        }
         displayOptions.channels = _p->alphaChannelVisible
             ? ftk::ChannelDisplay::Alpha
             : ftk::ChannelDisplay::Color;

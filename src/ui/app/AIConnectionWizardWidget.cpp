@@ -46,6 +46,12 @@ QString zh(const char* text)
 {
     return QString::fromUtf8(text);
 }
+#if defined(__cpp_char8_t)
+QString zh(const char8_t* text)
+{
+    return zh(reinterpret_cast<const char*>(text));
+}
+#endif
 
 QString htmlEscape(const QString& text)
 {

@@ -139,6 +139,7 @@
 #include <QScreen>
 
 #ifdef Q_OS_WIN
+#include <qt_windows.h>
 #include <Xinput.h>
 #pragma comment(lib, "Xinput9_1_0.lib")
 #endif
@@ -185,6 +186,7 @@ inline constexpr auto kAccent = "#FF8A3D";
 inline constexpr auto kBorderRgba = "rgba(255,255,255,0.06)";
 class LiveSlider final : public QSlider
 {
+    Q_OBJECT
 public:
     using QSlider::QSlider;
 

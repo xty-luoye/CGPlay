@@ -952,6 +952,7 @@ void MainWindow::_scheduleGeneratedSubtitleRefinement(
     }
 
     SubtitleRefinementRequest request;
+    request.runtime = captureComponentRuntimePaths();
     request.mediaPath = mediaPath;
     request.targetLanguage = QStringLiteral("zh-Hans");
     request.sourceLanguageHint = QStringLiteral("ja");

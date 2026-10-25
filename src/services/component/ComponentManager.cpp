@@ -1,5 +1,8 @@
 #include "ComponentManager.h"
 #include "DownloadService.h"
+#include "ComponentPayloadStore.h"
+#include "ComponentManifestPolicy.h"
+#include "ComponentRuntimePaths.h"
 #include "common/jobs/JobSystem.h"
 
 #include <QApplication>
@@ -14,6 +17,13 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMessageBox>
+#include <QLockFile>
+#include <QPointer>
+#include <QTemporaryDir>
+#include <QScopeGuard>
+#include <QThread>
+#include <QRegularExpression>
+#include <atomic>
 #include <QProgressDialog>
 #include <QStandardPaths>
 #include <QProcess>
@@ -93,12 +103,13 @@ ComponentManager::ComponentManager(QObject* parent)
 
 void ComponentManager::setManifestUrl(const QString& url)
 {
+    QWriteLocker metadataGuard(&_metadataLock);
     _manifestUrl = url.trimmed();
 }
 
 QString ComponentManager::manifestUrl() const
 {
-    return _manifestUrl;
+    return _resolveManifestUrl();
 }
 
 bool ComponentManager::refreshRemoteManifest(QString* error)
@@ -149,6 +160,7 @@ bool ComponentManager::hasComponent(const QString& id) const
 
 QStringList ComponentManager::componentIds() const
 {
+    QReadLocker metadataGuard(&_metadataLock);
     QStringList ids;
     const QJsonObject components = _manifestRoot.value(QStringLiteral("components")).toObject();
     for (auto it = components.constBegin(); it != components.constEnd(); ++it) {
@@ -160,6 +172,7 @@ QStringList ComponentManager::componentIds() const
 
 QStringList ComponentManager::missingRequiredComponents() const
 {
+    QReadLocker metadataGuard(&_metadataLock);
     QStringList missing;
     const QJsonObject components = _manifestRoot.value(QStringLiteral("components")).toObject();
     for (auto it = components.constBegin(); it != components.constEnd(); ++it) {
@@ -177,11 +190,13 @@ QStringList ComponentManager::missingRequiredComponents() const
 
 QString ComponentManager::remoteAppVersion() const
 {
+    QReadLocker metadataGuard(&_metadataLock);
     return _manifestRoot.value(QStringLiteral("appVersion")).toString().trimmed();
 }
 
 qint64 ComponentManager::remoteInstallerSize(const QString& mode) const
 {
+    QReadLocker metadataGuard(&_metadataLock);
     const QJsonObject installers = _manifestRoot.value(QStringLiteral("installers")).toObject();
     const QJsonObject installer = installers.value(mode.trimmed().toLower()).toObject();
     return static_cast<qint64>(installer.value(QStringLiteral("size")).toDouble(0));
@@ -237,6 +252,10 @@ bool ComponentManager::ensureComponent(
 
     if (_isInstalled(spec)) {
         return true;
+    }
+    if (!qApp || QThread::currentThread() != qApp->thread()) {
+        if (error) *error = QObject::tr("组件未就绪，请先在界面线程完成修复。");
+        return false;
     }
 
     if (spec.urls.isEmpty()) {
@@ -296,25 +315,41 @@ QString ComponentManager::componentExecutablePath(const QString& id, const QStri
 
 QString ComponentManager::componentRootPath(const QString& id) const
 {
+    QReadLocker metadataGuard(&_metadataLock);
     const QString normalized = normalizeComponentId(id);
-    if (normalized.isEmpty()) {
-        return {};
-    }
-
     const ComponentSpec spec = _componentSpec(normalized);
-    if (!spec.isValid()) {
-        return {};
+    if (!spec.isValid()) return {};
+    const QJsonObject installed = _installedState.value(QStringLiteral("components")).toObject()
+        .value(normalized).toObject();
+    if (installed.contains(QStringLiteral("payloadRoot"))) {
+        // A corrupt/missing managed root must not silently fall back to an old
+        // bundle while the state claims that a repaired version is installed.
+        return component_payload_store::resolvePublishedRoot(componentsRootPath(), normalized,
+            installed.value(QStringLiteral("payloadRoot")).toString());
     }
-
-    if (spec.installSubdir.isEmpty() || spec.installSubdir == QStringLiteral(".")) {
-        return appRootPath();
-    }
-
+    if (spec.installSubdir.isEmpty() || spec.installSubdir == QStringLiteral(".")) return appRootPath();
+    if (!component_payload_store::safeRelative(spec.installSubdir)) return {};
     return QDir(appRootPath()).filePath(spec.installSubdir);
+}
+
+QJsonObject ComponentManager::runtimeRootsSnapshot() const
+{
+    QReadLocker metadataGuard(&_metadataLock);
+    QJsonObject roots;
+    const QJsonObject installed = _installedState.value(QStringLiteral("components")).toObject();
+    for (const QString& id : {QStringLiteral("python-runtime"), QStringLiteral("tools"),
+                             QStringLiteral("ffmpeg"), QStringLiteral("recording-runtime")}) {
+        const QString selectedVersion = installed.value(id).toObject().value(QStringLiteral("version")).toString();
+        roots.insert(id, QJsonObject{{QStringLiteral("root"), componentRootPath(id)},
+            {QStringLiteral("version"), selectedVersion.isEmpty() ? _componentSpec(id).version : selectedVersion},
+            {QStringLiteral("managed"), installed.value(id).toObject().contains(QStringLiteral("payloadRoot"))}});
+    }
+    return roots;
 }
 
 QString ComponentManager::componentVersion(const QString& id) const
 {
+    QReadLocker metadataGuard(&_metadataLock);
     const QJsonObject installed = _installedState
         .value(QStringLiteral("components"))
         .toObject()
@@ -325,6 +360,7 @@ QString ComponentManager::componentVersion(const QString& id) const
 
 QJsonObject ComponentManager::manifestDocument() const
 {
+    QReadLocker metadataGuard(&_metadataLock);
     return _manifestRoot;
 }
 
@@ -356,7 +392,10 @@ bool ComponentManager::_loadBundledManifest()
     if (!file.open(QIODevice::ReadOnly)) {
         return false;
     }
-    return _loadManifestDocument(file.readAll(), nullptr);
+    if (!_loadManifestDocument(file.readAll(), nullptr)) return false;
+    QWriteLocker metadataGuard(&_metadataLock);
+    _bundledManifest = _manifestRoot;
+    return true;
 }
 
 bool ComponentManager::_loadCachedManifest()
@@ -379,10 +418,8 @@ bool ComponentManager::_loadManifestDocument(const QByteArray& json, QString* er
         return false;
     }
 
-    _manifestRoot = doc.object();
-    if (_manifestUrl.isEmpty()) {
-        _manifestUrl = _manifestRoot.value(QStringLiteral("manifestUrl")).toString().trimmed();
-    }
+    QWriteLocker metadataGuard(&_metadataLock);
+    _manifestRoot = component_manifest_policy::mergePayload(doc.object(), _bundledManifest);
     return true;
 }
 
@@ -412,19 +449,14 @@ bool ComponentManager::_loadState()
     return true;
 }
 
-bool ComponentManager::_saveState() const
+bool ComponentManager::_saveState(const QJsonObject& state, QString* error) const
 {
-    QFile file(stateFilePath());
-    QDir().mkpath(QFileInfo(file).absolutePath());
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        return false;
-    }
-    file.write(QJsonDocument(_installedState).toJson(QJsonDocument::Indented));
-    return true;
+    return component_payload_store::writeState(stateFilePath(), state, error);
 }
 
 ComponentSpec ComponentManager::_componentSpec(const QString& id) const
 {
+    QReadLocker metadataGuard(&_metadataLock);
     const QString normalized = normalizeComponentId(id);
     const QJsonObject components = _manifestRoot.value(QStringLiteral("components")).toObject();
     const QJsonObject object = components.value(normalized).toObject();
@@ -461,6 +493,7 @@ ComponentSpec ComponentManager::_componentSpec(const QString& id) const
 
 bool ComponentManager::_isInstalled(const ComponentSpec& spec) const
 {
+    QReadLocker metadataGuard(&_metadataLock);
     if (!spec.isValid()) {
         return false;
     }
@@ -479,7 +512,7 @@ bool ComponentManager::_isInstalled(const ComponentSpec& spec) const
         filesExist = true;
         for (const QString& relative : spec.requiredFiles) {
             const QString absolute = QDir(root).filePath(relative);
-            if (!QFileInfo::exists(absolute)) {
+            if (!QFileInfo(absolute).isFile() || QFileInfo(absolute).size() <= 0) {
                 filesExist = false;
                 break;
             }
@@ -511,7 +544,27 @@ bool ComponentManager::_downloadAndInstall(const ComponentSpec& spec, QWidget* p
         return false;
     }
 
-    QProgressDialog* installProgress = nullptr;
+    if (spec.id == QStringLiteral("core")) {
+        if (error) *error = QObject::tr("主程序更新请使用完整安装包，退出后安装。");
+        return false;
+    }
+    if (!QRegularExpression(QStringLiteral("^[0-9a-f]{64}$")).match(spec.sha256).hasMatch()) {
+        if (error) *error = QObject::tr("组件缺少有效 SHA-256，拒绝下载替换。");
+        return false;
+    }
+    QLockFile installationLock(QDir(componentsRootPath()).filePath(QStringLiteral("component-install.lock")));
+    installationLock.setStaleLockTime(0);
+    if (!installationLock.tryLock()) {
+        if (error) *error = QObject::tr("另一个组件安装任务正在执行，请稍后重试。");
+        return false;
+    }
+    const auto canceled = std::make_shared<std::atomic_bool>(false);
+    QObject installationLifetime;
+    QObject::connect(qApp, &QCoreApplication::aboutToQuit, &installationLifetime,
+        [canceled]() { canceled->store(true); });
+    if (parentWidget) QObject::connect(parentWidget, &QObject::destroyed, &installationLifetime,
+        [canceled]() { canceled->store(true); });
+    QPointer<QProgressDialog> installProgress;
     if (parentWidget) {
         installProgress = new QProgressDialog(
             QObject::tr("正在安装组件..."),
@@ -522,6 +575,8 @@ bool ComponentManager::_downloadAndInstall(const ComponentSpec& spec, QWidget* p
         installProgress->setWindowModality(Qt::WindowModal);
         installProgress->setMinimumDuration(0);
         installProgress->show();
+        QObject::connect(installProgress, &QProgressDialog::canceled, &installationLifetime,
+            [canceled]() { canceled->store(true); });
     }
 
     auto closeProgress = [&]() {
@@ -532,17 +587,33 @@ bool ComponentManager::_downloadAndInstall(const ComponentSpec& spec, QWidget* p
         }
     };
 
-    const QString tempRoot = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
-        .filePath(QStringLiteral("cgplay_component_install"));
-    QDir().mkpath(tempRoot);
-    const QString archivePath = QDir(tempRoot).filePath(spec.archiveName);
-    const QString extractRoot = QDir(tempRoot).filePath(spec.id + QStringLiteral("_extract"));
-    QDir(extractRoot).removeRecursively();
-    QFile::remove(archivePath);
+    QTemporaryDir downloadDirectory(QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation))
+        .filePath(QStringLiteral("cgplay_component_XXXXXX")));
+    if (!downloadDirectory.isValid()) {
+        if (error) *error = QObject::tr("无法创建组件下载暂存目录。");
+        closeProgress();
+        return false;
+    }
+    downloadDirectory.setAutoRemove(false);
+    const QString downloadRoot = downloadDirectory.path();
+    const auto cleanupDownload = qScopeGuard([downloadRoot, canceled]() {
+        // Do not race an unfinished canceled worker during shutdown. The
+        // private unselected directory can be reclaimed by later background GC.
+        if (canceled->load() || !qApp || QCoreApplication::closingDown()) return;
+        JobRunner::start(QStringLiteral("component.download.cleanup"), qApp, 0,
+            [downloadRoot](JobContext&) {
+                if (QFileInfo(downloadRoot).fileName().startsWith(QStringLiteral("cgplay_component_")) &&
+                    !component_payload_store::linked(downloadRoot)) QDir(downloadRoot).removeRecursively();
+                return JobOutcome::success();
+            });
+    });
+    const QString archivePath = QDir(downloadDirectory.path()).filePath(QStringLiteral("component.zip"));
+    const QString extractRoot = QDir(downloadDirectory.path()).filePath(QStringLiteral("extracted"));
 
     QString sourceUrl;
     QStringList downloadErrors;
     for (const QString& url : spec.urls) {
+        if (canceled->load()) break;
         writeComponentLog(QStringLiteral("download component %1 from %2").arg(spec.id, url));
         if (installProgress) {
             installProgress->setRange(0, 100);
@@ -561,9 +632,11 @@ bool ComponentManager::_downloadAndInstall(const ComponentSpec& spec, QWidget* p
         downloadErrors.push_back(downloadError);
     }
 
-    if (sourceUrl.isEmpty()) {
+    if (sourceUrl.isEmpty() || canceled->load()) {
         if (error) {
-            *error = downloadErrors.join(QStringLiteral("\n\n"));
+            *error = canceled->load()
+                ? QObject::tr("组件安装已取消，原安装保持不变。")
+                : downloadErrors.join(QStringLiteral("\n\n"));
         }
         closeProgress();
         return false;
@@ -575,7 +648,33 @@ bool ComponentManager::_downloadAndInstall(const ComponentSpec& spec, QWidget* p
         installProgress->setLabelText(QObject::tr("正在校验组件..."));
     }
     writeComponentLog(QStringLiteral("verify component %1").arg(spec.id));
-    if (!_verifyFileSha256(archivePath, spec.sha256, error)) {
+    QEventLoop verifyLoop;
+    JobOutcome verification;
+    auto* verifyJob = JobRunner::start(QStringLiteral("component.archive.verify"), &verifyLoop,
+        30 * 60 * 1000, [archivePath, expectedSha = spec.sha256, canceled](JobContext& context) {
+            QByteArray actual;
+            QString failure;
+            const auto shouldStop = [&]() {
+                if (canceled->load()) context.cancel();
+                return context.shouldStop();
+            };
+            if (!component_payload_store::digestFile(archivePath, &actual, shouldStop, &failure))
+                return shouldStop() ? JobOutcome::canceled(failure)
+                                    : JobOutcome::failure(QStringLiteral("component-read-failed"), failure);
+            if (QString::fromLatin1(actual.toHex()) != expectedSha)
+                return JobOutcome::failure(QStringLiteral("component-checksum-mismatch"), QObject::tr("组件 SHA-256 不匹配。"));
+            return JobOutcome::success();
+        });
+    QObject::connect(verifyJob, &JobHandle::finished, &verifyLoop, [&](const JobOutcome& result) {
+        verification = result;
+        verifyLoop.quit();
+    });
+    if (installProgress) QObject::connect(installProgress, &QProgressDialog::canceled, verifyJob, &JobHandle::cancel);
+    QObject::connect(qApp, &QCoreApplication::aboutToQuit, verifyJob, &JobHandle::cancel);
+    verifyLoop.exec();
+    if (!verification.succeeded() || canceled->load()) {
+        verifyJob->cancel();
+        if (error) *error = canceled->load() ? QObject::tr("组件安装已取消，原安装保持不变。") : verification.errorMessage;
         closeProgress();
         return false;
     }
@@ -594,23 +693,91 @@ bool ComponentManager::_downloadAndInstall(const ComponentSpec& spec, QWidget* p
         installProgress->setValue(99);
         installProgress->setLabelText(QObject::tr("正在复制组件..."));
     }
-    writeComponentLog(QStringLiteral("copy component %1").arg(spec.id));
-    if (!_copyExtractedPayload(extractRoot, spec, error)) {
+    writeComponentLog(QStringLiteral("stage component %1").arg(spec.id));
+    QEventLoop stageLoop;
+    JobOutcome stageOutcome;
+    const QString componentsRoot = componentsRootPath();
+    const ComponentRuntimePaths validationRuntime = captureComponentRuntimePaths();
+    auto* stageJob = JobRunner::start(QStringLiteral("component.stage.%1").arg(spec.id), &stageLoop,
+        30 * 60 * 1000, [extractRoot, componentsRoot, spec, canceled, validationRuntime](JobContext& context) {
+            QJsonObject candidate;
+            QString failure;
+            const auto shouldStop = [&]() {
+                if (canceled->load()) context.cancel();
+                return context.shouldStop();
+            };
+            const bool staged = component_payload_store::prepare(extractRoot, componentsRoot, spec.id,
+                spec.version, spec.requiredFiles, &candidate, &failure, shouldStop,
+                [&](int percent) { context.reportProgress(percent, QStringLiteral("component.verify")); });
+            if (shouldStop()) return JobOutcome::canceled(failure);
+            if (!staged) return JobOutcome::failure(QStringLiteral("component-stage-failed"), failure);
+            if (!component_payload_store::validateRuntime(spec.id,
+                    candidate.value(QStringLiteral("absoluteRoot")).toString(), validationRuntime.pythonExecutable,
+                    shouldStop, &failure)) return JobOutcome::failure(QStringLiteral("component-runtime-invalid"), failure);
+            return JobOutcome::success(candidate);
+        });
+    QObject::connect(stageJob, &JobHandle::finished, &stageLoop, [&](const JobOutcome& outcome) {
+        stageOutcome = outcome;
+        stageLoop.quit();
+    });
+    if (installProgress) {
+        QObject::connect(installProgress, &QProgressDialog::canceled, stageJob, &JobHandle::cancel);
+        QObject::connect(stageJob, &JobHandle::progressChanged, installProgress,
+            [installProgress](int percent, const QString&) { if (installProgress) installProgress->setValue(qMin(99, 98 + percent / 100)); });
+    }
+    QObject::connect(qApp, &QCoreApplication::aboutToQuit, stageJob, &JobHandle::cancel);
+    stageLoop.exec();
+    if (!stageOutcome.succeeded() || canceled->load()) {
+        stageJob->cancel();
+        if (error) *error = canceled->load() ? QObject::tr("组件安装已取消，原安装保持不变。") : stageOutcome.errorMessage;
         closeProgress();
         return false;
     }
-
-    QJsonObject components = _installedState.value(QStringLiteral("components")).toObject();
+    const QJsonObject candidate = stageOutcome.value.toJsonObject();
+    const QString selectedRoot = candidate.value(QStringLiteral("payloadRoot")).toString();
+    if (component_payload_store::resolvePublishedRoot(componentsRoot, spec.id, selectedRoot).isEmpty()) {
+        if (error) *error = QObject::tr("组件暂存根目录无效，原安装保持不变。");
+        closeProgress();
+        return false;
+    }
+    // The long I/O is done. Only the small atomic state commit remains.
+    if (installProgress) installProgress->setCancelButton(nullptr);
+    QJsonObject nextState{{QStringLiteral("components"), QJsonObject{}}};
+    QFile priorState(stateFilePath());
+    if (priorState.exists()) {
+        if (!priorState.open(QIODevice::ReadOnly)) {
+            if (error) *error = QObject::tr("无法读取原组件状态，原安装保持不变。");
+            closeProgress();
+            return false;
+        }
+        QJsonParseError parseError{};
+        const QJsonDocument document = QJsonDocument::fromJson(priorState.readAll(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+            if (error) *error = QObject::tr("原组件状态无效，拒绝覆盖。");
+            closeProgress();
+            return false;
+        }
+        nextState = document.object();
+        priorState.close();
+    }
+    QJsonObject components = nextState.value(QStringLiteral("components")).toObject();
     components.insert(spec.id, QJsonObject{
         {QStringLiteral("version"), spec.version},
+        {QStringLiteral("payloadRoot"), selectedRoot},
         {QStringLiteral("installedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
         {QStringLiteral("sourceUrl"), sourceUrl}
     });
-    _installedState.insert(QStringLiteral("components"), components);
-    _saveState();
-
-    QFile::remove(archivePath);
-    QDir(extractRoot).removeRecursively();
+    nextState.insert(QStringLiteral("components"), components);
+    if (!_saveState(nextState, error)) {
+        closeProgress();
+        return false;
+    }
+    {
+        QWriteLocker metadataGuard(&_metadataLock);
+        _installedState = nextState;
+    }
+    // Keep every formerly selected version, and unselected failed candidates,
+    // until a separate bounded GC can establish that no running job needs it.
     if (installProgress) {
         installProgress->setValue(100);
         installProgress->setLabelText(QObject::tr("组件安装完成"));
@@ -620,36 +787,6 @@ bool ComponentManager::_downloadAndInstall(const ComponentSpec& spec, QWidget* p
     return true;
 }
 
-
-bool ComponentManager::_verifyFileSha256(const QString& filePath, const QString& expectedSha256, QString* error) const
-{
-    if (expectedSha256.isEmpty()) {
-        return true;
-    }
-
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error) {
-            *error = QStringLiteral("Unable to open file for verification: %1").arg(filePath);
-        }
-        return false;
-    }
-
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    while (!file.atEnd()) {
-        hash.addData(file.read(1024 * 1024));
-    }
-
-    const QString actual = QString::fromLatin1(hash.result().toHex()).toLower();
-    if (actual == expectedSha256) {
-        return true;
-    }
-
-    if (error) {
-        *error = QStringLiteral("Component checksum mismatch. Expected %1, got %2").arg(expectedSha256, actual);
-    }
-    return false;
-}
 
 bool ComponentManager::_extractArchive(
     const QString& archivePath,
@@ -725,71 +862,15 @@ bool ComponentManager::_extractArchive(
     return true;
 }
 
-bool ComponentManager::_copyExtractedPayload(const QString& extractRoot, const ComponentSpec& spec, QString* error) const
-{
-    QString payloadRoot = extractRoot;
-
-    QDirIterator topLevel(extractRoot, QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::NoIteratorFlags);
-    QStringList childDirs;
-    while (topLevel.hasNext()) {
-        childDirs.push_back(topLevel.next());
-    }
-    if (childDirs.size() == 1) {
-        payloadRoot = childDirs.front();
-    }
-
-    const QString destRoot = componentRootPath(spec.id);
-    if (destRoot.isEmpty()) {
-        if (error) {
-            *error = QObject::tr("组件目标路径为空：%1").arg(spec.id);
-        }
-        return false;
-    }
-
-    QDir().mkpath(destRoot);
-    QDirIterator files(payloadRoot, QDir::Files, QDirIterator::Subdirectories);
-    while (files.hasNext()) {
-        const QString sourceFile = files.next();
-        const QString relative = QDir(payloadRoot).relativeFilePath(sourceFile);
-        const QString targetFile = QDir(destRoot).filePath(relative);
-        QDir().mkpath(QFileInfo(targetFile).absolutePath());
-        QFile::remove(targetFile);
-        if (!QFile::copy(sourceFile, targetFile)) {
-            if (error) {
-                *error = QObject::tr("无法复制组件文件：%1").arg(relative);
-            }
-            return false;
-        }
-    }
-
-    return true;
-}
-
 QString ComponentManager::_resolveManifestUrl() const
 {
-    if (!_manifestUrl.isEmpty()) {
-        return _manifestUrl;
-    }
-
-    return _manifestRoot.value(QStringLiteral("manifestUrl")).toString().trimmed();
+    return _resolveManifestUrls().value(0);
 }
 
 QStringList ComponentManager::_resolveManifestUrls() const
 {
-    QStringList urls;
-    if (!_manifestUrl.isEmpty()) {
-        urls.push_back(_manifestUrl);
-    }
-    for (const QString& url : jsonStringList(_manifestRoot, QStringLiteral("manifestUrls"))) {
-        if (!urls.contains(url)) {
-            urls.push_back(url);
-        }
-    }
-    const QString legacy = _manifestRoot.value(QStringLiteral("manifestUrl")).toString().trimmed();
-    if (!legacy.isEmpty() && !urls.contains(legacy)) {
-        urls.push_back(legacy);
-    }
-    return urls;
+    QReadLocker metadataGuard(&_metadataLock);
+    return component_manifest_policy::sourceUrls(_bundledManifest, _manifestUrl);
 }
 
 } // namespace cgplay
