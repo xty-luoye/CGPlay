@@ -14,7 +14,7 @@ def sha256_stream(stream):
         result.update(block)
     return result.hexdigest()
 
-def validate(provenance, app_root=None, bundle=None):
+def validate(provenance, app_root=None, bundle=None, shared_assets_dir=None):
     checks = []
     def check(name, passed, detail=''):
         checks.append({'name':name, 'passed':bool(passed), 'detail':detail})
@@ -54,8 +54,12 @@ def validate(provenance, app_root=None, bundle=None):
             asset_index = json.loads(index_path.read_text(encoding='utf-8-sig'))
             check('source-asset-index-version', asset_index['version'] == version and asset_index['primary'] == bundle.name)
             assets = asset_index['assets']
+            shared_assets = asset_index.get('sharedAssets', [])
         else:
             assets = [{'name':bundle.name}]
+            shared_assets = []
+        shared_names = {row['name'] for row in shared_assets}
+        assets = [*assets, *shared_assets]
         check('unique-source-assets', len(assets) == len({row['name'].casefold() for row in assets}))
         with ExitStack() as stack:
             archives = {}
@@ -64,17 +68,32 @@ def validate(provenance, app_root=None, bundle=None):
                 name = safe_relative(asset['name'])
                 if Path(name).name != name or not name.endswith('.zip'):
                     raise ValueError('Invalid source asset name: '+name)
-                path = bundle.parent / name
+                shared = name in shared_names
+                path = (shared_assets_dir or bundle.parent) / name if shared else bundle.parent / name
                 sidecar = path.with_suffix(path.suffix+'.sha256')
-                expected = sidecar.read_text(encoding='ascii').split()[0] if sidecar.is_file() else ''
+                expected = sidecar.read_text(encoding='ascii').split()[0] if sidecar.is_file() else asset.get('sha256', '') if shared else ''
                 with path.open('rb') as stream: sha = sha256_stream(stream)
                 check('bundle-sha256:'+name, sha == expected and ('sha256' not in asset or sha == asset['sha256']))
                 check('github-asset-size:'+name, path.stat().st_size < 2*1024**3)
+                if 'bytes' in asset:
+                    check('bundle-size:'+name, path.stat().st_size == asset['bytes'])
                 archive = stack.enter_context(zipfile.ZipFile(path))
                 archives[name] = archive
                 members = [safe_relative(n) for n in archive.namelist() if not n.endswith('/')]
                 check('unique-bundle-paths:'+name, len(members) == len({n.casefold() for n in members}))
-                actual_inventory.update((name,n) for n in members if name != bundle.name or n not in ['source-inventory.json','dependency-provenance.json'])
+                if shared:
+                    check('shared-source-url:'+name, asset.get('url', '').startswith('https://'))
+                    check('shared-source-digest:'+name, bool(re.fullmatch('[0-9a-f]{64}', asset.get('sha256', ''))))
+                    selected = asset.get('members')
+                    if not isinstance(selected, list) or not selected:
+                        raise ValueError('Shared source asset must select explicit dependency members: '+name)
+                    selected = [safe_relative(n) for n in selected]
+                    if any(not n.startswith('dependencies/') for n in selected):
+                        raise ValueError('Shared source assets may only supply dependency members: '+name)
+                    check('shared-member-selection:'+name, len(selected) == len(set(selected)) and set(selected) <= set(members))
+                    actual_inventory.update((name,n) for n in selected)
+                else:
+                    actual_inventory.update((name,n) for n in members if name != bundle.name or n not in ['source-inventory.json','dependency-provenance.json'])
             archive = archives[bundle.name]
             check('bundle-provenance-identity', json.loads(archive.read('dependency-provenance.json')) == data)
             inventory = json.loads(archive.read('source-inventory.json'))
@@ -104,9 +123,10 @@ def main():
     parser.add_argument('--provenance',type=Path,required=True)
     parser.add_argument('--app-root',type=Path)
     parser.add_argument('--bundle',type=Path)
+    parser.add_argument('--shared-assets-dir',type=Path,help='Local directory containing checksum-pinned shared source ZIPs; defaults to the bundle directory. No files are downloaded automatically.')
     parser.add_argument('--report',type=Path)
     args=parser.parse_args()
-    try: report=validate(args.provenance,args.app_root,args.bundle)
+    try: report=validate(args.provenance,args.app_root,args.bundle,args.shared_assets_dir)
     except (OSError,ValueError,KeyError,zipfile.BadZipFile) as error:
         report={'passed':False,'backgroundMode':True,'platformVisibleTopLevelWindows':0,'error':str(error)}
     text=json.dumps(report,indent=2)

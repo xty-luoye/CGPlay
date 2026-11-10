@@ -88,6 +88,61 @@ class ReleaseSourceTests(unittest.TestCase):
         self.assertTrue(validate(self.prov,bundle=self.bundle)['passed'])
         (self.bundle.parent/result['assets'][1]['name']).unlink()
         with self.assertRaises(FileNotFoundError):validate(self.prov,bundle=self.bundle)
+    def shared_bundle(self):
+        self.build()
+        shared_dir = self.root / 'shared'
+        shared_dir.mkdir()
+        shared = shared_dir / 'previous-sources.zip'
+        member = 'dependencies/dependency.tar.gz'
+        with zipfile.ZipFile(shared, 'w') as archive:
+            archive.write(self.dep, member)
+            archive.writestr('application/LICENSE.txt', 'superseded application')
+            archive.writestr('dependencies/superseded.patch', 'superseded patch')
+        replacement = self.root / 'replacement.zip'
+        with zipfile.ZipFile(self.bundle) as old, zipfile.ZipFile(replacement, 'w') as new:
+            inventory = json.loads(old.read('source-inventory.json'))
+            for row in inventory['files']:
+                if row['path'] == member:
+                    row['asset'] = shared.name
+            for name in old.namelist():
+                if name not in (member, 'source-inventory.json'):
+                    new.writestr(name, old.read(name))
+            new.writestr('source-inventory.json', json.dumps(inventory))
+        replacement.replace(self.bundle)
+        self.bundle.with_suffix('.zip.sha256').write_text(digest(self.bundle))
+        index_path = self.bundle.with_suffix('.assets.json')
+        index = json.loads(index_path.read_text())
+        index['assets'][0].update(sha256=digest(self.bundle), bytes=self.bundle.stat().st_size)
+        index['sharedAssets'] = [{'name': shared.name, 'sha256': digest(shared), 'bytes': shared.stat().st_size,
+                                  'url': 'https://example.org/previous-sources.zip', 'members': [member]}]
+        index_path.write_text(json.dumps(index))
+        return shared_dir, shared, index_path
+    def test_shared_sources_verify_selected_dependencies_without_old_application(self):
+        directory, shared, index = self.shared_bundle()
+        report = validate(self.prov, bundle=self.bundle, shared_assets_dir=directory)
+        self.assertTrue(report['passed'], report)
+        self.assertEqual(len(json.loads(index.read_text())['assets']), 1)
+        shared.unlink()
+        with self.assertRaises(FileNotFoundError):
+            validate(self.prov, bundle=self.bundle, shared_assets_dir=directory)
+    def test_shared_source_whole_archive_hash_is_required(self):
+        directory, shared, index = self.shared_bundle()
+        with shared.open('ab') as stream:
+            stream.write(b'tampered')
+        self.assertFalse(validate(self.prov, bundle=self.bundle, shared_assets_dir=directory)['passed'])
+    def test_shared_source_cannot_select_old_application(self):
+        directory, shared, index_path = self.shared_bundle()
+        index = json.loads(index_path.read_text())
+        index['sharedAssets'][0]['members'].append('application/LICENSE.txt')
+        index_path.write_text(json.dumps(index))
+        with self.assertRaisesRegex(ValueError, 'only supply dependency'):
+            validate(self.prov, bundle=self.bundle, shared_assets_dir=directory)
+    def test_shared_source_member_inventory_must_be_exact(self):
+        directory, shared, index_path = self.shared_bundle()
+        index = json.loads(index_path.read_text())
+        index['sharedAssets'][0]['members'].append('dependencies/superseded.patch')
+        index_path.write_text(json.dumps(index))
+        self.assertFalse(validate(self.prov, bundle=self.bundle, shared_assets_dir=directory)['passed'])
     def test_dependency_hash_mismatch_refused(self):
         self.dep.write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError,'checksum'): self.build()
