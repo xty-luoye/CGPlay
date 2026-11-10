@@ -60,8 +60,6 @@ void MainWindow::_restoreState()
     // playlist left, review panel right, viewer in the center. AI docks remain
     // closed until the user opens them in the current session.
     if (!_p->windowStateRestored) {
-        _p->leftVisible = true;
-        _p->rightVisible = true;
         if (_p->aiDock) {
             _p->aiDock->setFloating(false);
             _p->aiDock->hide();
@@ -435,23 +433,27 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* event)
         (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress ||
          event->type() == QEvent::KeyRelease)) {
         auto* key = static_cast<QKeyEvent*>(event);
-        // Item views consume printable I/O keys before MainWindow sees them.
-        // Reserve range commands across player children, just as fullscreen
-        // transport reserves Space. Text editors and other windows keep input.
-        const bool editing = isTextInputFocusWidget(eventWidget);
-        if (!editing) {
+        // Reserve transport keys before buttons and item views consume them.
+        // Text editors, popups and other player windows retain their input.
+        // Ignored editor navigation can bubble to a parent widget. Preserve
+        // the window's focused editor throughout that propagation as well.
+        const bool editing = isTextInputFocusWidget(eventWidget) || isTextInputFocusWidget(focusWidget());
+        if (!editing && !QApplication::activePopupWidget()) {
             Qt::KeyboardModifiers modifiers = key->modifiers();
             if (key->key() == Qt::Key_Plus) modifiers &= ~Qt::ShiftModifier;
             const QKeySequence pressed(QKeyCombination(modifiers, Qt::Key(key->key())));
             for (const auto& descriptor : _p->commandDescriptors) {
-                const bool rangeCommand = descriptor.id == QStringLiteral("playback.setInPoint") ||
-                    descriptor.id == QStringLiteral("playback.setOutPoint") ||
-                    descriptor.id == QStringLiteral("playback.clearInPoint") ||
-                    descriptor.id == QStringLiteral("playback.clearOutPoint");
-                if (!rangeCommand && !(fullscreenActive && descriptor.id == QStringLiteral("playback.toggle"))) continue;
+                const bool navigationCommand = descriptor.id == QStringLiteral("playback.previousFrame") ||
+                    descriptor.id == QStringLiteral("playback.nextFrame") ||
+                    descriptor.id == QStringLiteral("playback.seekBackward10") ||
+                    descriptor.id == QStringLiteral("playback.seekForward10");
+                const bool volumeCommand = descriptor.id == QStringLiteral("audio.volumeUp") ||
+                    descriptor.id == QStringLiteral("audio.volumeDown");
+                if (!descriptor.id.startsWith(QStringLiteral("playback.")) && !volumeCommand) continue;
                 if (!descriptor.shortcut.trimmed().isEmpty() &&
                     QKeySequence(descriptor.shortcut).matches(pressed) == QKeySequence::ExactMatch) {
-                    if (event->type() == QEvent::KeyPress && !key->isAutoRepeat()) {
+                    if (event->type() == QEvent::KeyPress &&
+                        (!key->isAutoRepeat() || navigationCommand || volumeCommand)) {
                         _executeCommandId(descriptor.id);
                         if (fullscreenActive) _showFullScreenChromeTemporarily();
                     }
@@ -536,7 +538,7 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
 {
 #ifdef Q_OS_WIN
     Q_UNUSED(eventType);
-    if (!message || !result || isMaximized() || isFullScreen()) {
+    if (!message || !result) {
         return QMainWindow::nativeEvent(eventType, message, result);
     }
 
@@ -553,7 +555,7 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
             }
         }
     }
-    if (msg->message == WM_NCHITTEST) {
+    if (msg->message == WM_NCHITTEST && !isMaximized() && !isFullScreen()) {
         constexpr LONG kResizeBorder = 8;
         const RECT winRect = [] (HWND hwnd) {
             RECT rect{};
@@ -585,10 +587,9 @@ bool MainWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr
 void MainWindow::keyPressEvent(QKeyEvent* event)
 {
     const Qt::KeyboardModifiers mods = event->modifiers();
-    const bool textInputFocused = isTextInputFocusWidget(QApplication::focusWidget());
-    if (textInputFocused &&
-        ((mods == Qt::NoModifier || mods == Qt::ShiftModifier) &&
-         (!event->text().isEmpty() || event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace))) {
+    const bool textInputFocused = isTextInputFocusWidget(focusWidget());
+    if (QApplication::activePopupWidget() ||
+        (textInputFocused && (mods == Qt::NoModifier || mods == Qt::ShiftModifier))) {
         QMainWindow::keyPressEvent(event);
         return;
     }

@@ -4,9 +4,10 @@
 
 namespace cgplay {
 
-class MediaFrameSnapshotService : public IMediaFrameSnapshotService
+class MediaFrameSnapshotService : public IMediaFrameSnapshotService, public IMediaFrameRangePreparation
 {
 public:
+    bool prepareRangeCapture(const AIFrameCaptureRequest&, AIRequest*, QString*) const override;
     bool capture(
         const AIFrameCaptureRequest& request,
         QVector<AIMediaFrameReference>* outFrames,

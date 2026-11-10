@@ -17,6 +17,8 @@
 #include <QSignalBlocker>
 #include <QTimer>
 #include <QVariant>
+#include <cmath>
+#include <limits>
 
 namespace cgplay {
 
@@ -72,8 +74,8 @@ enum class MediaGlyph {
 class VolumePopupWidget final : public QWidget
 {
 public:
-    VolumePopupWidget()
-        : QWidget(nullptr, Qt::Popup | Qt::FramelessWindowHint)
+    explicit VolumePopupWidget(QWidget* parent)
+        : QWidget(parent, Qt::Popup | Qt::FramelessWindowHint)
     {
         setObjectName(QStringLiteral("PlaybackBarVolumePopup"));
         setAttribute(Qt::WA_TranslucentBackground, true);
@@ -250,7 +252,7 @@ PlaybackBar::PlaybackBar(std::shared_ptr<IPlaybackService> playback, QWidget* pa
     layout->setSpacing(6);
     layout->setAlignment(Qt::AlignVCenter);
 
-    _btnPrev = _makeBtn(QString(), QString::fromUtf8("上一帧"), 30);
+    _btnPrev = _makeBtn(QString(), QString::fromUtf8("后退"), 30);
     _btnPrev->setIcon(makeGlyphIcon(MediaGlyph::Prev, QColor("#F3F7FC")));
     _btnPrev->setIconSize(QSize(18, 18));
     _btnPrev->setObjectName(QStringLiteral("PlaybackBarPreviousFrame"));
@@ -264,23 +266,57 @@ PlaybackBar::PlaybackBar(std::shared_ptr<IPlaybackService> playback, QWidget* pa
     _btnPlay->setProperty("commandId", QStringLiteral("playback.toggle"));
     layout->addWidget(_btnPlay);
 
-    _btnNext = _makeBtn(QString(), QString::fromUtf8("下一帧"), 30);
+    _btnNext = _makeBtn(QString(), QString::fromUtf8("前进"), 30);
     _btnNext->setIcon(makeGlyphIcon(MediaGlyph::Next, QColor("#F3F7FC")));
     _btnNext->setIconSize(QSize(18, 18));
     _btnNext->setObjectName(QStringLiteral("PlaybackBarNextFrame"));
     _btnNext->setProperty("commandId", QStringLiteral("playback.nextFrame"));
     layout->addWidget(_btnNext);
 
+    _btnNavigationStep = _makeBtn(QString(), QStringLiteral("快进 / 后退步长"), 32);
+    _btnNavigationStep->setObjectName(QStringLiteral("PlaybackBarNavigationStep"));
+    _btnNavigationStep->setFixedWidth(62);
+    _btnNavigationStep->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    _btnNavigationStep->setPopupMode(QToolButton::InstantPopup);
+    auto* navigationMenu = new QMenu(_btnNavigationStep);
+    auto* navigationGroup = new QActionGroup(navigationMenu);
+    navigationGroup->setExclusive(true);
+    for (const bool seconds : {true, false}) {
+        if (!seconds) navigationMenu->addSeparator();
+        for (const int amount : {1, 5, 10}) {
+            auto* action = navigationMenu->addAction(QStringLiteral("%1 %2")
+                .arg(amount).arg(seconds ? QStringLiteral("秒") : QStringLiteral("帧")));
+            action->setObjectName(QStringLiteral("PlaybackBarNavigation%1%2")
+                .arg(seconds ? QStringLiteral("Seconds") : QStringLiteral("Frames")).arg(amount));
+            action->setCheckable(true);
+            action->setProperty("navigationSeconds", seconds);
+            action->setProperty("navigationAmount", amount);
+            navigationGroup->addAction(action);
+            connect(action, &QAction::triggered, this, [this, seconds, amount] {
+                setNavigationStep(seconds, amount);
+            });
+        }
+    }
+    _btnNavigationStep->setMenu(navigationMenu);
+    layout->addWidget(_btnNavigationStep);
+    _refreshNavigationStep();
+
     layout->addStretch();
 
-    _lblFrame = new QLabel("00:00:00:00", this);
-    _lblFrame->setAlignment(Qt::AlignCenter);
+    _lblFrame = new QToolButton(this);
+    _lblFrame->setObjectName(QStringLiteral("PlaybackBarTimeDisplay"));
+    _lblFrame->setText(QStringLiteral("00:00:00:00"));
+    _lblFrame->setFocusPolicy(Qt::NoFocus);
+    _lblFrame->setCursor(Qt::PointingHandCursor);
+    _lblFrame->setToolButtonStyle(Qt::ToolButtonTextOnly);
     _lblFrame->setMinimumWidth(132);
     _lblFrame->setStyleSheet(QString(
-        "QLabel{color:%1;background:rgba(9,13,18,0.60);border:1px solid rgba(255,138,61,0.38);"
+        "QToolButton{color:%1;background:rgba(9,13,18,0.60);border:1px solid rgba(255,138,61,0.38);"
         "border-radius:7px;padding:5px 16px;font-size:12px;font-family:'Consolas','Segoe UI';font-weight:800;letter-spacing:0.25px;}")
         .arg(kAccent));
     layout->addWidget(_lblFrame);
+    connect(_lblFrame, &QToolButton::clicked, this, [this] { setDisplaySeconds(!_displaySeconds); });
+    _refreshTimeDisplay();
 
     layout->addStretch();
 
@@ -382,7 +418,7 @@ PlaybackBar::PlaybackBar(std::shared_ptr<IPlaybackService> playback, QWidget* pa
     _btnMute->setCheckable(false);
     layout->addWidget(_btnMute);
 
-    auto* volumePopup = new VolumePopupWidget;
+    auto* volumePopup = new VolumePopupWidget(this);
     volumePopup->setProperty("cgplay.commandPresentation.owner", QVariant::fromValue<QObject*>(this));
     volumePopup->setStyleSheet(QStringLiteral(
         "QToolButton#PlaybackBarMutePopup{background:transparent;color:#F4F7FB;border:0;"
@@ -432,8 +468,8 @@ PlaybackBar::PlaybackBar(std::shared_ptr<IPlaybackService> playback, QWidget* pa
         connect(_volumeApplyTimer, &QTimer::timeout, this, &PlaybackBar::_applyPendingVolume);
 
         connect(_btnPlay, &QToolButton::clicked, this, [this] { _playback->togglePlay(); });
-        connect(_btnPrev, &QToolButton::clicked, this, [this] { _playback->prevFrame(); });
-        connect(_btnNext, &QToolButton::clicked, this, [this] { _playback->nextFrame(); });
+        connect(_btnPrev, &QToolButton::clicked, this, [this] { _playback->seekRelative(-navigationStepFrames()); });
+        connect(_btnNext, &QToolButton::clicked, this, [this] { _playback->seekRelative(navigationStepFrames()); });
         connect(mutePopupButton, &QToolButton::clicked, this, [this, mutePopupButton] {
             _playback->setMute(mutePopupButton->isChecked());
         });
@@ -445,11 +481,12 @@ PlaybackBar::PlaybackBar(std::shared_ptr<IPlaybackService> playback, QWidget* pa
             volumeLabel->setText(QStringLiteral("%1%").arg(qRound(value / 10.0)));
         });
 
-        connect(_playback->signalProxy(), &PlaybackServiceSignals::volumeChanged, this, [this](float value) {
+        connect(_playback->signalProxy(), &PlaybackServiceSignals::volumeChanged, this, [this, volumeLabel](float value) {
             if (_volSlider->isSliderDown()) {
                 return;
             }
             _pendingVolumeValue = qBound(0, qRound(value * 1000.0f), 1000);
+            volumeLabel->setText(QStringLiteral("%1%").arg(qRound(_pendingVolumeValue / 10.0)));
             if (_volSlider->value() != _pendingVolumeValue) {
                 _volSlider->blockSignals(true);
                 _volSlider->setValue(_pendingVolumeValue);
@@ -467,16 +504,13 @@ PlaybackBar::PlaybackBar(std::shared_ptr<IPlaybackService> playback, QWidget* pa
         });
         connect(_playback->signalProxy(), &PlaybackServiceSignals::muteChanged, mutePopupButton, &QToolButton::setChecked);
 
-        connect(_playback->signalProxy(), &PlaybackServiceSignals::currentFrameChanged, this, [this](int frame, int) {
+        connect(_playback->signalProxy(), &PlaybackServiceSignals::currentFrameChanged, this, [this](int, int) {
             double fps = _playback->fps();
             if (fps <= 0.0) {
                 fps = 24.0;
             }
 
-            const QString frameText = formatFrameTimecode(frame, fps);
-            if (_lblFrame->text() != frameText) {
-                _lblFrame->setText(frameText);
-            }
+            _refreshTimeDisplay();
             const QString fpsText = QString("%1 FPS").arg(fps, 0, 'f', 0);
             if (_lblFPS->text() != fpsText) {
                 _lblFPS->setText(fpsText);
@@ -498,14 +532,76 @@ PlaybackBar::PlaybackBar(std::shared_ptr<IPlaybackService> playback, QWidget* pa
 
 PlaybackBar::~PlaybackBar() = default;
 
+int PlaybackBar::navigationStepFrames() const
+{
+    if (!_navigationInSeconds) return _navigationStepAmount;
+    const double mediaFps = _playback ? _playback->fps() : 24.0;
+    const double fps = std::isfinite(mediaFps) && mediaFps > 0.0 && mediaFps <= 1000000.0
+        ? mediaFps : 24.0;
+    return static_cast<int>(std::clamp(std::round(_navigationStepAmount * fps),
+        1.0, static_cast<double>(std::numeric_limits<int>::max())));
+}
+
+void PlaybackBar::setNavigationStep(bool inSeconds, int amount)
+{
+    const int validAmount = amount == 1 || amount == 10 ? amount : 5;
+    if (_navigationInSeconds == inSeconds && _navigationStepAmount == validAmount) return;
+    _navigationInSeconds = inSeconds;
+    _navigationStepAmount = validAmount;
+    _refreshNavigationStep();
+    Q_EMIT navigationStepChanged(inSeconds, validAmount);
+}
+
+void PlaybackBar::_refreshNavigationStep()
+{
+    const QString step = QStringLiteral("%1%2").arg(_navigationStepAmount)
+        .arg(_navigationInSeconds ? QStringLiteral("秒") : QStringLiteral("帧"));
+    _btnNavigationStep->setText(step);
+    _btnNavigationStep->setProperty("cgplay.originalText", step);
+    _btnNavigationStep->setToolTip(QStringLiteral("快进 / 后退步长，当前 %1；单击切换帧数或秒数").arg(step));
+    for (auto* action : _btnNavigationStep->menu()->actions()) {
+        if (!action->isCheckable()) continue;
+        action->setChecked(action->property("navigationSeconds").toBool() == _navigationInSeconds &&
+            action->property("navigationAmount").toInt() == _navigationStepAmount);
+    }
+    updateCommandPresentationState(_btnPrev, QStringLiteral("后退"), QStringLiteral("每次后退 %1").arg(step));
+    updateCommandPresentationState(_btnNext, QStringLiteral("前进"), QStringLiteral("每次前进 %1").arg(step));
+}
+
+void PlaybackBar::setDisplaySeconds(bool enabled)
+{
+    if (_displaySeconds == enabled) return;
+    _displaySeconds = enabled;
+    _refreshTimeDisplay();
+    Q_EMIT displaySecondsChanged(enabled);
+}
+
+void PlaybackBar::_refreshTimeDisplay()
+{
+    if (!_lblFrame) return;
+    const int frame = _playback ? _playback->currentFrame() : 0;
+    const double fps = _playback ? _playback->fps() : 24.0;
+    const QString text = _displaySeconds
+        ? QStringLiteral("%1 秒").arg(formatFrameSeconds(frame, fps))
+        : formatFrameTimecode(frame, fps);
+    if (_lblFrame->text() != text) _lblFrame->setText(text);
+    _lblFrame->setProperty("cgplay.originalText", text);
+    _lblFrame->setToolTip(_displaySeconds
+        ? QStringLiteral("当前按秒显示，单击切换为时间码")
+        : QStringLiteral("当前按时间码显示，单击切换为秒数"));
+    _lblFrame->setAccessibleName(QStringLiteral("播放进度 %1").arg(text));
+}
+
 void PlaybackBar::_refreshPlaybackOptions()
 {
     const double multiplier = _playback ? _playback->speedMultiplier() : 1.0;
     const int mode = _playback ? _playback->loopMode() : 0;
     _btnSpeed->setText(speedLabel(multiplier));
+    _btnSpeed->setProperty("cgplay.originalText", _btnSpeed->text());
     updateCommandPresentationState(_btnSpeed, QStringLiteral("播放倍速"),
         QStringLiteral("当前：%1").arg(speedLabel(multiplier)));
     _btnLoop->setText(mode == 0 ? "LP" : (mode == 1 ? "1" : "AB"));
+    _btnLoop->setProperty("cgplay.originalText", _btnLoop->text());
     updateCommandPresentationState(_btnLoop, QStringLiteral("循环模式"),
         mode == 0 ? QStringLiteral("当前：循环播放") :
         (mode == 1 ? QStringLiteral("当前：单次播放") : QStringLiteral("当前：往返播放")));

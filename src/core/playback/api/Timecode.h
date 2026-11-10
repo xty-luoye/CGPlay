@@ -22,4 +22,11 @@ inline QString formatFrameTimecode(qint64 relativeFrame, double mediaFps)
         .arg(frame % nominalFps, 2, 10, QChar('0'));
 }
 
+inline QString formatFrameSeconds(qint64 relativeFrame, double mediaFps)
+{
+    const double fps = std::isfinite(mediaFps) && mediaFps > 0.0 && mediaFps <= 1000000.0
+        ? mediaFps : 24.0;
+    return QString::number(std::max<qint64>(0, relativeFrame) / fps, 'f', 3);
+}
+
 } // namespace cgplay

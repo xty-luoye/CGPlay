@@ -129,6 +129,12 @@ void LocalCodexOrchestrator::startAgent(const QString& taskId, int index, const 
     QFile::copy(sourceConfig, QDir(home).filePath(QStringLiteral("config.toml")));
     auto agent = QSharedPointer<Agent>::create();
     agent->id = agentId; agent->taskId = taskId; agent->worktree = worktree; agent->branch = branch; agent->home = home;
+    QProcess revision;
+    revision.setWorkingDirectory(worktree);
+    revision.start(QStringLiteral("git"), {QStringLiteral("rev-parse"), QStringLiteral("HEAD")});
+    const ProcessOutcome revisionResult = waitForGitProcess(revision, 10000);
+    if (revisionResult.succeeded())
+        agent->baseCommit = QString::fromLocal8Bit(revisionResult.standardOutput).trimmed();
     agent->session = std::make_unique<CodexAppServerSession>();
     config.workingDirectory = worktree; config.codexHome = home;
     Agent* raw = agent.get();
@@ -175,17 +181,34 @@ void LocalCodexOrchestrator::finishAgent(Agent* agent, const QString& status, co
 {
     if (!agent || agent->finishing || !_agents.contains(agent->id)) return;
     agent->finishing = true;
-    QProcess diff; diff.setWorkingDirectory(agent->worktree); diff.start(QStringLiteral("git"), {QStringLiteral("diff"), QStringLiteral("--stat"), QStringLiteral("HEAD")});
+    const QString base = agent->baseCommit.isEmpty() ? QStringLiteral("HEAD") : agent->baseCommit;
+    QProcess diff; diff.setWorkingDirectory(agent->worktree); diff.start(QStringLiteral("git"), {QStringLiteral("diff"), QStringLiteral("--stat"), base, QStringLiteral("HEAD")});
     const ProcessOutcome diffResult = waitForGitProcess(diff, 10000);
     const QString result = QString::fromLocal8Bit(diffResult.standardOutput).trimmed();
-    QProcess names; names.setWorkingDirectory(agent->worktree); names.start(QStringLiteral("git"), {QStringLiteral("diff"), QStringLiteral("--name-only"), QStringLiteral("HEAD")});
+    QProcess names; names.setWorkingDirectory(agent->worktree); names.start(QStringLiteral("git"), {QStringLiteral("diff"), QStringLiteral("--name-only"), base, QStringLiteral("HEAD")});
     const ProcessOutcome namesResult = waitForGitProcess(names, 10000);
-    const QStringList changedFiles = QString::fromLocal8Bit(namesResult.standardOutput).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    QStringList changedFiles = QString::fromLocal8Bit(namesResult.standardOutput).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    QProcess statusProcess; statusProcess.setWorkingDirectory(agent->worktree);
+    statusProcess.start(QStringLiteral("git"), {QStringLiteral("status"), QStringLiteral("--porcelain"), QStringLiteral("--untracked-files=all")});
+    const ProcessOutcome statusResult = waitForGitProcess(statusProcess, 10000);
+    for (const QString& line : QString::fromLocal8Bit(statusResult.standardOutput).split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        if (line.size() > 3) changedFiles.push_back(line.mid(3).trimmed());
+    }
+    changedFiles.removeDuplicates();
+    changedFiles.sort();
     QJsonArray tasks = readTasks();
     QString completedSummary;
     for (int i = 0; i < tasks.size(); ++i) { QJsonObject task = tasks.at(i).toObject(); if (task.value(QStringLiteral("id")).toString() != agent->taskId) continue; QJsonArray agents = task.value(QStringLiteral("agents")).toArray(); QJsonArray changed; for (const QString& file : changedFiles) changed.push_back(file); agents.push_back(QJsonObject{{QStringLiteral("id"), agent->id}, {QStringLiteral("status"), status}, {QStringLiteral("worktree"), agent->worktree}, {QStringLiteral("branch"), agent->branch}, {QStringLiteral("diffStat"), result}, {QStringLiteral("changedFiles"), changed}, {QStringLiteral("detail"), detail}}); task.insert(QStringLiteral("agents"), agents); QJsonArray conflicts; QHash<QString, QStringList> owners; for (const QJsonValue& agentValue : agents) { const QJsonObject candidate = agentValue.toObject(); for (const QJsonValue& fileValue : candidate.value(QStringLiteral("changedFiles")).toArray()) owners[fileValue.toString()].push_back(candidate.value(QStringLiteral("id")).toString()); } for (auto it = owners.cbegin(); it != owners.cend(); ++it) if (it.value().size() > 1) conflicts.push_back(QJsonObject{{QStringLiteral("path"), it.key()}, {QStringLiteral("agents"), QJsonArray::fromStringList(it.value())}}); task.insert(QStringLiteral("conflicts"), conflicts); const int expected = task.value(QStringLiteral("agentCount")).toInt(); if (agents.size() >= expected) { bool failed = false; QStringList summaries; for (const QJsonValue& value : agents) { const QJsonObject resultObject = value.toObject(); if (resultObject.value(QStringLiteral("status")).toString() != QStringLiteral("completed")) failed = true; summaries << QStringLiteral("%1 [%2]\n%3").arg(resultObject.value(QStringLiteral("id")).toString(), resultObject.value(QStringLiteral("status")).toString(), resultObject.value(QStringLiteral("diffStat")).toString()); } task.insert(QStringLiteral("status"), failed ? QStringLiteral("failed") : QStringLiteral("completed")); completedSummary = QStringLiteral("[cgplay.orchestrator.v1 local result]\nTask: %1\nStatus: %2\nConflicts: %3\n%4").arg(task.value(QStringLiteral("objective")).toString(), task.value(QStringLiteral("status")).toString()).arg(conflicts.size()).arg(summaries.join(QStringLiteral("\n\n"))); } tasks.replace(i, task); break; }
     writeTasks(tasks); emit event(tr("Agent finished: %1\n%2").arg(agent->id, result)); if (!completedSummary.isEmpty()) emit taskCompleted(completedSummary);
-    agent->session->stop(); _agents.remove(agent->id);
+    // The session may currently be dispatching the completion line. Keep it
+    // alive until that signal delivery and its buffer loop have returned.
+    auto* session = agent->session.release();
+    if (session) {
+        disconnect(session, nullptr, this, nullptr);
+        session->stop();
+        session->deleteLater();
+    }
+    _agents.remove(agent->id);
 }
 
 bool LocalCodexOrchestrator::cancelTask(const QString& taskId, QString* error)
@@ -213,20 +236,33 @@ bool LocalCodexOrchestrator::mergeTask(const QString& taskId, QString* error)
         const QString worktree = agent.value(QStringLiteral("worktree")).toString();
         const QString branch = agent.value(QStringLiteral("branch")).toString();
         if (!QDir(worktree).exists()) { if (error) *error = QStringLiteral("Agent worktree is unavailable: %1").arg(worktree); return false; }
-        QProcess diff; diff.setWorkingDirectory(worktree); diff.start(QStringLiteral("git"), {QStringLiteral("diff"), QStringLiteral("--binary"), QStringLiteral("HEAD")});
-        const ProcessOutcome diffResult = waitForGitProcess(diff, 15000);
-        if (!diffResult.succeeded()) {
-            if (error) *error = gitProcessError(diff, diffResult, QStringLiteral("Agent diff timed out."));
+        // A worktree can contain both committed agent work and additional
+        // staged/unstaged/untracked files.  Materialize the latter into the
+        // same branch before merging; applying only `git diff HEAD` silently
+        // drops committed changes and cannot represent untracked files.
+        QProcess status; status.setWorkingDirectory(worktree);
+        status.start(QStringLiteral("git"), {QStringLiteral("status"), QStringLiteral("--porcelain"), QStringLiteral("--untracked-files=all")});
+        const ProcessOutcome statusResult = waitForGitProcess(status, 15000);
+        if (!statusResult.succeeded()) {
+            if (error) *error = gitProcessError(status, statusResult, QStringLiteral("Agent status check timed out."));
             return false;
         }
-        const QByteArray patch = diffResult.standardOutput;
-        if (!patch.isEmpty()) {
-            QProcess apply; apply.setWorkingDirectory(root); apply.start(QStringLiteral("git"), {QStringLiteral("apply"), QStringLiteral("--3way"), QStringLiteral("--index")});
-            if (!apply.waitForStarted(5000)) { if (error) *error = apply.errorString(); return false; }
-            apply.write(patch); apply.closeWriteChannel();
-            const ProcessOutcome applyResult = waitForGitProcess(apply, 30000);
-            if (!applyResult.succeeded()) { if (error) *error = gitProcessError(apply, applyResult, QStringLiteral("Agent patch apply timed out.")); return false; }
-            continue;
+        if (!QString::fromLocal8Bit(statusResult.standardOutput).trimmed().isEmpty()) {
+            QProcess add; add.setWorkingDirectory(worktree); add.start(QStringLiteral("git"), {QStringLiteral("add"), QStringLiteral("-A")});
+            const ProcessOutcome addResult = waitForGitProcess(add, 15000);
+            if (!addResult.succeeded()) {
+                if (error) *error = gitProcessError(add, addResult, QStringLiteral("Agent changes could not be staged."));
+                return false;
+            }
+            QProcess commit; commit.setWorkingDirectory(worktree);
+            commit.start(QStringLiteral("git"), {QStringLiteral("-c"), QStringLiteral("user.name=CGPlay"),
+                QStringLiteral("-c"), QStringLiteral("user.email=cgplay@localhost"),
+                QStringLiteral("commit"), QStringLiteral("-m"), QStringLiteral("cgplay: checkpoint agent work before merge")});
+            const ProcessOutcome commitResult = waitForGitProcess(commit, 30000);
+            if (!commitResult.succeeded()) {
+                if (error) *error = gitProcessError(commit, commitResult, QStringLiteral("Agent changes could not be committed."));
+                return false;
+            }
         }
         if (!branch.isEmpty()) {
             QProcess git; git.setWorkingDirectory(root); git.start(QStringLiteral("git"), {QStringLiteral("merge"), QStringLiteral("--no-ff"), branch});

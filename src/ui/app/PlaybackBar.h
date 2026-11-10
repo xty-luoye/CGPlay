@@ -28,10 +28,18 @@ public:
     bool translationVisible() const;
     void setTranslationMode(const QString& modeId);
     QString translationMode() const;
+    int navigationStepFrames() const;
+    void setNavigationStep(bool inSeconds, int amount);
+    bool navigationInSeconds() const { return _navigationInSeconds; }
+    int navigationStepAmount() const { return _navigationStepAmount; }
+    void setDisplaySeconds(bool enabled);
+    bool displaySeconds() const { return _displaySeconds; }
 
 Q_SIGNALS:
     void translationVisibilityToggled(bool visible);
     void translationModeChanged(const QString& modeId);
+    void navigationStepChanged(bool inSeconds, int amount);
+    void displaySecondsChanged(bool enabled);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -45,6 +53,8 @@ private:
     void _queueVolumeValue(int sliderValue);
     void _applyPendingVolume();
     void _updateResponsiveLayout();
+    void _refreshTimeDisplay();
+    void _refreshNavigationStep();
 
     std::shared_ptr<IPlaybackService> _playback;
 
@@ -59,11 +69,15 @@ private:
     QToolButton* _btnLoop     = nullptr;
     QToolButton* _btnMute     = nullptr;
     QLabel*      _lblFPS      = nullptr;
-    QLabel*      _lblFrame    = nullptr;
+    QToolButton* _lblFrame    = nullptr;
+    QToolButton* _btnNavigationStep = nullptr;
     QSlider*     _volSlider   = nullptr;
     QTimer*      _volumeApplyTimer = nullptr;
     int          _pendingVolumeValue = 1000;
     QString      _translationMode = QStringLiteral("quick-playback");
+    bool         _navigationInSeconds = true;
+    int          _navigationStepAmount = 5;
+    bool         _displaySeconds = false;
 };
 
 } // namespace cgplay

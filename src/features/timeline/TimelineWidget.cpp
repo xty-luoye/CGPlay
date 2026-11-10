@@ -27,6 +27,7 @@
 #include <QMimeData>
 #include <QRegularExpression>
 #include <QTimer>
+#include <QToolButton>
 #include <cmath>
 #include <algorithm>
 #include <memory>
@@ -97,6 +98,7 @@ public:
     int inPoint = -1;
     int outPoint = -1;
     double fps = 24.0;
+    bool displaySeconds = false;
     struct Marker { int frame; QColor color; QString label; };
     QVector<Marker> markers;
     QVector<TimelineThumb> thumbnails;
@@ -112,8 +114,22 @@ public:
         setCursor(Qt::PointingHandCursor);
     }
 
-    int frameToX(int f) const { return (totalFrames > 1) ? (int)((double)f / (totalFrames - 1) * width()) : 0; }
-    int xToFrame(int x) const { return (totalFrames > 1) ? (int)((double)x / width() * (totalFrames - 1)) : 0; }
+    int frameToX(int f) const
+    {
+        return totalFrames > 1 ? qRound(double(std::clamp(f, 0, totalFrames - 1)) /
+            (totalFrames - 1) * std::max(0, width() - 1)) : 0;
+    }
+    int xToFrame(int x) const
+    {
+        return totalFrames > 1 ? qRound(double(std::clamp(x, 0, std::max(0, width() - 1))) /
+            std::max(1, width() - 1) * (totalFrames - 1)) : 0;
+    }
+    QRect tickLabelRect(int x, const QString& text, const QFontMetrics& metrics) const
+    {
+        const int labelWidth = std::min(std::max(1, width() - 4), metrics.horizontalAdvance(text) + 8);
+        const int left = std::clamp(x - labelWidth / 2, 2, std::max(2, width() - labelWidth - 2));
+        return QRect(left, 2, labelWidth, 13);
+    }
     void invalidateStaticLayer()
     {
         _staticLayerDirty = true;
@@ -273,7 +289,7 @@ private:
         const QColor text = themeColor("cgplay.textColor", kTextDim);
         const QColor border = themeColor("cgplay.borderColor", kBorder);
         const QColor accent = themeColor("cgplay.accentColor", kPlayhead);
-        auto fx = [&](int f) { return (totalFrames > 1) ? (int)((double)f / (totalFrames - 1) * w) : 0; };
+        auto fx = [this](int f) { return frameToX(f); };
         QLinearGradient bg(0, 0, 0, height());
         bg.setColorAt(0.0, panel.lighter(106));
         bg.setColorAt(0.42, timeline);
@@ -290,27 +306,42 @@ private:
         p.drawLine(0, y1 + kMarkerH - 1, w, y1 + kMarkerH - 1);
 
         const double fpsValue = fps > 0.0 ? fps : 24.0;
-        const int majorTickCount = std::max(5, std::min(9, w / 120));
-        const int majorStepFrames = std::max(1, totalFrames / majorTickCount);
         p.setPen(QPen(themeAlpha(border, 130), 1));
         QFont tickFont("Segoe UI");
         tickFont.setPixelSize(10);
         tickFont.setWeight(QFont::DemiBold);
         p.setFont(tickFont);
-        for (int f = 0; f < totalFrames; f += majorStepFrames) {
+        const QFontMetrics metrics(tickFont);
+        const auto tickText = [this, fpsValue](int frame) {
+            return displaySeconds ? QStringLiteral("%1 秒").arg(formatFrameSeconds(frame, fpsValue))
+                                  : formatFrameTimecode(frame, fpsValue);
+        };
+        const int labelWidth = metrics.horizontalAdvance(tickText(std::max(0, totalFrames - 1))) + 24;
+        const int majorTickCount = std::min(std::max(0, totalFrames - 1),
+            std::max(1, std::min(9, w / std::max(1, labelWidth))));
+        const QRect finalLabelRect = tickLabelRect(fx(totalFrames - 1), tickText(totalFrames - 1), metrics);
+        int previousLabelRight = -8;
+        for (int tick = 0; tick <= majorTickCount; ++tick) {
+            const int f = majorTickCount > 0 ? qRound(double(totalFrames - 1) * tick / majorTickCount) : 0;
             const int x = fx(f);
             p.drawLine(x, y1 + kMarkerH - 12, x, y1 + kMarkerH - 1);
-            const int minorStep = std::max(1, majorStepFrames / 8);
+            const int nextFrame = majorTickCount > 0
+                ? qRound(double(totalFrames - 1) * (tick + 1) / majorTickCount) : totalFrames;
+            const int minorStep = std::max(1, (nextFrame - f) / 8);
             p.setPen(QPen(themeAlpha(border, 100), 1));
-            for (int mf = f + minorStep; mf < std::min(totalFrames, f + majorStepFrames); mf += minorStep) {
+            for (int mf = f + minorStep; mf < std::min(totalFrames, nextFrame); mf += minorStep) {
                 const int mx = fx(mf);
                 p.drawLine(mx, y1 + kMarkerH - 6, mx, y1 + kMarkerH - 1);
             }
             p.setPen(text);
-            p.drawText(
-                QRect(x - 38, y1 + 2, 76, 13),
-                Qt::AlignHCenter | Qt::AlignTop,
-                formatFrameTimecode(f, fpsValue));
+            const QString text = tickText(f);
+            const QRect labelRect = tickLabelRect(x, text, metrics);
+            const bool endpoint = tick == 0 || tick == majorTickCount;
+            if (endpoint || (labelRect.left() > previousLabelRight + 8 &&
+                labelRect.right() < finalLabelRect.left() - 8)) {
+                p.drawText(labelRect, Qt::AlignHCenter | Qt::AlignTop, text);
+                previousLabelRight = labelRect.right();
+            }
             p.setPen(QPen(themeAlpha(border, 120), 1));
         }
 
@@ -456,7 +487,7 @@ private:
 struct TimelineWidget::Private {
     std::shared_ptr<IPlaybackService> playback;
     TimelineBar* bar = nullptr;
-    QLabel* lblFrame = nullptr;
+    QToolButton* lblFrame = nullptr;
     QLabel* lblInOut = nullptr;
     int curFrame = 0;
     int total = 1;
@@ -471,6 +502,7 @@ struct TimelineWidget::Private {
     OcioManager::PreviewTransformSettings thumbRequestSettings;
     QString thumbMediaPath;
     double thumbFps = 0.0;
+    bool displaySeconds = false;
 };
 
 TimelineWidget::TimelineWidget(std::shared_ptr<IPlaybackService> pb, QWidget* parent)
@@ -478,7 +510,7 @@ TimelineWidget::TimelineWidget(std::shared_ptr<IPlaybackService> pb, QWidget* pa
     , _p(std::make_unique<Private>())
 {
     _p->playback = std::move(pb);
-    setFixedHeight(kTotalH + 15);
+    setFixedHeight(kTotalH + 30);
     setAcceptDrops(true);
     setAttribute(Qt::WA_StyledBackground, true);
     setStyleSheet(
@@ -526,16 +558,23 @@ void TimelineWidget::_buildUI()
     _p->lblInOut->hide();
     lr->addWidget(_p->lblInOut);
     lr->addStretch();
-    _p->lblFrame = new QLabel("0 / 0", this);
-    _p->lblFrame->setAlignment(Qt::AlignCenter);
+    _p->lblFrame = new QToolButton(this);
+    _p->lblFrame->setObjectName(QStringLiteral("TimelineProgressDisplay"));
+    _p->lblFrame->setText(QStringLiteral("0 / 0"));
+    _p->lblFrame->setFocusPolicy(Qt::NoFocus);
+    _p->lblFrame->setCursor(Qt::PointingHandCursor);
+    _p->lblFrame->setToolButtonStyle(Qt::ToolButtonTextOnly);
     _p->lblFrame->setMinimumWidth(84);
     _p->lblFrame->setStyleSheet(
-        QString("QLabel{color:%1;font-size:12px;font-weight:700;padding:2px 10px;"
+        QString("QToolButton{color:%1;font-size:12px;font-weight:700;padding:2px 10px;"
                 "background:rgba(16,21,27,0.90);border:1px solid rgba(255,140,50,0.40);"
                 "border-radius:6px;}").arg(kPlayhead.name()));
     lr->addWidget(_p->lblFrame);
     vlay->addLayout(lr);
-    _p->lblFrame->setText("0 / 0");
+    connect(_p->lblFrame, &QToolButton::clicked, this, [this] {
+        setDisplaySeconds(!_p->displaySeconds);
+    });
+    _refreshProgressDisplay();
 }
 
 void TimelineWidget::_onFrameChanged(int frame, int total)
@@ -546,9 +585,7 @@ void TimelineWidget::_onFrameChanged(int frame, int total)
         if (_p->bar) {
             _p->bar->updateFrameVisual(0, 1, 24.0);
         }
-        if (_p->lblFrame && _p->lblFrame->text() != QStringLiteral("0 / 0")) {
-            _p->lblFrame->setText(QStringLiteral("0 / 0"));
-        }
+        _refreshProgressDisplay();
         return;
     }
 
@@ -563,14 +600,43 @@ void TimelineWidget::_onFrameChanged(int frame, int total)
             if (serial == _p->thumbSerial) _startThumbnailBuild();
         });
     }
-    const int displayTotal = std::max(1, total);
-    const int displayFrame = std::clamp(frame + 1, 1, displayTotal);
-    if (_p->lblFrame) {
-        const QString nextText = QStringLiteral("%1 / %2").arg(displayFrame).arg(displayTotal);
-        if (_p->lblFrame->text() != nextText) {
-            _p->lblFrame->setText(nextText);
-        }
+    _refreshProgressDisplay();
+}
+
+void TimelineWidget::setDisplaySeconds(bool enabled)
+{
+    if (_p->displaySeconds == enabled) return;
+    _p->displaySeconds = enabled;
+    _p->bar->displaySeconds = enabled;
+    _p->bar->invalidateStaticLayer();
+    _p->bar->update();
+    _refreshProgressDisplay();
+    Q_EMIT displaySecondsChanged(enabled);
+}
+
+bool TimelineWidget::displaySeconds() const
+{
+    return _p->displaySeconds;
+}
+
+void TimelineWidget::_refreshProgressDisplay()
+{
+    if (!_p->lblFrame) return;
+    QString text = QStringLiteral("0 / 0");
+    if (!_p->mediaPath.isEmpty()) {
+        const int total = std::max(1, _p->total);
+        const int frame = std::clamp(_p->curFrame, 0, total - 1);
+        const double fps = _p->playback ? _p->playback->fps() : 24.0;
+        text = _p->displaySeconds
+            ? QStringLiteral("%1 / %2 秒").arg(formatFrameSeconds(frame, fps), formatFrameSeconds(total, fps))
+            : QStringLiteral("%1 / %2 帧").arg(frame + 1).arg(total);
     }
+    if (_p->lblFrame->text() != text) _p->lblFrame->setText(text);
+    _p->lblFrame->setProperty("cgplay.originalText", text);
+    _p->lblFrame->setToolTip(_p->displaySeconds
+        ? QStringLiteral("当前按秒显示，单击切换为帧数")
+        : QStringLiteral("当前按帧显示，单击切换为秒数"));
+    _p->lblFrame->setAccessibleName(QStringLiteral("时间轴进度 %1").arg(text));
 }
 
 void TimelineWidget::setMediaPath(const QString& path)
@@ -610,9 +676,9 @@ void TimelineWidget::setMediaPath(const QString& path)
         _p->bar->invalidateStaticLayer();
         _p->bar->update();
     }
-    if (path.isEmpty() && _p->lblFrame) {
-        _p->lblFrame->setText("0 / 0");
-    }
+    _p->curFrame = 0;
+    _p->total = 1;
+    _refreshProgressDisplay();
     const int serial = _p->thumbSerial;
     QTimer::singleShot(kThumbnailStartDelayMs, this, [this, serial] {
         if (serial == _p->thumbSerial) _startThumbnailBuild();

@@ -409,7 +409,7 @@ bool AIAgentWorkspace::_tryHandleLocalControlPrompt(const QString& prompt)
     QRegularExpressionMatch volumeMatch = volumePattern.match(normalized);
     if (volumeMatch.hasMatch()) {
         appendAction(QStringLiteral("audio.set_volume"), {
-            { QStringLiteral("value"), volumeMatch.captured(1).toInt() }
+            { QStringLiteral("value"), volumeMatch.captured(1).toDouble() / 100.0 }
         });
     }
 

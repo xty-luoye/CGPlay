@@ -1,4 +1,4 @@
-// CGPlay OtioExporter.cpp
+﻿// CGPlay OtioExporter.cpp
 
 #include "OtioExporter.h"
 #include "playlist/PlaylistModel.h"
@@ -15,6 +15,8 @@
 #include <opentime/timeRange.h>
 
 #include <QFileInfo>
+#include <QDir>
+#include <QRegularExpression>
 #include <QDebug>
 
 namespace cgplay {
@@ -55,6 +57,15 @@ bool OtioExporter::exportShotsToFile(const QString& otioPath,
                 .arg(shot.name.isEmpty() ? shot.path : shot.name);
             return false;
         }
+        const QFileInfo file(shot.path);
+        const QString ext = file.suffix().toLower();
+        const bool image = ext == "exr" || ext == "dpx" || ext == "tif" || ext == "tiff" ||
+            ext == "png" || ext == "jpg" || ext == "jpeg";
+        static const QRegularExpression sequencePattern(QStringLiteral("^(.*?)([0-9]+)(\\.[^.]+)$"));
+        if (image && shot.lastFrame > shot.firstFrame && !sequencePattern.match(file.fileName()).hasMatch()) {
+            _errorString = QStringLiteral("无法识别序列帧号：%1").arg(shot.path);
+            return false;
+        }
     }
 
     // Determine global FPS from first valid shot
@@ -93,18 +104,12 @@ bool OtioExporter::exportShotsToFile(const QString& otioPath,
         OTIO::MediaReference* mediaRef = nullptr;
 
         if (isImageSeq && isSequence) {
-            std::string dirPath = fi.path().toStdString();
-            std::string prefix = fi.completeBaseName().toStdString();
-            auto dotPos = prefix.rfind('.');
-            if (dotPos != std::string::npos)
-                prefix = prefix.substr(0, dotPos + 1);
-            std::string suffix = "." + ext.toStdString();
-
-            int padding = 4;
-            int maxFrame = std::max(std::abs(shot.firstFrame),
-                                    std::abs(shot.lastFrame));
-            if (maxFrame >= 10000) padding = 5;
-            else if (maxFrame >= 1000) padding = 4;
+            static const QRegularExpression pattern(QStringLiteral("^(.*?)([0-9]+)(\\.[^.]+)$"));
+            const auto match = pattern.match(fi.fileName());
+            const std::string dirPath = (fi.absolutePath() + QLatin1Char('/')).toStdString();
+            const std::string prefix = match.captured(1).toStdString();
+            const std::string suffix = match.captured(3).toStdString();
+            const int padding = match.captured(2).size();
 
             mediaRef = new OTIO::ImageSequenceReference(
                 dirPath, prefix, suffix,

@@ -57,6 +57,8 @@ public:
     void loadConfig(const QString& configPath);
     void loadBuiltinConfig(const QString& name = "ACES");
     void loadAces12Config();
+    // Validate the complete candidate before changing any live color state.
+    bool applyConfiguration(const PreviewTransformSettings& settings, QString* error = nullptr);
     QString currentConfigPath() const;
     PreviewTransformSettings previewTransformSettings() const;
     static bool applyPreviewTransform(QImage& image, const PreviewTransformSettings& settings);

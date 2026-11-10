@@ -684,7 +684,10 @@ QVector<GeneratedSubtitleCue> SubtitleGenerationService::readSubtitleFile(const 
     const QString content = QString::fromUtf8(file.readAll()).replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
     const QStringList blocks = content.split(QRegularExpression(QStringLiteral("\n\\s*\n")), Qt::SkipEmptyParts);
     QVector<GeneratedSubtitleCue> cues;
-    QRegularExpression timingRe(QStringLiteral("(\\d{2}:\\d{2}:\\d{2}[,.]\\d{3})\\s*-->\\s*(\\d{2}:\\d{2}:\\d{2}[,.]\\d{3})"));
+    // WebVTT permits MM:SS.mmm as well as HH:MM:SS.mmm. Keep the hours form
+    // unbounded because VTT uses it for long media, while validating minute
+    // and second fields in parseSubtitleTime.
+    QRegularExpression timingRe(QStringLiteral("((?:\\d{2,}:)?\\d{2}:\\d{2}[,.]\\d{3})\\s*-->\\s*((?:\\d{2,}:)?\\d{2}:\\d{2}[,.]\\d{3})"));
     for (const QString& rawBlock : blocks) {
         QStringList lines = rawBlock.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
         if (lines.isEmpty() || lines.first().trimmed() == QStringLiteral("WEBVTT")) {
@@ -895,6 +898,9 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
                     result.translationModel,
                     &result.errorMessage,
                     &failedTranslationBatchCount)) {
+                if (isCanceled()) {
+                    return fail(QStringLiteral("Subtitle generation canceled"));
+                }
                 result.failedTranslationBatchCount = failedTranslationBatchCount;
                 result.translatedCueCount = 0;
                 for (const auto& cue : result.cues) {
@@ -933,6 +939,9 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
                     result.translatedCoverageEndSeconds = translatedSubtitleCueMaxEndSeconds(result.cues);
                     return result;
                 }
+            }
+            if (isCanceled()) {
+                return fail(QStringLiteral("Subtitle generation canceled"));
             }
             result.subtitleSourceError = result.errorMessage.isEmpty()
                 ? QStringLiteral("Subtitle translation failed; falling back to ASR")
@@ -1020,11 +1029,11 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
             }
         };
         const auto commitPartialWindow = [&](QVector<GeneratedSubtitleCue>* partialCues, double processedThrough) {
-            if (!partialCues || partialCues->isEmpty()) {
+            if (isCanceled() || !partialCues || partialCues->isEmpty()) {
                 return;
             }
             normalizeGeneratedCues(partialCues);
-            if (partialCues->isEmpty()) {
+            if (isCanceled() || partialCues->isEmpty()) {
                 return;
             }
             if (!_writeSrt(result.sourceSrtPath, *partialCues, false) ||
@@ -1032,11 +1041,17 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
                 qWarning() << "[SubtitleGeneration] Failed to write partial source subtitles";
                 return;
             }
+            if (isCanceled()) {
+                return;
+            }
             writeMediaIdentitySidecars(
                 { result.sourceSrtPath, result.sourceVttPath },
                 result.mediaPath,
                 result.mediaDurationSeconds);
             if (request.translate) {
+                if (isCanceled()) {
+                    return;
+                }
                 QString partialTranslateError;
                 int partialFailedBatchCount = 0;
                 if (!_translateCues(
@@ -1056,10 +1071,16 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
                                << partialTranslateError;
                     return;
                 }
+                if (isCanceled()) {
+                    return;
+                }
             }
             if (!_writeSrt(result.translatedSrtPath, *partialCues, true) ||
                 !_writeVtt(result.translatedVttPath, *partialCues, true)) {
                 qWarning() << "[SubtitleGeneration] Failed to write partial translated subtitles";
+                return;
+            }
+            if (isCanceled()) {
                 return;
             }
             writeMediaIdentitySidecars(
@@ -1258,7 +1279,7 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
                 partialDirtyCueCount += chunk.cues.size();
             };
             auto commitIfDirty = [&]() {
-                if (!partialDirty) {
+                if (isCanceled() || !partialDirty) {
                     return;
                 }
                 for (auto& cue : cues) {
@@ -1270,6 +1291,9 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
             };
             if (!prioritizeForwardChunks) {
                 for (auto& future : futures) {
+                    if (isCanceled()) {
+                        return fail(QStringLiteral("Subtitle generation canceled"));
+                    }
                     consumeChunk(future.get());
                     if (!fatalChunkError.isEmpty()) {
                         break;
@@ -1280,6 +1304,9 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
                 while (remainingFutures > 0 && fatalChunkError.isEmpty()) {
                     bool consumedAny = false;
                     for (int i = 0; i < static_cast<int>(futures.size()); ++i) {
+                        if (isCanceled()) {
+                            return fail(QStringLiteral("Subtitle generation canceled"));
+                        }
                         if (futureConsumed.at(i)) {
                             continue;
                         }
@@ -1302,6 +1329,9 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
                     if (partialBatchReady) {
                         commitIfDirty();
                     }
+                    if (isCanceled()) {
+                        return fail(QStringLiteral("Subtitle generation canceled"));
+                    }
                     if (remainingFutures <= 0 || !fatalChunkError.isEmpty()) {
                         break;
                     }
@@ -1314,6 +1344,9 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
                 return fail(fatalChunkError);
             }
             if (stopAfterPartialRateLimit) {
+                if (isCanceled()) {
+                    return fail(QStringLiteral("Subtitle generation canceled"));
+                }
                 if (cues.isEmpty()) {
                     return fail(batchRateLimitError);
                 }
@@ -1346,6 +1379,9 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
                     &failedTranslationBatchCount)) {
                 return fail(error);
             }
+            if (isCanceled()) {
+                return fail(QStringLiteral("Subtitle generation canceled"));
+            }
             result.failedTranslationBatchCount = failedTranslationBatchCount;
         }
     }
@@ -1372,11 +1408,17 @@ SubtitleGenerationResult SubtitleGenerationService::generate(const SubtitleGener
             ? QStringLiteral("Subtitle translation failed for all batches")
             : QStringLiteral("Subtitle translation produced no usable Chinese text"));
     }
+    if (isCanceled()) {
+        return fail(QStringLiteral("Subtitle generation canceled"));
+    }
     if (!_writeSrt(result.sourceSrtPath, result.cues, false) ||
         !_writeVtt(result.sourceVttPath, result.cues, false) ||
         !_writeSrt(result.translatedSrtPath, result.cues, true) ||
         !_writeVtt(result.translatedVttPath, result.cues, true)) {
         return fail(QStringLiteral("Failed to write subtitle files"));
+    }
+    if (isCanceled()) {
+        return fail(QStringLiteral("Subtitle generation canceled"));
     }
     writeMediaIdentitySidecars(
         { result.sourceSrtPath, result.sourceVttPath, result.translatedSrtPath, result.translatedVttPath },
@@ -1944,8 +1986,15 @@ bool SubtitleGenerationService::_translateCues(
     QString* errorMessage,
     int* failedBatchCount) const
 {
+    const auto isCanceled = [&request]() {
+        return request.cancelRequested && request.cancelRequested->load();
+    };
     if (!cues || cues->isEmpty()) {
         return true;
+    }
+    if (isCanceled()) {
+        if (errorMessage) *errorMessage = QStringLiteral("Subtitle generation canceled");
+        return false;
     }
     if (failedBatchCount) {
         *failedBatchCount = 0;
@@ -1962,6 +2011,10 @@ bool SubtitleGenerationService::_translateCues(
     }
     if (request.mockWithoutApi) {
         for (GeneratedSubtitleCue& cue : *cues) {
+            if (isCanceled()) {
+                if (errorMessage) *errorMessage = QStringLiteral("Subtitle generation canceled");
+                return false;
+            }
             if (cue.translatedText.trimmed().isEmpty()) {
                 cue.translatedText = cue.sourceText.trimmed().isEmpty()
                     ? QStringLiteral("CGPlay subtitle generation smoke test")
@@ -2028,6 +2081,10 @@ bool SubtitleGenerationService::_translateCues(
 
     const int taskCount = static_cast<int>(tasks.size());
     for (int batchStart = 0; batchStart < taskCount; batchStart += effectiveTranslationConcurrency) {
+        if (isCanceled()) {
+            if (errorMessage) *errorMessage = QStringLiteral("Subtitle generation canceled");
+            return false;
+        }
         const int batchEnd = std::min(batchStart + effectiveTranslationConcurrency, taskCount);
         std::vector<std::future<SubtitleTranslationTask>> futures;
         futures.reserve(static_cast<size_t>(batchEnd - batchStart));
@@ -2041,6 +2098,10 @@ bool SubtitleGenerationService::_translateCues(
 
                 QString lastSoftError;
                 for (int attempt = 0; attempt < kMaxSubtitleTranslationAttempts; ++attempt) {
+                    if (request.cancelRequested && request.cancelRequested->load()) {
+                        task.errorMessage = QStringLiteral("Subtitle generation canceled");
+                        return task;
+                    }
                     QString rawText;
                     QString directError;
                     const bool usedDirectTranslationApi =
@@ -2100,9 +2161,24 @@ bool SubtitleGenerationService::_translateCues(
                             task.translatedItems.push_back(qMakePair(cueIndex, text));
                         }
                     }
-                    if (!task.translatedItems.isEmpty()) {
+                    QSet<int> expectedIndexes;
+                    for (const QJsonValue& item : task.items)
+                        expectedIndexes.insert(item.toObject().value(QStringLiteral("i")).toInt(-1));
+                    QSet<int> returnedIndexes;
+                    for (const auto& item : task.translatedItems) {
+                        if (returnedIndexes.contains(item.first)) {
+                            lastSoftError = QStringLiteral("Translation response contains duplicate cue ids");
+                            returnedIndexes.clear();
+                            break;
+                        }
+                        returnedIndexes.insert(item.first);
+                    }
+                    if (!expectedIndexes.isEmpty() && returnedIndexes == expectedIndexes) {
                         return task;
                     }
+                    lastSoftError = QStringLiteral("Translation response omitted %1 cue(s)")
+                        .arg(expectedIndexes.size() - returnedIndexes.intersect(expectedIndexes).size());
+                    task.translatedItems.clear();
                 }
                 qWarning() << "[SubtitleGeneration] Translation batch used source placeholders after retries"
                            << task.batchStart + 1
@@ -2117,6 +2193,10 @@ bool SubtitleGenerationService::_translateCues(
 
         for (auto& future : futures) {
             const SubtitleTranslationTask task = future.get();
+            if (isCanceled() || task.errorMessage == QStringLiteral("Subtitle generation canceled")) {
+                if (errorMessage) *errorMessage = QStringLiteral("Subtitle generation canceled");
+                return false;
+            }
             if (!task.errorMessage.isEmpty()) {
                 if (failedBatchCount) {
                     *failedBatchCount += 1;
@@ -2139,8 +2219,12 @@ bool SubtitleGenerationService::_translateCues(
             }
         }
     }
+    if (isCanceled()) {
+        if (errorMessage) *errorMessage = QStringLiteral("Subtitle generation canceled");
+        return false;
+    }
     applySafetyNegationPolarity(cues);
-    return true;
+    return !failedBatchCount || *failedBatchCount == 0;
 }
 
 bool SubtitleGenerationService::_chatSubtitleTranslationApi(

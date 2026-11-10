@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from tests.native_probe_runtime import deploy_runtime
 import sys
 import unittest
 import xml.etree.ElementTree as ET
@@ -313,6 +314,7 @@ class ViewportIdlePolicyTests(unittest.TestCase):
         source.mkdir(parents=True, exist_ok=True)
         (source / "runner.cpp").write_text(RUNNER, encoding="utf-8")
         paths = [SOURCE / "src/ui/viewer/TlViewport.cpp", SOURCE / "src/ui/viewer/TlViewport.h",
+                 SOURCE / "src/ui/viewer/NativeGLLoader.cpp", SOURCE / "src/ui/viewer/NativeGLLoader.h",
                  SOURCE / "src/common/core/GPUUploadQueue.cpp", SOURCE / "src/common/core/GPUUploadQueue.h"]
         upstream = Path("E:/rj/CGV/tlRender-main")
         native = upstream / "install-Release"
@@ -360,8 +362,10 @@ class ViewportIdlePolicyTests(unittest.TestCase):
         env = dict(os.environ)
         env["QT_QPA_PLATFORM"] = "windows"
         env["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(QT / "plugins/platforms")
+        env["QT_PLUGIN_PATH"] = str(QT / "plugins")
         env["PATH"] = os.pathsep.join([str(QT / "bin"), str(ROOT / "build_win_full/bin/Release"),
                                        "E:/rj/CGV/tlRender-main/install-Release/bin", env.get("PATH", "")])
+        self._deploy_runtime_dlls()
         command = [str(self.runner), str(self.fixture)] + (["--baseline"] if BASELINE else [])
         process = subprocess.run(command, cwd=ART, env=env, capture_output=True, text=True,
                                  encoding="utf-8", errors="replace", creationflags=NO_WINDOW, timeout=30)
@@ -378,8 +382,10 @@ class ViewportIdlePolicyTests(unittest.TestCase):
 
     def test_two_and_four_native_viewports_idle_cpu_and_polling(self):
         env = dict(os.environ, QT_QPA_PLATFORM="windows", QT_QPA_PLATFORM_PLUGIN_PATH=str(QT / "plugins/platforms"))
+        env["QT_PLUGIN_PATH"] = str(QT / "plugins")
         env["PATH"] = os.pathsep.join([str(QT / "bin"), str(ROOT / "build_win_full/bin/Release"),
                                        "E:/rj/CGV/tlRender-main/install-Release/bin", env.get("PATH", "")])
+        self._deploy_runtime_dlls()
         command = [str(self.runner), str(self.fixture), "--multi-window"] + (["--baseline"] if BASELINE else [])
         process = subprocess.run(command, cwd=ART, env=env, capture_output=True, text=True,
                                  encoding="utf-8", errors="replace", creationflags=NO_WINDOW, timeout=30)
@@ -392,6 +398,10 @@ class ViewportIdlePolicyTests(unittest.TestCase):
         self.assertEqual(0, process.returncode, result)
         self.assertTrue(result["passed"], result)
         self.assertEqual(0, result["visiblePlatformWindowsMax"], result)
+
+    def _deploy_runtime_dlls(self):
+        deploy_runtime(self.runner, QT, (ROOT / "build_win_full/bin/Release",
+                       Path("E:/rj/CGV/tlRender-main/install-Release/bin")))
 
 
 if __name__ == "__main__":

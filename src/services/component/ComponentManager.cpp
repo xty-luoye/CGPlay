@@ -798,15 +798,22 @@ bool ComponentManager::_extractArchive(
     QDir().mkpath(destinationPath);
     JobContext context(kExtractTimeoutMs);
     QProcess process;
+    const auto quotePath = [](const QString& path) {
+        QString escaped = QDir::toNativeSeparators(path);
+        escaped.replace(QLatin1Char('\''), QStringLiteral("''"));
+        return QLatin1Char('\'') + escaped + QLatin1Char('\'');
+    };
     process.start(
         QStringLiteral("powershell"),
         {
             QStringLiteral("-NoProfile"),
             QStringLiteral("-ExecutionPolicy"), QStringLiteral("Bypass"),
             QStringLiteral("-Command"),
-            QStringLiteral("Expand-Archive -Path '%1' -DestinationPath '%2' -Force")
-                .arg(QDir::toNativeSeparators(archivePath))
-                .arg(QDir::toNativeSeparators(destinationPath))
+            // This destination is a fresh temporary staging directory. The
+            // .NET API treats both paths literally, including brackets.
+            QStringLiteral("$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; "
+                           "[System.IO.Compression.ZipFile]::ExtractToDirectory(%1, %2)")
+                .arg(quotePath(archivePath), quotePath(destinationPath))
         },
         QIODevice::ReadOnly);
 

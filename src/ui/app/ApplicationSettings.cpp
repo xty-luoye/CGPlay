@@ -1407,13 +1407,19 @@ void MainWindow::_installSettingsWidgets(ReviewPanel* panel)
     auto* profileGroup = new QGroupBox(QStringLiteral("配置导入/导出"), layoutContent);
     auto* profileLayout = new QHBoxLayout(profileGroup);
     auto* exportProfile = new QPushButton(QStringLiteral("导出配置"), profileGroup);
+    exportProfile->setObjectName(QStringLiteral("SettingsExportProfile"));
     auto* importProfile = new QPushButton(QStringLiteral("导入配置"), profileGroup);
     importProfile->setObjectName(QStringLiteral("SettingsImportProfile"));
     profileLayout->addWidget(exportProfile);
     profileLayout->addWidget(importProfile);
     layoutPageLayout->addWidget(profileGroup);
     connect(exportProfile, &QPushButton::clicked, this, [this, workspaceFile, exportProfile] {
-        const QString path = QFileDialog::getSaveFileName(this, QStringLiteral("导出 CGPlay 配置"),
+        exportProfile->setProperty("cgplay.profileExportSucceeded", false);
+        const bool isolatedAutomation = qApp->property("cgplay.automationBackground").toBool() && _p->userSettings &&
+            _p->userSettings->application().startsWith(QStringLiteral("CGPlayAutomation_"));
+        const QString path = isolatedAutomation
+            ? qApp->property("cgplay.automationSettingsExportPath").toString()
+            : QFileDialog::getSaveFileName(this, QStringLiteral("导出 CGPlay 配置"),
             QStringLiteral("CGPlay_Workspace_Profile.zip"), QStringLiteral("配置包 (*.zip);;JSON 文件 (*.json)"));
         if (path.isEmpty()) return;
         QJsonObject theme;
@@ -1550,13 +1556,14 @@ void MainWindow::_installSettingsWidgets(ReviewPanel* panel)
                 exportProfile->setEnabled(false);
                 ok = runProcessResponsive(QStringLiteral("powershell.exe"),
                     {QStringLiteral("-NoProfile"), QStringLiteral("-Command"),
-                     QStringLiteral("Compress-Archive -Path '%1\\*' -DestinationPath '%2' -Force").arg(safeStage, safePath)},
+                     QStringLiteral("$ErrorActionPreference='Stop'; Compress-Archive -Path '%1\\*' -DestinationPath '%2' -Force").arg(safeStage, safePath)},
                     120000) && QFileInfo::exists(path);
                 if (exportGuard) exportGuard->setEnabled(true);
             }
             QDir(staging).removeRecursively();
             if (!ok) { if (statusBar()) statusBar()->showMessage(QStringLiteral("配置包导出失败"), 2500); return; }
             if (statusBar()) statusBar()->showMessage(QStringLiteral("配置包已导出：%1").arg(path), 2500);
+            exportProfile->setProperty("cgplay.profileExportSucceeded", true);
             return;
         }
         QSaveFile file(path);
@@ -1565,8 +1572,10 @@ void MainWindow::_installSettingsWidgets(ReviewPanel* panel)
             return;
         }
         if (statusBar()) statusBar()->showMessage(QStringLiteral("配置已导出：%1").arg(path), 2500);
+        exportProfile->setProperty("cgplay.profileExportSucceeded", true);
     });
     connect(importProfile, &QPushButton::clicked, this, [this, importProfile, refreshShortcutUi] {
+        importProfile->setProperty("cgplay.profileImportSucceeded", false);
         const bool isolatedAutomation = qApp->property("cgplay.automationBackground").toBool() && _p->userSettings &&
             _p->userSettings->application().startsWith(QStringLiteral("CGPlayAutomation_"));
         const QString path = isolatedAutomation
@@ -1582,7 +1591,7 @@ void MainWindow::_installSettingsWidgets(ReviewPanel* panel)
             importProfile->setEnabled(false);
             const bool unzipped = runProcessResponsive(QStringLiteral("powershell.exe"),
                 {QStringLiteral("-NoProfile"), QStringLiteral("-Command"),
-                 QStringLiteral("Expand-Archive -LiteralPath '%1' -DestinationPath '%2' -Force").arg(safeZip, safeOut)},
+                 QStringLiteral("$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath '%1' -DestinationPath '%2' -Force").arg(safeZip, safeOut)},
                 120000);
             if (importGuard) importGuard->setEnabled(true);
             if (!unzipped) { QDir(extracted).removeRecursively(); if (statusBar()) statusBar()->showMessage(QStringLiteral("配置包解压失败"), 2500); return; }
@@ -1658,8 +1667,8 @@ void MainWindow::_installSettingsWidgets(ReviewPanel* panel)
                 if (configured.isEmpty() || QFileInfo(configured).isAbsolute()) continue;
                 const QFileInfo source(QDir(extracted).filePath(configured));
                 const QString canonicalSource = source.canonicalFilePath();
-                if (!source.isFile() || canonicalSource.isEmpty() ||
-                    (!extractedRoot.isEmpty() && !canonicalSource.startsWith(extractedRoot + QDir::separator(), Qt::CaseInsensitive))) {
+                if (!source.isFile() || canonicalSource.isEmpty() || extractedRoot.isEmpty() ||
+                    !canonicalSource.startsWith(extractedRoot + QLatin1Char('/'), Qt::CaseInsensitive)) {
                     rejectProfile(QStringLiteral("配置包背景资源无效：%1").arg(configured));
                     return;
                 }
@@ -1793,6 +1802,7 @@ void MainWindow::_installSettingsWidgets(ReviewPanel* panel)
         _restoreSplitterLayoutIfNeeded();
         if (auto* app = qobject_cast<Application*>(qApp)) app->refreshAppearanceSettings();
         if (statusBar()) statusBar()->showMessage(QStringLiteral("配置已导入并应用"), 3000);
+        importProfile->setProperty("cgplay.profileImportSucceeded", true);
     });
     appearanceLayout->addStretch();
     layoutPageLayout->addStretch();
@@ -2070,6 +2080,20 @@ void MainWindow::_installSettingsWidgets(ReviewPanel* panel)
     auto* saveInput = new QPushButton(QStringLiteral("保存鼠标与手柄绑定"), inputContent);
     connect(saveInput, &QPushButton::clicked, this, [this, inputStore, bindingEditors] {
         QString conflict;
+        QMap<QString, QString> assignedCommands;
+        for (const auto& binding : *bindingEditors) {
+            const QString command = binding.combo->currentData().toString().trimmed();
+            if (command.isEmpty()) continue;
+            const QString key = QString::number(static_cast<int>(binding.device)) + QLatin1Char(':') + command;
+            if (assignedCommands.contains(key)) {
+                if (statusBar()) statusBar()->showMessage(
+                    QStringLiteral("输入绑定冲突：%1 与 %2 选择了同一命令 %3，请为每个命令保留一个按键。")
+                        .arg(assignedCommands.value(key), binding.gesture, command), 5000);
+                binding.combo->setFocus();
+                return;
+            }
+            assignedCommands.insert(key, binding.gesture);
+        }
         for (const auto& binding : *bindingEditors) {
             const QString old = inputStore->commandFor(binding.device, binding.gesture);
             if (!old.isEmpty()) inputStore->clearBinding(binding.device, old);

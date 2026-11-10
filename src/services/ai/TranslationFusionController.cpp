@@ -366,8 +366,8 @@ TranslationManualFusionResult TranslationFusionController::writeManualFusionCach
             if (!reusableSparseCandidate) {
                 usedCandidateIndexes.insert(candidateIndex);
             }
-            const int score = sourcePriority(normalizedCandidate) +
-                (candidateText != quickCue.translatedText.trimmed() ? 10 : 0);
+            const int score = sourcePriority(normalizedCandidate) * 100 +
+                (candidateText != quickCue.translatedText.trimmed() ? 1 : 0);
             if (score > bestChoices[quickIndex].score) {
                 bestChoices[quickIndex].candidateIndex = candidateIndex;
                 bestChoices[quickIndex].score = score;

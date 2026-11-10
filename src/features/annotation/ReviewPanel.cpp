@@ -412,15 +412,16 @@ void ReviewPanel::refresh(const QVector<AnnotationItem>& all, int currentFrame, 
     // A rate change must refresh cards even if annotation content is unchanged.
     QString signature = QString::number(_mediaFps, 'g', 17) + QLatin1Char('|');
     signature.reserve(all.size() * 32);
+    const auto appendField = [&signature](const QString& value) {
+        signature += QString::number(value.size()) + QLatin1Char(':') + value;
+    };
     for (const auto& ann : all) {
-        signature += ann.id;
-        signature += QLatin1Char(':');
-        signature += QString::number(ann.frame);
-        signature += QLatin1Char(':');
-        signature += QString::number(static_cast<int>(ann.status));
-        signature += QLatin1Char(':');
-        signature += ann.comment;
-        signature += QLatin1Char('|');
+        appendField(ann.id);
+        appendField(QString::number(ann.frame));
+        appendField(QString::number(static_cast<int>(ann.status)));
+        appendField(ann.comment);
+        appendField(ann.author);
+        appendField(ann.createdTime);
     }
 
     if (signature == _lastSignature) {

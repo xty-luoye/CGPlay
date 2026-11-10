@@ -105,6 +105,13 @@ void applyPlayerWindowOpacity(QWidget* window, int percent)
 bool runProcessResponsive(const QString& program, const QStringList& arguments, int timeoutMs)
 {
     QProcess process;
+    if (QFileInfo(program).fileName().compare(QStringLiteral("powershell.exe"), Qt::CaseInsensitive) == 0) {
+        auto environment = QProcessEnvironment::systemEnvironment();
+        // PowerShell 7's inherited module path can select modules that Windows
+        // PowerShell 5 cannot load. Let the selected host build its own path.
+        environment.remove(QStringLiteral("PSModulePath"));
+        process.setProcessEnvironment(environment);
+    }
     QEventLoop loop;
     QTimer timeout;
     timeout.setSingleShot(true);
@@ -127,8 +134,11 @@ bool runProcessResponsive(const QString& program, const QStringList& arguments, 
     timeout.start(timeoutMs);
     loop.exec(QEventLoop::AllEvents);
     timeout.stop();
-    return !timedOut && process.state() == QProcess::NotRunning &&
+    const bool succeeded = !timedOut && process.state() == QProcess::NotRunning &&
         process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+    if (!succeeded) qWarning() << "[SettingsProcess]" << program << process.errorString()
+        << process.exitCode() << QString::fromLocal8Bit(process.readAllStandardError()).right(2000);
+    return succeeded;
 }
 class SettingsScrollArea final : public QScrollArea
 {
@@ -238,7 +248,7 @@ void showHelpDocument(QWidget* parent, const QString& title, const QString& html
 QString cgplayAboutHtml()
 {
     const QString version = QCoreApplication::applicationVersion().isEmpty()
-        ? QStringLiteral("1.0.8")
+        ? QStringLiteral("1.0.8.01")
         : QCoreApplication::applicationVersion();
     return QStringLiteral(
         "<h2>CGPlay %1</h2>"
@@ -521,37 +531,18 @@ protected:
         const QString imagePath = normalizedBackdropPath(configuredImagePath);
         bool drewImage = false;
         if ((backgroundType == QStringLiteral("image") || backgroundType == QStringLiteral("texture")) && !imagePath.isEmpty()) {
-            if (imagePath != _cachedImagePath) {
-                _cachedImagePath = imagePath;
-                _cachedSourcePixmap = QPixmap(imagePath);
-                _cachedPreparedPixmap = {};
-                _cachedBrightness = -1;
-                _cachedSaturation = -1;
-                _cachedBlurRadius = -1;
-            }
-            if (_cachedSourcePixmap.isNull() && imagePath != configuredImagePath) {
-                // Keep a final fallback for unusual Windows paths which Qt's
-                // URL/path parser may normalize differently.
-                _cachedSourcePixmap = QPixmap(configuredImagePath);
-            }
-            if (_cachedSourcePixmap.isNull() && QFileInfo::exists(imagePath)) {
-                // A profile can be restored before its media mount is ready;
-                // retry once the file becomes available without requiring a
-                // second theme refresh.
-                _cachedSourcePixmap = QPixmap(imagePath);
-            }
             const QString fillMode = appStringProperty(
                 "cgplay.backgroundFillMode",
                 appStringProperty("cgplay.fillMode", QStringLiteral("cover")));
-            if (!_cachedSourcePixmap.isNull()) {
-                _cachedPreparedPixmap = preparedBackdropPixmap(
-                    imagePath, brightness, saturation, blurRadius,
+            QPixmap prepared = preparedBackdropPixmap(
+                imagePath, brightness, saturation, blurRadius,
+                window() ? window()->size() : size(), fillMode);
+            if (prepared.isNull() && imagePath != configuredImagePath) {
+                prepared = preparedBackdropPixmap(
+                    configuredImagePath, brightness, saturation, blurRadius,
                     window() ? window()->size() : size(), fillMode);
-                _cachedBrightness = brightness;
-                _cachedSaturation = saturation;
-                _cachedBlurRadius = blurRadius;
             }
-            const QPixmap& pixmap = _cachedPreparedPixmap;
+            const QPixmap& pixmap = prepared;
             if (qApp) qApp->setProperty("cgplay.backgroundImageValid", !pixmap.isNull());
             if (!pixmap.isNull()) {
                 // WA_OpaquePaintEvent means the backing store is not cleared for us.
@@ -589,15 +580,30 @@ protected:
             painter.fillRect(rect(), topWash);
         }
 
-        painter.setPen(Qt::NoPen);
-        for (int y = 0; y < height(); y += 6) {
-            for (int x = 0; x < width(); x += 6) {
-                const quint32 seed = static_cast<quint32>((x + 11) * 73856093u ^ (y + 17) * 19349663u);
-                const int alpha = useConfigured ? 1 + static_cast<int>(seed % 3u) : 2 + static_cast<int>(seed % 5u);
-                painter.setBrush(QColor(255, 255, 255, alpha));
-                painter.drawRect(x, y, 1, 1);
+        // OpenGL child updates also repaint this backing surface. The noise
+        // is static: rebuilding thousands of brushes on every video frame
+        // needlessly competes with playback on the GUI thread.
+        const qreal noiseDpr = devicePixelRatioF();
+        if (_noise.isNull() || _noiseSize != size() ||
+            _noiseDpr != noiseDpr || _noiseConfigured != useConfigured) {
+            _noise = QPixmap(QSize(qCeil(width() * noiseDpr), qCeil(height() * noiseDpr)));
+            _noise.setDevicePixelRatio(noiseDpr);
+            _noise.fill(Qt::transparent);
+            QPainter noisePainter(&_noise);
+            noisePainter.setPen(Qt::NoPen);
+            for (int y = 0; y < height(); y += 6) {
+                for (int x = 0; x < width(); x += 6) {
+                    const quint32 seed = static_cast<quint32>((x + 11) * 73856093u ^ (y + 17) * 19349663u);
+                    const int alpha = useConfigured ? 1 + static_cast<int>(seed % 3u) : 2 + static_cast<int>(seed % 5u);
+                    noisePainter.setBrush(QColor(255, 255, 255, alpha));
+                    noisePainter.drawRect(x, y, 1, 1);
+                }
             }
+            _noiseSize = size();
+            _noiseDpr = noiseDpr;
+            _noiseConfigured = useConfigured;
         }
+        painter.drawPixmap(QPoint(0, 0), _noise);
 
         const int vignetteStrength = qBound(0, appIntProperty("cgplay.backgroundVignette", useConfigured ? 12 : 36), 100);
         if (vignetteStrength > 0) {
@@ -613,12 +619,11 @@ protected:
 
 private:
     QTimer* _dynamicTimer = nullptr;
-    QString _cachedImagePath;
-    QPixmap _cachedSourcePixmap;
-    QPixmap _cachedPreparedPixmap;
-    int _cachedBrightness = -1;
-    int _cachedSaturation = -1;
-    int _cachedBlurRadius = -1;
+    QPixmap _noise;
+    QSize _noiseSize;
+    qreal _noiseDpr = 0.0;
+    bool _noiseConfigured = false;
+
 };
 
 class ThemedDockWidget final : public QDockWidget

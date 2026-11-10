@@ -21,7 +21,10 @@ except ImportError:
     from cgplay.export.utils.color_pipeline import ColorPipeline
     from cgplay.export.utils.image_reader import _process_pixels
 
-_VIDEO_EXTS = {'.mp4','.mov','.avi','.mkv','.mxf','.webm','.flv','.wmv','.m4v'}
+_VIDEO_EXTS = {'.3g2', '.3gp', '.asf', '.avi', '.divx', '.dv', '.f4v', '.flv',
+               '.ivf', '.m1v', '.m2ts', '.m2v', '.m4v', '.mj2', '.mkv', '.mov',
+               '.mp4', '.mpeg', '.mpg', '.mts', '.mxf', '.ogv', '.prores', '.rm',
+               '.rmvb', '.ts', '.vob', '.webm', '.wmv', '.wtv', '.y4m'}
 _ANNOTATION_MIN_POINTS = {0: 2, 1: 2, 2: 1, 3: 1, 4: 2, 5: 1}
 
 def _is_video(path: str) -> bool:
@@ -211,6 +214,10 @@ def export_frames(input_path, settings, progress_callback=None, start_frame=None
     # Protect all sequence members, including those outside the selected range.
     # Cache the scan so source protection does not scan a large sequence twice.
     protected = [input_path, *protected_paths]
+    if color_pipeline is not None:
+        config_path = color_pipeline.settings.configPath
+        if config_path and not config_path.startswith('ocio://'):
+            protected.append(config_path)
     frames = None
     if not _is_video(input_path):
         frames = ImageReader().scan_sequence(input_path)
@@ -266,9 +273,12 @@ def _export_image_sequence(input_path, settings, logger, progress_callback, star
         frames, start_frame, end_frame, frame_numbering=frame_numbering)
     total = len(frame_paths)
     if total == 0: raise ValueError("No frames found")
+    if frame_numbering == "relative" and (
+            total != end - start + 1 or frame_paths[0][0] != start or frame_paths[-1][0] != end):
+        raise ValueError(f"Image sequence has missing frames in relative range {start}-{end}")
     annotations = _normalize_annotations(annotations, (number for number, _ in frame_paths))
     logger.info(f"Found {total} frames ({start}-{end})")
-    high_precision = settings.normalized_codec() in ("prores_422", "prores_hq", "prores_4444")
+    high_precision = settings.normalized_codec() in ("prores_422", "prores_hq", "prores_4444", "dnxhr")
     def read(path):
         if high_precision:
             return reader.read_frame(path, color_pipeline=color_pipeline, output_float=True)
@@ -323,9 +333,14 @@ def _export_video_file(input_path, settings, logger, progress_callback, start_fr
             settings.color_primaries,
         )
         s = max(0, start_frame if start_frame is not None else 0)
-        e = end_frame if end_frame is not None else (total - 1 if total > 0 else None)
-        if total > 0 and e is not None:
-            e = min(e, total - 1)
+        # Duration-derived frame counts are progress estimates, especially for
+        # negative PTS and VFR. They must not truncate decoded output.
+        e = end_frame
+        if annotations is not None and e is None:
+            # Full-file annotation validation requires a real bounded range.
+            # The reader reopens for the subsequent encode pass.
+            total = sum(1 for _ in vreader.read_frames())
+            e = total - 1
         if e is not None and e < s:
             raise ValueError(f"Invalid frame range: {s}-{e}")
         if annotations is not None and e is None:

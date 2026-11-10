@@ -371,7 +371,6 @@ def _translate_text(text, source_language, target_language):
         segments = [prepared_text]
 
     translated_segments = []
-    last_translated = ""
     for segment in segments:
         current = segment
         for model_id in route:
@@ -385,9 +384,7 @@ def _translate_text(text, source_language, target_language):
             current, target_backend = _convert_chinese_variant(current, "zh-hans", "zh-hant")
             if target_backend not in backend_steps:
                 backend_steps.append(target_backend)
-        if current != last_translated:
-            translated_segments.append(current)
-            last_translated = current
+        translated_segments.append(current)
 
     return {
         "translatedText": "\n".join(translated_segments),

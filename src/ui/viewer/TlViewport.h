@@ -43,13 +43,14 @@ public:
     ~TlViewport() override;
 
     // ── View API ──────────────────────────────────────────────────────────
+    // Native tlRender transforms use framebuffer (physical) pixels.
     const ftk::V2I& viewPos() const;
     double zoom() const;
     bool hasFrameView() const;
     // GUI-thread value copy for offline export; never exposes the native viewport.
     QJsonObject exportDisplaySnapshot() const;
 
-    // ── Coordinate mapping (image ↔ widget) ────────────────────────────
+    // Coordinate mapping exposes Qt logical widget pixels at the boundary.
     QPointF imageToWidget(double ix, double iy, int imgW, int imgH) const;
     QPointF widgetToImage(double wx, double wy, int imgW, int imgH) const;
 
@@ -103,7 +104,7 @@ private:
     bool _displayPollingAllowed() const;
     void _watchTopLevelWindow();
     void _queuePresentationRefresh();
-    void _wakePausedFrame(quint64 generation);
+    void _wakeVideoFrame(quint64 generation);
     void _wakeSettingsChange();
     void _refreshTimerInterval(bool pendingSizeUpdate = false);
     int _desiredPlaybackTimerIntervalMs() const;

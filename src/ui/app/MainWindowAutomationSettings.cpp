@@ -150,6 +150,68 @@ QJsonArray MainWindow::_runSettingsSmokeChecks()
         return results;
     }
 
+    if (qEnvironmentVariableIsSet("CGPLAY_PROFILE_PACKAGE_ONLY")) {
+        // Exercise the actual UI callbacks and ZIP implementation using only
+        // isolated settings and deterministic file paths, without a picker.
+        QMap<QString, QVariant> saved;
+        for (const auto& key : _p->userSettings->allKeys()) saved.insert(key, _p->userSettings->value(key));
+        const QString dataRoot = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+        const QString workspacePath = QDir(dataRoot).filePath(QStringLiteral("workspaces/Profile Roundtrip Probe.json"));
+        const QStringList owned{QDir(dataRoot).filePath("mouse_bindings.json"),
+            QDir(dataRoot).filePath("gamepad_bindings.json"), workspacePath, workspacePath + ".bak"};
+        QMap<QString, QByteArray> files;
+        for (const auto& path : owned) { QFile file(path); if (file.open(QIODevice::ReadOnly)) files.insert(path, file.readAll()); }
+        const auto cleanup = qScopeGuard([&] {
+            for (const auto& key : _p->userSettings->allKeys()) _p->userSettings->remove(key);
+            for (auto it = saved.cbegin(); it != saved.cend(); ++it) _p->userSettings->setValue(it.key(), it.value());
+            _p->userSettings->sync();
+            for (const auto& path : owned) {
+                if (files.contains(path)) { QSaveFile file(path); if (file.open(QIODevice::WriteOnly)) { file.write(files[path]); file.commit(); } }
+                else QFile::remove(path);
+            }
+            qApp->setProperty("cgplay.automationSettingsExportPath", QVariant());
+            qApp->setProperty("cgplay.automationSettingsImportPath", QVariant());
+            qApp->setProperty("cgplay.deferAppearanceRefresh", false);
+            dialog->reject();
+        });
+        auto* exportButton = dialog->findChild<QPushButton*>(QStringLiteral("SettingsExportProfile"));
+        auto* importButton = dialog->findChild<QPushButton*>(QStringLiteral("SettingsImportProfile"));
+        _p->userSettings->setValue("shortcuts/playback.nextFrame", "Ctrl+Alt+Right");
+        _p->userSettings->setValue("appearance/mode", "custom");
+        _p->userSettings->setValue("appearance/accentColor", "#51a3d8");
+        _p->userSettings->setValue("input/mouseWheel", "frames");
+        _p->userSettings->setValue("workspace/preset", "Profile Roundtrip Probe");
+        _p->userSettings->sync();
+        const QString zipPath = outputDir.filePath("CGPlay_Workspace_Profile.zip");
+        QFile::remove(zipPath);
+        qApp->setProperty("cgplay.automationSettingsExportPath", zipPath);
+        if (exportButton) exportButton->click();
+        const bool exported = exportButton && exportButton->property("cgplay.profileExportSucceeded").toBool() && QFileInfo(zipPath).size() > 0;
+        _p->userSettings->setValue("shortcuts/playback.nextFrame", "F8");
+        _p->userSettings->setValue("appearance/accentColor", "#000000");
+        _p->userSettings->setValue("input/mouseWheel", "zoom");
+        qApp->setProperty("cgplay.automationSettingsImportPath", zipPath);
+        if (importButton) importButton->click();
+        const bool imported = importButton && importButton->property("cgplay.profileImportSucceeded").toBool();
+        const bool restored = _p->userSettings->value("shortcuts/playback.nextFrame").toString() == "Ctrl+Alt+Right" &&
+            _p->userSettings->value("appearance/accentColor").toString() == "#51a3d8" &&
+            _p->userSettings->value("input/mouseWheel").toString() == "frames" &&
+            _p->userSettings->value("workspace/preset").toString() == "Profile Roundtrip Probe";
+        add(QStringLiteral("Profile actual ZIP export import roundtrip"), exported && imported && restored,
+            {{"package", zipPath}, {"exported", exported}, {"imported", imported}, {"valuesRestored", restored}});
+        qApp->setProperty("cgplay.automationSettingsExportPath", outputDir.filePath("missing-parent/failure.zip"));
+        if (exportButton) exportButton->click();
+        const QString corrupt = outputDir.filePath("corrupt.zip");
+        QFile invalid(corrupt); const bool wroteInvalid = invalid.open(QIODevice::WriteOnly) && invalid.write("invalid zip") == 11; invalid.close();
+        qApp->setProperty("cgplay.automationSettingsImportPath", corrupt);
+        if (importButton) importButton->click();
+        add(QStringLiteral("Profile failed export import cannot report success"), wroteInvalid && exportButton && importButton &&
+            !exportButton->property("cgplay.profileExportSucceeded").toBool() &&
+            !importButton->property("cgplay.profileImportSucceeded").toBool() &&
+            _p->userSettings->value("appearance/accentColor").toString() == "#51a3d8");
+        return results;
+    }
+
     auto* hardwareRequest = dialog->findChild<QComboBox*>(QStringLiteral("hardwareDecodeRequest"));
     auto* hardwareStatus = dialog->findChild<QLabel*>(QStringLiteral("hardwareDecodeStatus"));
     auto* hardwareModel = hardwareRequest ? qobject_cast<QStandardItemModel*>(hardwareRequest->model()) : nullptr;

@@ -25,10 +25,10 @@ def check(name: str, condition: bool, message: str) -> dict:
 
 def main() -> int:
     subtitle_service = read_text("src/services/ai/SubtitleGenerationService.cpp")
-    application = read_text("src/ui/app/Application.cpp")
+    application = "\n".join(read_text("src/ui/app/" + name) for name in ("ApplicationInternal.h", "ApplicationEnhancement.cpp"))
     asr_header = read_text("src/services/ai/SubtitleAsrApiClient.h")
     asr_client = read_text("src/services/ai/SubtitleAsrApiClient.cpp")
-    workspace = read_text("src/ui/app/AIAgentWorkspace.cpp")
+    workspace = "\n".join(read_text("src/ui/app/" + name) for name in ("AIAgentWorkspace.cpp", "AIAgentWorkspaceSupport.cpp", "AIAgentWorkspaceSettings.cpp"))
     detector = read_text("src/services/ai/discovery/AIProviderDetector.cpp")
     provider = read_text("src/services/ai/OpenAIResponsesProvider.cpp")
     long_worker = read_text("tools/cgplay/ai/long_window_asr_worker.py")
@@ -131,6 +131,7 @@ def main() -> int:
     failed = [item for item in checks if not item["passed"]]
     report = {
         "success": not failed,
+        "validationMode": "static-source-structure-only",
         "passed": len(checks) - len(failed),
         "failed": len(failed),
         "checks": checks,

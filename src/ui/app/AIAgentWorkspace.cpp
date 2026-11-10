@@ -89,10 +89,26 @@ AIAgentWorkspace::AIAgentWorkspace(
 
     if (auto* playbackSignals = _playbackService ? _playbackService->signalProxy() : nullptr) {
         connect(playbackSignals, &PlaybackServiceSignals::fileOpened, this, [this](const QString&) {
+            if (!_activeJobId.isEmpty()) {
+                // A response generated for the previous media must not be
+                // allowed to execute actions against the newly opened media.
+                if (_workflowService) _workflowService->cancel(_activeJobId);
+                if (_providerManager) _providerManager->cancel(_activeJobId);
+                _activeJobId.clear();
+                _activeJobMode = ActiveJobMode::None;
+                _activeSubmittedPrompt.clear();
+            }
             _refreshContextSummary();
             _refreshActionState();
         });
         connect(playbackSignals, &PlaybackServiceSignals::fileClosed, this, [this]() {
+            if (!_activeJobId.isEmpty()) {
+                if (_workflowService) _workflowService->cancel(_activeJobId);
+                if (_providerManager) _providerManager->cancel(_activeJobId);
+                _activeJobId.clear();
+                _activeJobMode = ActiveJobMode::None;
+                _activeSubmittedPrompt.clear();
+            }
             _refreshContextSummary();
             _refreshActionState();
         });
@@ -601,8 +617,8 @@ void AIAgentWorkspace::_setupUi()
     _compareABButton = new QPushButton(zh(u8"A/B 对比"), _toolsBodyFrame);
     actionRow->addWidget(_compareABButton);
 
-    _exportReportButton = new QPushButton(zh(u8"导出报告"), _toolsBodyFrame);
-    actionRow->addWidget(_exportReportButton);
+    _toolsExportReportButton = new QPushButton(zh(u8"导出报告"), _toolsBodyFrame);
+    actionRow->addWidget(_toolsExportReportButton);
     toolsBodyLayout->addLayout(actionRow);
 
     // --- Row 3: Problem frames + Annotation summary ---
@@ -1110,6 +1126,9 @@ void AIAgentWorkspace::_setupUi()
     connect(_exportReportButton, &QPushButton::clicked, this, [this]() {
         _exportReviewReport(_lastResponse);
     });
+    connect(_toolsExportReportButton, &QPushButton::clicked, this, [this]() {
+        _exportReviewReport(_lastResponse);
+    });
     connect(_resultView, &QTextBrowser::anchorClicked, this, [this](const QUrl& url) {
         _onResultAnchorClicked(url);
     });
@@ -1361,6 +1380,9 @@ void AIAgentWorkspace::_refreshActionState()
     }
     if (_exportReportButton) {
         _exportReportButton->setEnabled(!busy);
+    }
+    if (_toolsExportReportButton) {
+        _toolsExportReportButton->setEnabled(!busy);
     }
     if (_searchButton) {
         _searchButton->setEnabled(!busy);

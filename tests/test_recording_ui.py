@@ -14,7 +14,8 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACTS = ROOT / "tests/artifacts/migration_1_0_8_20261025/recording_ui_validation"
+ARTIFACTS = Path(os.environ.get("CGPLAY_RECORDING_UI_ARTIFACTS",
+                              ROOT / "tests/artifacts/migration_1_0_8_20261025/recording_ui_validation"))
 
 
 def visible_pids():
@@ -120,6 +121,11 @@ class RecordingUiAcceptance(unittest.TestCase):
         checks = {item["name"]: item for item in report["checks"]}
         for name in ("real synthetic recording started", "real MP4 frames CFR and audio gain mute",
                      "desktop recording is default and single monitor selected", "multiple monitors require an explicit selection",
+                     "recording save picker prefills a new MP4 filename",
+                     "recording output directory receives a filename and MP4 suffix",
+                     "recording save picker widget evidence", "recording picker preserves a custom filename and cancel",
+                     "recording picker suggests a new name after an existing recording",
+                     "recording picker does not overwrite existing files", "active recording cannot reopen the output picker",
                      "native resolution is default without preset dimensions", "all resolution and frame rate controls up to 8K120",
                      "8K120 panel widget evidence", "old recording component cannot start new formats",
                      "actual recording statistics reach service and panel",
@@ -132,6 +138,7 @@ class RecordingUiAcceptance(unittest.TestCase):
                      "pending close rejects same-window start and recovery reentry", "pending-close completion hook was exercised",
                      "close completes after recorder finalization"):
             self.assertTrue(checks[name]["passed"], name)
+        self.assertTrue(Path(checks["recording save picker widget evidence"]["details"]["path"]).is_file())
         pause = checks["pause settles encoded output within bounded drain"]["details"]
         self.assertGreaterEqual(pause["inflightNs"], 0)
         self.assertLessEqual(pause["settleMs"], pause["deadlineMs"])

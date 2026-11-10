@@ -121,9 +121,9 @@ def _translate_with_openai_compatible(text, source_language, target_language):
             "error": "translation-provider-unavailable",
             "backend": "openai_compatible_unavailable",
         }
-    endpoint = base_url
-    if not endpoint.endswith("/chat/completions"):
-        endpoint = endpoint.rstrip("/") + "/v1/chat/completions"
+    endpoint = base_url.rstrip("/")
+    if not endpoint.lower().endswith("/chat/completions"):
+        endpoint += "/chat/completions" if endpoint.lower().endswith("/v1") else "/v1/chat/completions"
     payload = {
         "model": model,
         "messages": [

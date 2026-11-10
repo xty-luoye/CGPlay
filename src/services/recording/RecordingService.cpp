@@ -111,8 +111,21 @@ struct RecordingService::Private {
             QTimer::singleShot(0, q, [this] { closeSignalScheduled = false; if (!busy && closePending) { closePending = false; Q_EMIT q->closeReady(); } });
         }
     }
+    void cleanupRequest() {
+        if (requestPath.isEmpty()) return;
+        const QFileInfo requestInfo(requestPath);
+        const QString directoryPath = requestInfo.absolutePath();
+        QFile::remove(requestPath);
+        QFile::remove(QDir(directoryPath).filePath(requestInfo.completeBaseName() + QStringLiteral(".cancel")));
+        // The directory is dedicated to this request.  rmdir only succeeds
+        // when it is empty, so it cannot remove a session/MKV directory by
+        // accident if the layout ever changes.
+        QDir().rmdir(directoryPath);
+        requestPath.clear();
+    }
     void complete(const QString& next, const QString& failure = {}) {
         timer.stop(); busy = false; paused = false; stopRequested = false;
+        cleanupRequest();
         if (!failure.isEmpty()) error = failure;
         update(next);
         Q_EMIT q->finished(status());
@@ -141,6 +154,7 @@ struct RecordingService::Private {
         }
     }
     bool writeRequest(QJsonObject object) {
+        cleanupRequest();
         QString base;
         if (testGate()) base = QCoreApplication::instance()->property("cgplay.recordingArtifactRoot").toString();
         if (base.isEmpty() && testGate()) base = QFileInfo(finalPath).absolutePath();
@@ -256,6 +270,7 @@ RecordingService::~RecordingService() {
         QObject::connect(child, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), child, &QObject::deleteLater);
         if (child->state() == QProcess::NotRunning) child->deleteLater();
     }
+    _p->cleanupRequest();
     services.removeAll(this);
 }
 bool RecordingService::isBusy() const { return _p->busy; }

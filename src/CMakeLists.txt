@@ -48,6 +48,7 @@ set(CGPLAY_SOURCES
     ui/app/MainWindowAutomationSession.cpp
     ui/app/MainWindowAutomationCoverage.cpp
     ui/app/MainWindowAutomationMedia.cpp
+    ui/app/MainWindowAutomationPlayback.cpp
     ui/app/MainWindowAutomationSettings.cpp
     ui/app/MainWindowAutomationSubtitles.cpp
     ui/app/Application.h

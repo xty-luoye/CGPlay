@@ -3,6 +3,7 @@
 #include "ReviewExport.h"
 #include "AnnotationItem.h"
 #include "AnnotationOverlay.h"
+#include "services/ai/api/AIProviderTypes.h"
 #include "common/jobs/JobSystem.h"
 #include "component/ComponentManager.h"
 #include "component/DownloadService.h"
@@ -350,17 +351,82 @@ bool ReviewExport::exportJson(const QVector<AnnotationItem>& annotations,
     }
     root["annotations"] = arr;
 
-    QFile f(filepath);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    QSaveFile f(filepath);
+    if (!f.open(QIODevice::WriteOnly)) {
         qWarning() << "[ReviewExport] Cannot write:" << filepath;
         return false;
     }
-    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    f.close();
-    return true;
+    const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    return f.write(data) == data.size() && f.commit();
 }
 
 // ─── HTML Export ──────────────────────────────────────────────────────────────
+bool ReviewExport::exportAIReport(const AIResponse& response,
+    const QVector<AnnotationItem>& annotations, const QString& filepath, const QString& mediaTitle)
+{
+    const auto findingsJson = [](const QVector<AIAnalysisFinding>& findings) {
+        QJsonArray array;
+        for (const auto& finding : findings) {
+            array.append(QJsonObject{
+                {"frame", finding.frame}, {"category", finding.category},
+                {"severity", static_cast<int>(finding.severity)}, {"title", finding.title},
+                {"description", finding.description}, {"metadata", finding.metadata}
+            });
+        }
+        return array;
+    };
+    const auto& summary = response.reviewSummary;
+    const QJsonObject aiReport{
+        {"jobId", response.jobId}, {"providerId", response.providerId}, {"model", response.model},
+        {"success", response.success}, {"errorMessage", response.errorMessage},
+        {"rawText", response.rawText}, {"findings", findingsJson(response.findings)},
+        {"reviewSummary", QJsonObject{
+            {"plainText", summary.plainText}, {"markdown", summary.markdown}, {"html", summary.html},
+            {"criticalCount", summary.criticalCount}, {"majorCount", summary.majorCount},
+            {"minorCount", summary.minorCount}, {"findings", findingsJson(summary.findings)},
+            {"metadata", summary.metadata}}},
+        {"startedAt", response.startedAt.toString(Qt::ISODateWithMs)},
+        {"finishedAt", response.finishedAt.toString(Qt::ISODateWithMs)}
+    };
+    // Reuse the annotation writer so AI exports retain the full existing schema.
+    QTemporaryDir temporary;
+    if (!temporary.isValid()) return false;
+    const QString basePath = temporary.filePath(QStringLiteral("annotations"));
+    const bool json = filepath.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive);
+    if (!(json ? exportJson(annotations, basePath) : exportHtml(annotations, basePath, mediaTitle))) return false;
+    QFile base(basePath);
+    if (!base.open(QIODevice::ReadOnly)) return false;
+    QByteArray data;
+    if (json) {
+        auto root = QJsonDocument::fromJson(base.readAll()).object();
+        root.insert(QStringLiteral("ai_report"), aiReport);
+        data = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    } else {
+        QString html = QString::fromUtf8(base.readAll());
+        QString section = QStringLiteral("<section><h2>AI Review</h2><p>%1 / %2</p>")
+            .arg(response.providerId.toHtmlEscaped(), response.model.toHtmlEscaped());
+        const QString summaryText = !summary.plainText.isEmpty() ? summary.plainText
+            : (!summary.markdown.isEmpty() ? summary.markdown : summary.html);
+        section += QStringLiteral("<pre style='white-space:pre-wrap'>%1</pre><pre style='white-space:pre-wrap'>%2</pre>")
+            .arg(summaryText.toHtmlEscaped(), response.rawText.toHtmlEscaped());
+        for (const QJsonArray findings : {findingsJson(response.findings), findingsJson(summary.findings)}) {
+            for (const auto& value : findings) {
+                const auto finding = value.toObject();
+                section += QStringLiteral("<h3>Frame %1: %2</h3><p>%3</p>")
+                    .arg(finding.value("frame").toInt())
+                    .arg(finding.value("title").toString().toHtmlEscaped(),
+                         finding.value("description").toString().toHtmlEscaped());
+            }
+        }
+        section += QStringLiteral("</section>");
+        html.insert(html.indexOf(QStringLiteral("<div class=\"summary\">")), section);
+        data = html.toUtf8();
+    }
+    if (!QDir().mkpath(QFileInfo(filepath).absolutePath())) return false;
+    QSaveFile output(filepath);
+    return output.open(QIODevice::WriteOnly) && output.write(data) == data.size() && output.commit();
+}
+
 bool ReviewExport::exportHtml(const QVector<AnnotationItem>& annotations,
                                const QString& filepath,
                                const QString& mediaTitle)
@@ -398,7 +464,7 @@ bool ReviewExport::exportHtml(const QVector<AnnotationItem>& annotations,
     QString html;
     html += "<!DOCTYPE html>\n";
     html += "<html><head><meta charset=\"utf-8\">\n";
-    html += "<title>" + (mediaTitle.isEmpty() ? QString("CGPlay Review Report") : mediaTitle) + "</title>\n";
+    html += "<title>" + (mediaTitle.isEmpty() ? QString("CGPlay Review Report") : mediaTitle.toHtmlEscaped()) + "</title>\n";
     html += "<style>" + css + "</style></head><body>\n";
 
     html += "<h1>CGPlay Review Report</h1>\n";
@@ -412,7 +478,7 @@ bool ReviewExport::exportHtml(const QVector<AnnotationItem>& annotations,
     html += "</div>\n";
 
     if (!mediaTitle.isEmpty())
-        html += "<p style=\"color:#888;font-size:13px;\">Media: " + mediaTitle + "</p>\n";
+        html += "<p style=\"color:#888;font-size:13px;\">Media: " + mediaTitle.toHtmlEscaped() + "</p>\n";
 
     // Per-frame sections
     for (auto it = framesAnn.begin(); it != framesAnn.end(); ++it) {
@@ -437,11 +503,11 @@ bool ReviewExport::exportHtml(const QVector<AnnotationItem>& annotations,
             html += "<div class=\"ann-meta\">\n";
             html += "<span class=\"ann-color\" style=\"background:" + a.color.name() + "\"></span>";
             html += "<b>" + annotationTypeString(a.type) + "</b><br>\n";
-            html += "<span class=\"ann-type\">" + a.createdTime + "</span><br>\n";
+            html += "<span class=\"ann-type\">" + a.createdTime.toHtmlEscaped() + "</span><br>\n";
             html += "<span class=\"ann-status status-" + statusCls + "\">" +
                     reviewStatusString(a.status) + "</span><br>\n";
             html += "<span class=\"ann-frame\">Frame " + QString::number(a.frame + 1) + "</span><br>\n";
-            html += "<span class=\"ann-frame\">Assignee: " + a.assignee + "</span>\n";
+            html += "<span class=\"ann-frame\">Assignee: " + a.assignee.toHtmlEscaped() + "</span>\n";
             html += "</div>\n";
 
             QString comment = a.comment;
@@ -470,14 +536,13 @@ bool ReviewExport::exportHtml(const QVector<AnnotationItem>& annotations,
 
     html += "<div class=\"footer\">Generated by CGPlay</div></body></html>\n";
 
-    QFile f(filepath);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    QSaveFile f(filepath);
+    if (!f.open(QIODevice::WriteOnly)) {
         qWarning() << "[ReviewExport] Cannot write HTML:" << filepath;
         return false;
     }
-    f.write(html.toUtf8());
-    f.close();
-    return true;
+    const QByteArray data = html.toUtf8();
+    return f.write(data) == data.size() && f.commit();
 }
 
 // ─── ffmpeg Management ────────────────────────────────────────────────────────

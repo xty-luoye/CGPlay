@@ -13,6 +13,7 @@ void MainWindow::openFile(const QString& path)
 {
     if (path.isEmpty()) return;
 
+    _p->pendingComparePath.clear();
     Q_EMIT mediaOpenRequested(path);
 
     _p->autoPlayPending = false;
@@ -57,16 +58,38 @@ void MainWindow::openFile(const QString& path)
             if (_p->mediaProbeJob == job) {
                 _p->mediaProbeJob.clear();
             }
-            if (generation != _p->mediaProbeGeneration || mediaInfo->error == QStringLiteral("Media probe canceled")) {
+            if (generation != _p->mediaProbeGeneration) {
+                return;
+            }
+            if (mediaInfo->error == QStringLiteral("Media probe canceled")) {
+                _p->pendingComparePath.clear();
                 return;
             }
             if (!outcome.succeeded()) {
+                _p->pendingComparePath.clear();
                 Q_EMIT mediaOpenFailed(path, outcome.errorMessage.isEmpty()
                     ? QStringLiteral("Media probing failed or was canceled.") : outcome.errorMessage);
                 return;
             }
             _openFileWithMediaInfo(path, sequenceFpsOverride, *mediaInfo);
         });
+}
+
+void MainWindow::_selectCompareB(const QString& path)
+{
+    if (path.isEmpty() || !_p->playbackCtrl || !_p->compareBar) return;
+    _p->compareBar->setShotBLabel(QFileInfo(path).completeBaseName());
+    _p->compareBar->show();
+    if (_p->mediaProbeJob || _p->autoPlayPending) {
+        // The A player may still belong to the previous media. Apply only the
+        // latest B selection after its replacement player is ready.
+        _p->pendingComparePath = path;
+        return;
+    }
+    _p->pendingComparePath.clear();
+    if (!_p->playbackCtrl->isValid()) return;
+    _p->playbackCtrl->setCompareFile(path);
+    _p->compareBar->setCompareMode(5);
 }
 
 void MainWindow::_openFileWithMediaInfo(
@@ -150,6 +173,9 @@ void MainWindow::_openFileWithMediaInfo(
         _p->topBar->fpsLabel()->setText(PerformanceService::formatFpsText(_p->playbackCtrl->fps() > 0.0 ? _p->playbackCtrl->fps() : mediaInfo.fps, 0));
     }
     CGPLAY_LOG().fileOpened(path, _p->playbackCtrl->totalFrames(), _p->playbackCtrl->fps(), 0, 0, codecText);
+    if (_p->viewer && _p->playbackCtrl->isValid()) {
+        _p->viewer->setFocus(Qt::OtherFocusReason);
+    }
 }
 
 void MainWindow::_resetMediaSession(const QString& path, const QString& fingerprint)
@@ -190,6 +216,7 @@ void MainWindow::_closeCurrentMedia()
 {
     Q_EMIT mediaOpenRequested({});
     _p->autoPlayPending = false;
+    _p->pendingComparePath.clear();
     ++_p->mediaProbeGeneration;
     if (_p->mediaProbeJob) {
         _p->mediaProbeJob->cancel();

@@ -345,31 +345,6 @@ bool generatedSubtitleCueHasDisplayableTranslation(const GeneratedSubtitleCue& c
         };
         return affirmations.contains(compact);
     };
-    auto sourceSupportsShortAffirmation = [&compactVisibleText](const QString& text) {
-        const QString compact = compactVisibleText(text);
-        if (compact.isEmpty()) {
-            return false;
-        }
-        static const QSet<QString> sourceAffirmations = {
-            QStringLiteral("\u597d"),
-            QStringLiteral("\u597d\u7684"),
-            QStringLiteral("\u597d\u5427"),
-            QStringLiteral("\u597d\u597d"),
-            QStringLiteral("\u597d\u597d\u597d"),
-            QStringLiteral("\u884c"),
-            QStringLiteral("\u53ef\u4ee5"),
-            QStringLiteral("ok"),
-            QStringLiteral("okay"),
-            QStringLiteral("yes"),
-            QStringLiteral("yeah"),
-            QStringLiteral("yep"),
-            QStringLiteral("sure"),
-            QStringLiteral("fine"),
-            QStringLiteral("alright"),
-            QStringLiteral("allright")
-        };
-        return sourceAffirmations.contains(compact);
-    };
 
     const QString translated = cue.translatedText.trimmed();
     if (translated.isEmpty()) {
@@ -379,8 +354,10 @@ bool generatedSubtitleCueHasDisplayableTranslation(const GeneratedSubtitleCue& c
         return true;
     }
     const QString source = cue.sourceText.trimmed();
-    if (isShortAffirmation(translated) && !sourceSupportsShortAffirmation(source)) {
-        return false;
+    if (isShortAffirmation(translated)) {
+        // A nonempty source cue supports a short answer in any language.
+        // Lexical filler heuristics cannot establish that dialogue is absent.
+        return !compactVisibleText(source).isEmpty();
     }
     return !source.isEmpty() && !isFillerText(source) &&
         compactVisibleText(source) != compactVisibleText(translated);
@@ -2345,6 +2322,9 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
 
     _p->subtitleSession.state().subtitleGenerationBusy = true;
     _p->subtitleSession.state().subtitleGenerationLastError.clear();
+    if (!background && _p->playbackBar) {
+        _p->playbackBar->setTranslationVisible(true);
+    }
     if (!background) {
         _p->subtitleSession.state().translationPlaybackModeWaited = false;
         _p->subtitleSession.state().translationPlaybackModeWaitMs = 0;
@@ -2598,6 +2578,12 @@ void MainWindow::_generateSubtitlesForCurrentMedia(double startSeconds, bool bac
                 QString::fromUtf8(QJsonDocument(result.toJson()).toJson(QJsonDocument::Compact)));
         }
 
+        // Generation can finish after the user has switched translation off.
+        // Its files remain cached, but completion must not reopen the UI or
+        // schedule continuations against the user's current choice.
+        if (_p->playbackBar && !_p->playbackBar->translationVisible()) {
+            return;
+        }
         if (!result.success) {
             const bool rateLimited = subtitleGenerationErrorLooksRateLimited(result.errorMessage);
             bool hasExistingSubtitles = !_p->subtitleSession.state().generatedSubtitleCues.isEmpty();

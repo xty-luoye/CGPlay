@@ -35,6 +35,7 @@ private:
         QString worktree;
         QString branch;
         QString home;
+        QString baseCommit;
         QString threadId;
         QString turnId;
         qint64 nextRequestId = 1;

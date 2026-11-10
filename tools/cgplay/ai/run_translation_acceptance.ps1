@@ -323,6 +323,17 @@ $headlessExit = $LASTEXITCODE
     --exe $exe `
     --date "2026-07-09" `
     --build-deploy-json $buildDeployJson
+$reportExit = $LASTEXITCODE
+
+if ($reportExit -ne 0) {
+    Write-Host "Acceptance report generation failed (exit $reportExit). See $ArtifactsDir"
+    exit $reportExit
+}
+if (-not (Test-Path -LiteralPath (Join-Path $ArtifactsDir "ACCEPTANCE_REPORT.md") -PathType Leaf) -or
+    -not (Test-Path -LiteralPath (Join-Path $ArtifactsDir "acceptance_summary.json") -PathType Leaf)) {
+    Write-Host "Acceptance report generator did not produce the required reports."
+    exit 4
+}
 
 if ($headlessExit -ne 0) {
     Write-Host "Headless acceptance failed. See $ArtifactsDir\ACCEPTANCE_REPORT.md and acceptance_summary.json"

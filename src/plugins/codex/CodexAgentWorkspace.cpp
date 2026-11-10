@@ -1,5 +1,6 @@
 #include "CodexAgentWorkspace.h"
 #include "common/theme/BackdropRenderer.h"
+#include "common/core/SafeFileCopy.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -31,6 +32,7 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -56,6 +58,7 @@
 #include <QFile>
 
 #include <utility>
+#include <memory>
 
 namespace cgplay {
 namespace {
@@ -63,6 +66,32 @@ namespace {
 constexpr auto kReady = "#48D597";
 constexpr auto kWarning = "#F2A45F";
 constexpr auto kError = "#FF6B6B";
+
+struct BrowserScriptResult
+{
+    bool completed = false;
+    QString value;
+};
+
+BrowserScriptResult runBrowserScript(QWebEnginePage* page, const QString& script)
+{
+    auto result = std::make_shared<BrowserScriptResult>();
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    const QPointer<QEventLoop> guardedLoop(&loop);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    page->runJavaScript(script, [result, guardedLoop](const QVariant& value) {
+        // Page destruction and renderer delays can deliver this after timeout.
+        if (!guardedLoop) return;
+        result->value = value.toString().left(24000);
+        result->completed = true;
+        guardedLoop->quit();
+    });
+    timer.start(10000);
+    loop.exec();
+    return *result;
+}
 
 QColor mixColors(const QColor& base, const QColor& tint, qreal tintAmount)
 {
@@ -1117,11 +1146,9 @@ bool CodexAgentWorkspace::browserClick(const QString& selector, QString* error)
 {
     if (!_browserView) { if (error) *error = tr("Browser is not open."); return false; }
     if (selector.trimmed().isEmpty()) { if (error) *error = tr("CSS selector is required."); return false; }
-    QEventLoop loop; QTimer timer; timer.setSingleShot(true); bool clicked = false; QString message;
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    _browserView->page()->runJavaScript(QStringLiteral("(() => { const e=document.querySelector(%1); if(!e) return 'not_found'; e.click(); return 'clicked'; })()").arg(browserJsString(selector)), [&](const QVariant& value) { message = value.toString(); clicked = message == QStringLiteral("clicked"); loop.quit(); });
-    timer.start(10000); loop.exec();
-    if (!clicked && error) *error = message == QStringLiteral("not_found") ? tr("Element not found.") : tr("Browser click timed out.");
+    const auto result = runBrowserScript(_browserView->page(), QStringLiteral("(() => { const e=document.querySelector(%1); if(!e) return 'not_found'; e.click(); return 'clicked'; })()").arg(browserJsString(selector)));
+    const bool clicked = result.completed && result.value == QStringLiteral("clicked");
+    if (!clicked && error) *error = result.value == QStringLiteral("not_found") ? tr("Element not found.") : tr("Browser click timed out.");
     return clicked;
 }
 
@@ -1129,27 +1156,22 @@ bool CodexAgentWorkspace::browserType(const QString& selector, const QString& te
 {
     if (!_browserView) { if (error) *error = tr("Browser is not open."); return false; }
     if (selector.trimmed().isEmpty()) { if (error) *error = tr("CSS selector is required."); return false; }
-    QEventLoop loop; QTimer timer; timer.setSingleShot(true); bool typed = false; QString message;
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
     const QString script = QStringLiteral("(() => { const e=document.querySelector(%1); if(!e) return 'not_found'; e.focus(); e.value=%2; e.dispatchEvent(new Event('input',{bubbles:true})); e.dispatchEvent(new Event('change',{bubbles:true})); return 'typed'; })()").arg(browserJsString(selector), browserJsString(text));
-    _browserView->page()->runJavaScript(script, [&](const QVariant& value) { message = value.toString(); typed = message == QStringLiteral("typed"); loop.quit(); });
-    timer.start(10000); loop.exec();
-    if (!typed && error) *error = message == QStringLiteral("not_found") ? tr("Element not found.") : tr("Browser input timed out.");
+    const auto result = runBrowserScript(_browserView->page(), script);
+    const bool typed = result.completed && result.value == QStringLiteral("typed");
+    if (!typed && error) *error = result.value == QStringLiteral("not_found") ? tr("Element not found.") : tr("Browser input timed out.");
     return typed;
 }
 
 QString CodexAgentWorkspace::browserExtract(const QString& selector, QString* error)
 {
     if (!_browserView) { if (error) *error = tr("Browser is not open."); return {}; }
-    QEventLoop loop; QTimer timer; timer.setSingleShot(true); QString result; bool completed = false;
-    connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
     const QString script = selector.trimmed().isEmpty()
         ? QStringLiteral("document.body ? document.body.innerText : ''")
         : QStringLiteral("(() => { const e=document.querySelector(%1); return e ? e.innerText : ''; })()").arg(browserJsString(selector));
-    _browserView->page()->runJavaScript(script, [&](const QVariant& value) { result = value.toString().left(24000); completed = true; loop.quit(); });
-    timer.start(10000); loop.exec();
-    if (!completed && error) *error = tr("Browser extraction timed out.");
-    return result;
+    const auto result = runBrowserScript(_browserView->page(), script);
+    if (!result.completed && error) *error = tr("Browser extraction timed out.");
+    return result.value;
 }
 
 bool CodexAgentWorkspace::captureBrowserSnapshot()
@@ -1583,11 +1605,9 @@ void CodexAgentWorkspace::updateImageGeneration(const QJsonObject& item, bool co
             suggested,
             tr("PNG 图片 (*.png);;JPEG 图片 (*.jpg *.jpeg);;WebP 图片 (*.webp);;所有文件 (*.*)"));
         if (destination.isEmpty()) return;
-        if (QFileInfo::exists(destination) && !QFile::remove(destination)) {
-            setError(tr("无法覆盖目标文件：%1").arg(destination));
-            return;
-        }
-        if (!QFile::copy(savedPath, destination)) setError(tr("另存图片失败：%1").arg(destination));
+        QString copyError;
+        if (!copyFileAtomically(savedPath, destination, &copyError))
+            setError(tr("另存图片失败：%1\n%2").arg(destination, copyError));
     });
     _assistantBodyLayout->addWidget(saveButton, 0, Qt::AlignLeft);
     markTaskActivity(id, tr("Image generated"), true);

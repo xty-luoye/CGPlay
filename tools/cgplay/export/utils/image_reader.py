@@ -159,6 +159,22 @@ def _read_oiio(path: str, color_pipeline=None, *, output_float=False) -> np.ndar
             raise IOError(f"OIIO: cannot read {path}: {img.geterror()}")
         if channels is not None:
             data = data[:, :, channels]
+            spec = img.spec()
+            # OIIO returns the data window. Playback uses the display window;
+            # restore that canvas before color processing and size validation.
+            full_x, full_y = spec.full_x, spec.full_y
+            full_w, full_h = spec.full_width, spec.full_height
+            if full_w <= 0 or full_h <= 0:
+                raise ValueError("EXR has an invalid display window")
+            if (spec.x, spec.y, spec.width, spec.height) != (full_x, full_y, full_w, full_h):
+                canvas = np.zeros((full_h, full_w, data.shape[2]), dtype=data.dtype)
+                left, top = max(spec.x, full_x), max(spec.y, full_y)
+                right = min(spec.x + spec.width, full_x + full_w)
+                bottom = min(spec.y + spec.height, full_y + full_h)
+                if right > left and bottom > top:
+                    canvas[top-full_y:bottom-full_y, left-full_x:right-full_x] = \
+                        data[top-spec.y:bottom-spec.y, left-spec.x:right-spec.x]
+                data = canvas
     finally:
         img.close()
 
@@ -224,12 +240,15 @@ def _process_pixels(data: np.ndarray, *, source_encoding="scene-linear", color_p
     
     注：PyAV 需要 BGR uint8 输入，所以此处返回 BGR 顺序。
     """
-    h, w = data.shape[:2]
+    if data.ndim not in (2, 3) or any(size <= 0 for size in data.shape):
+        raise ValueError(f"Unexpected image shape: {data.shape}")
 
     # 通道处理
     source_dtype = data.dtype
     if len(data.shape) == 2:
         rgb = np.stack([data, data, data], axis=2)
+    elif data.shape[2] in (1, 2):
+        rgb = np.repeat(data[:, :, :1], 3, axis=2)
     elif data.shape[2] >= 3:
         rgb = data[:, :, :3]  # RGB order (OIIO returns RGB)
     else:
@@ -247,8 +266,8 @@ def _process_pixels(data: np.ndarray, *, source_encoding="scene-linear", color_p
     # RGB → BGR uint8 (PyAV 需要 BGR)
     bgr = np.stack([rgb[:, :, 2], rgb[:, :, 1], rgb[:, :, 0]], axis=2)
     result = bgr if output_float else np.rint(np.clip(bgr, 0, 1) * 255).astype(np.uint8)
-    if data.ndim == 3 and data.shape[2] >= 4:
-        alpha = data[:, :, 3]
+    if data.ndim == 3 and (data.shape[2] == 2 or data.shape[2] >= 4):
+        alpha = data[:, :, 1 if data.shape[2] == 2 else 3]
         if np.issubdtype(source_dtype, np.integer):
             alpha = alpha.astype(np.float32) / np.iinfo(source_dtype).max
         else:

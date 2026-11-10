@@ -6,8 +6,8 @@
 #include "viewer/TlViewport.h"
 
 #include <tlRender/Timeline/Timeline.h>
-#include <tlRender/IO/IO.h>
 #include <tlRender/Core/Version.h>
+#include <tlRender/IO/IO.h>
 #include <nlohmann/json.hpp>
 
 #include <QCoreApplication>
@@ -162,8 +162,7 @@ QJsonObject sourceValue(const ftk::Path& path, const ftk::Path& audioPath, const
     if (!std::isfinite(rate) || rate <= 0.0 || !std::isfinite(length) || length <= 0.0 || length > 9007199254740991.0)
         throw std::runtime_error("当前源时间范围或真实帧率无效。");
     const double count = std::ceil(length);
-    const QString alpha = info.type == ftk::ImageType::RGBA_F16 || info.type == ftk::ImageType::RGBA_F32 ||
-        ftk::getChannelCount(info.type) == 3 || image.alphaBlend == ftk::AlphaBlend::None
+    const QString alpha = ftk::getChannelCount(info.type) == 3 || image.alphaBlend == ftk::AlphaBlend::None
         ? QStringLiteral("opaque")
         : image.alphaBlend == ftk::AlphaBlend::Premultiplied ? QStringLiteral("premultiplied") : QStringLiteral("straight");
 #if TLRENDER_VERSION_MAJOR > 0 || TLRENDER_VERSION_MINOR >= 27

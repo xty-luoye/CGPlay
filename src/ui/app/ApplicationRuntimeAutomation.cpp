@@ -42,6 +42,12 @@
 #include "viewer/api/IActivePlaybackView.h"
 #include "viewer/api/IOverlayHost.h"
 #include "viewer/api/IOverlayProvider.h"
+
+#if CGPLAY_HAS_TLRENDER
+#include <ftk/Core/Context.h>
+#include <ftk/Core/Image.h>
+#include <ftk/Core/LogSystem.h>
+#endif
 #include "viewer/api/IViewerCoordinateMapper.h"
 
 #include <QAction>
@@ -561,6 +567,15 @@ int Application::_runPlaybackBenchmark()
     _mainWindow->openFile(mediaInfo.absoluteFilePath());
 
     auto* playback = _mainWindow->playbackController();
+    // openFile probes and constructs the player asynchronously. Keep the
+    // automation event loop alive until completion instead of rejecting a
+    // healthy source before its open callback has run.
+    QElapsedTimer openWait;
+    openWait.start();
+    while (playback && !playback->isValid() && openWait.elapsed() < 30000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QThread::msleep(1);
+    }
     if (!playback || !playback->isValid()) {
         qCritical() << "[Benchmark] Player failed to open:" << mediaInfo.absoluteFilePath();
         return 3;
@@ -585,11 +600,13 @@ int Application::_runPlaybackBenchmark()
     {
         int frame = 0;
         qint64 tMs = 0;
+        double sourceSeconds = -1.0;
     };
     QVector<FrameSample> samples;
     samples.reserve(2048);
     QJsonObject speedBeforeForward;
     QJsonObject speedAfterForward;
+    QObject benchmarkCallbacks;
 
     auto captureSpeedState = [&]() {
         QJsonObject state;
@@ -608,6 +625,17 @@ int Application::_runPlaybackBenchmark()
             state.insert(QStringLiteral("speedMult"), player->getSpeedMult());
             state.insert(QStringLiteral("actualSpeed"), player->getActualSpeed());
             state.insert(QStringLiteral("timeRangeRate"), player->getTimeRange().duration().rate());
+            state.insert(QStringLiteral("videoLayer"), player->getVideoLayer());
+            state.insert(QStringLiteral("cacheVideoGB"), player->getCacheOptions().videoGB);
+            state.insert(QStringLiteral("cacheReadBehind"), player->getCacheOptions().readBehind);
+            state.insert(QStringLiteral("playerVideoRequests"), static_cast<int>(player->getPlayerOptions().videoRequestMax));
+            state.insert(QStringLiteral("currentVideoCount"), static_cast<int>(player->getCurrentVideo().size()));
+            state.insert(QStringLiteral("liveImageBytes"), static_cast<double>(ftk::Image::getTotalByteCount()));
+            int validImages = 0;
+            for (const auto& frame : player->getCurrentVideo())
+                for (const auto& layer : frame.layers)
+                    validImages += static_cast<bool>(layer.image) + static_cast<bool>(layer.imageB);
+            state.insert(QStringLiteral("currentVideoImages"), validImages);
         }
 #endif
         return state;
@@ -616,15 +644,22 @@ int Application::_runPlaybackBenchmark()
     QObject::connect(
         playback->signalProxy(),
         &PlaybackServiceSignals::currentFrameChanged,
-        this,
+        &benchmarkCallbacks,
         [&](int frame, int) {
             const qint64 t = elapsed.elapsed();
             if (t >= _benchmarkWarmupMs) {
-                samples.push_back({ frame, t });
+                double sourceSeconds = -1.0;
+#if CGPLAY_HAS_TLRENDER
+                if (playbackController && playbackController->player()) {
+                    const auto& video = playbackController->player()->getCurrentVideo();
+                    if (!video.empty()) sourceSeconds = video.front().time.to_seconds();
+                }
+#endif
+                samples.push_back({ frame, t, sourceSeconds });
             }
         });
 
-    QTimer::singleShot(_benchmarkWarmupMs, this, [&, playback, stats, viewport] {
+    QTimer::singleShot(_benchmarkWarmupMs, &benchmarkCallbacks, [&, playback, stats, viewport] {
         if (stats) {
             stats->reset();
         }
@@ -641,7 +676,7 @@ int Application::_runPlaybackBenchmark()
     int exitCode = 0;
     QTimer::singleShot(
         _benchmarkWarmupMs + _benchmarkDurationMs,
-        this,
+        &benchmarkCallbacks,
         [&, playback, stats, mediaInfo, outputPath, screenshotPath] {
             const QDateTime playbackEndWall = QDateTime::currentDateTime();
             playback->stop();
@@ -655,6 +690,8 @@ int Application::_runPlaybackBenchmark()
             int repeatedOrReverseSteps = 0;
             int skippedFrames = 0;
             int loopWraps = 0;
+            int reverseSteps = 0;
+            const int totalFrames = playback->totalFrames();
 
             if (!samples.isEmpty()) {
                 firstMs = samples.first().tMs;
@@ -662,14 +699,24 @@ int Application::_runPlaybackBenchmark()
                 firstFrame = samples.first().frame;
                 lastFrame = samples.last().frame;
                 for (int i = 1; i < samples.size(); ++i) {
-                    const int delta = samples[i].frame - samples[i - 1].frame;
+                    int delta = samples[i].frame - samples[i - 1].frame;
+                    // The benchmark plays forward. Count travel through the
+                    // end/start boundary instead of subtracting wrapped frame
+                    // numbers, which reports zero speed on short looped clips.
+                    if (delta < 0 && totalFrames > 1 &&
+                        samples[i - 1].frame >= totalFrames / 2 &&
+                        samples[i].frame < totalFrames / 2) {
+                        delta += totalFrames;
+                        ++loopWraps;
+                    }
                     if (delta > 0) {
                         forwardSteps += delta;
                         if (delta > 1) {
                             skippedFrames += delta - 1;
                         }
                     } else if (delta < 0) {
-                        loopWraps += 1;
+                        ++reverseSteps;
+                        ++repeatedOrReverseSteps;
                     } else {
                         repeatedOrReverseSteps += 1;
                     }
@@ -682,13 +729,13 @@ int Application::_runPlaybackBenchmark()
                 measuredSeconds > 0.0 ? static_cast<double>(std::max(0, frameEvents - 1)) / measuredSeconds : 0.0;
             const double mediaFps = playback->fps();
             const double mediaTimeDeltaSeconds =
-                mediaFps > 0.0 && lastFrame >= firstFrame
-                    ? static_cast<double>(lastFrame - firstFrame) / mediaFps
+                mediaFps > 0.0
+                    ? static_cast<double>(forwardSteps) / mediaFps
                     : 0.0;
             const double playbackRate =
                 measuredSeconds > 0.0 ? mediaTimeDeltaSeconds / measuredSeconds : 0.0;
             const bool playbackRatePassed =
-                playbackRate >= 0.90 && playbackRate <= 1.10;
+                reverseSteps == 0 && playbackRate >= 0.90 && playbackRate <= 1.10;
             const double expectedFrames =
                 mediaFps > 0.0 ? mediaFps * (static_cast<double>(_benchmarkDurationMs) / 1000.0) : 0.0;
             const double expectedRatio =
@@ -703,6 +750,11 @@ int Application::_runPlaybackBenchmark()
             const double renderFps = viewport ? viewport->renderFps() : 0.0;
             const QJsonObject viewportDiagnostics =
                 viewport ? viewport->benchmarkDiagnostics() : QJsonObject();
+            // Clock advancement and empty repaints do not prove video output.
+            // Keep this separate from the rate check so a black/stuck viewport
+            // cannot pass simply because the player's clock runs on time.
+            const bool videoOutputPassed = viewportDiagnostics.value(
+                "drawn_source_frame_changes").toDouble() >= 2.0;
             bool screenshotSaved = false;
             {
                 const QFileInfo screenshotInfo(screenshotPath);
@@ -717,6 +769,7 @@ int Application::_runPlaybackBenchmark()
                 QJsonObject item;
                 item["t_ms"] = static_cast<double>(samples[i].tMs);
                 item["frame"] = samples[i].frame;
+                item["source_seconds"] = samples[i].sourceSeconds;
                 sampleJson.append(item);
             }
 
@@ -760,6 +813,8 @@ int Application::_runPlaybackBenchmark()
             report["playbackRate"] = playbackRate;
             report["playbackRateTarget"] = 1.0;
             report["playbackRatePass"] = playbackRatePassed;
+            report["videoOutputPass"] = videoOutputPassed;
+            report["passed"] = playbackRatePassed && videoOutputPassed;
             report["frame_events"] = frameEvents;
             report["frame_event_fps"] = eventFps;
             report["expected_frames_at_media_fps"] = expectedFrames;
@@ -768,19 +823,39 @@ int Application::_runPlaybackBenchmark()
             report["estimated_skipped_frames"] = skippedFrames;
             report["repeated_or_stationary_events"] = repeatedOrReverseSteps;
             report["loop_wraps"] = loopWraps;
+            report["unexpected_reverse_steps"] = reverseSteps;
             report["render_frames"] = static_cast<double>(renderFrames);
             report["render_seconds"] = renderSeconds;
             report["render_fps"] = renderFps;
             report["viewport_diagnostics"] = viewportDiagnostics;
+            report["drawn_source_fps"] = renderSeconds > 0.0
+                ? viewportDiagnostics.value("drawn_source_frame_changes").toDouble() / renderSeconds : 0.0;
+            report["background_mode"] = _backgroundAutomationMode;
             report["playback_stats"] = playbackStats;
             report["tl_speed_before_forward"] = speedBeforeForward;
             report["tl_speed_after_forward"] = speedAfterForward;
+            report["tl_state_at_end"] = captureSpeedState();
+#if CGPLAY_HAS_TLRENDER
+            if (playbackController && playbackController->player()) {
+                const auto context = playbackController->player()->getContext();
+                if (context) {
+                    auto log = context->getLogSystem();
+                    log->tick();
+                    QJsonArray nativeErrors;
+                    for (const auto& item : log->observeLogItems()->get()) {
+                        if (item.type == ftk::LogType::Error || item.type == ftk::LogType::Warning)
+                            nativeErrors.append(QString::fromStdString(item.prefix + ": " + item.message));
+                    }
+                    report["native_errors"] = nativeErrors;
+                }
+            }
+#endif
             report["screenshot_path"] = QFileInfo(screenshotPath).absoluteFilePath();
             report["screenshot_saved"] = screenshotSaved;
             report["sample_stride"] = stride;
             report["samples"] = sampleJson;
             report["note"] =
-                "playbackRate is media_time_delta_seconds divided by wall_clock_delta_seconds and is the speed pass gate. Top/bottom FPS counters, frame_event_fps, PlaybackStats, and render_fps are diagnostic only.";
+                "Acceptance requires playbackRatePass and videoOutputPass. Distinct submitted video frames establish output, not physical screen presentation. FPS counters and empty repaints alone do not establish playback.";
 
             QFile out(outputPath);
             if (!out.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -795,6 +870,9 @@ int Application::_runPlaybackBenchmark()
                         << "renderFPS=" << renderFps
                         << "frames=" << frameEvents
                         << "skipped=" << skippedFrames;
+                if (!playbackRatePassed || !videoOutputPassed) {
+                    exitCode = 5;
+                }
             }
 
             quit();
@@ -1656,14 +1734,12 @@ int Application::_runQwenAsrProviderSmoke()
                 report.insert(QStringLiteral("main_screenshot_path"), QFileInfo(mainScreenshotPath).absoluteFilePath());
             }
         }
-        const QFileInfo info(outputPath);
-        QDir().mkpath(info.absolutePath());
-        QFile file(outputPath);
-        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            file.write(QJsonDocument(report).toJson(QJsonDocument::Indented));
-            file.close();
+        if (!writeJsonObjectFile(outputPath, report)) {
+            qWarning() << "[QwenSmoke] Failed to commit report:" << outputPath;
+            exitCode = 4;
+        } else {
+            exitCode = report.value(QStringLiteral("pass")).toBool() ? 0 : 2;
         }
-        exitCode = report.value(QStringLiteral("pass")).toBool() ? 0 : 2;
         QCoreApplication::quit();
     });
 

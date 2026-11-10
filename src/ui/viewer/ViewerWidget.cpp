@@ -571,14 +571,14 @@ QRectF ViewerWidget::visibleVideoRect() const
     if (!_p->viewport) {
         return QRectF();
     }
-    const ftk::V2I vp = _p->viewport->viewPos();
-    const double z = _p->viewport->zoom();
-    return QRectF(vp.x, vp.y, _mediaW * z, _mediaH * z);
+    const QPointF topLeft = imageToWidget(QPointF(0, 0), _mediaW, _mediaH);
+    const QPointF bottomRight = imageToWidget(QPointF(_mediaW, _mediaH), _mediaW, _mediaH);
+    return QRectF(topLeft, bottomRight);
 }
 
 double ViewerWidget::zoom() const
 {
-    return _p->viewport ? _p->viewport->zoom() : 1.0;
+    return _p->viewport ? _p->viewport->zoom() / _p->viewport->devicePixelRatioF() : 1.0;
 }
 
 QPointF ViewerWidget::viewPos() const
@@ -587,7 +587,8 @@ QPointF ViewerWidget::viewPos() const
         return {};
     }
     const ftk::V2I vp = _p->viewport->viewPos();
-    return QPointF(vp.x, vp.y);
+    const double dpr = _p->viewport->devicePixelRatioF();
+    return QPointF(vp.x / dpr, vp.y / dpr);
 }
 
 TlViewport* ViewerWidget::viewport() const
@@ -864,9 +865,10 @@ void ViewerWidget::_setupViewport()
         &TlViewport::viewPosAndZoomChanged,
         this,
         [this](const ftk::V2I&, double zoom) {
-            _p->zoom = zoom;
+            const double logicalZoom = _p->viewport ? zoom / _p->viewport->devicePixelRatioF() : zoom;
+            _p->zoom = logicalZoom;
             _p->autoFit = _p->viewport ? _p->viewport->hasFrameView() : false;
-            Q_EMIT zoomChanged(zoom);
+            Q_EMIT zoomChanged(logicalZoom);
             if (!_p->viewId.isEmpty()) {
                 Q_EMIT transformChanged(_p->viewId);
             }
@@ -1108,7 +1110,8 @@ void ViewerWidget::zoom1to1()
         return;
     }
     _p->viewport->setFrameView(false);
-    _p->viewport->resetZoom();
+    const double dpr = _p->viewport->devicePixelRatioF();
+    _p->viewport->setZoom(dpr, ftk::V2I(qRound(_p->viewport->width() * dpr / 2), qRound(_p->viewport->height() * dpr / 2)));
     _p->autoFit = false;
 }
 
@@ -1139,7 +1142,7 @@ void ViewerWidget::setZoom(double zoom)
     }
     const double clampedZoom = std::clamp(zoom, 0.05, 32.0);
     _p->viewport->setFrameView(false);
-    _p->viewport->setZoom(clampedZoom);
+    _p->viewport->setZoom(clampedZoom * _p->viewport->devicePixelRatioF());
     _p->autoFit = false;
 }
 
@@ -1231,8 +1234,9 @@ bool ViewerWidget::_applyWheelZoom(QWheelEvent* event, const QPoint& focus)
 
     _p->viewport->setFrameView(false);
     const double factor = std::pow(1.1, steps);
-    const double nextZoom = std::clamp(_p->viewport->zoom() * factor, 0.05, 32.0);
-    _p->viewport->setZoom(nextZoom, ftk::V2I(focus.x(), focus.y()));
+    const double dpr = _p->viewport->devicePixelRatioF();
+    const double nextZoom = std::clamp(zoom() * factor, 0.05, 32.0);
+    _p->viewport->setZoom(nextZoom * dpr, ftk::V2I(qRound(focus.x() * dpr), qRound(focus.y() * dpr)));
     _p->autoFit = false;
     event->accept();
     return true;
@@ -1282,7 +1286,8 @@ void ViewerWidget::mouseMoveEvent(QMouseEvent* event)
         return;
     }
     const ftk::V2I current = _p->viewport->viewPos();
-    _p->viewport->setViewPosAndZoom(ftk::V2I(current.x + delta.x(), current.y + delta.y()), _p->viewport->zoom());
+    const double dpr = _p->viewport->devicePixelRatioF();
+    _p->viewport->setViewPosAndZoom(ftk::V2I(current.x + qRound(delta.x() * dpr), current.y + qRound(delta.y() * dpr)), _p->viewport->zoom());
     _p->panGlobalStart = globalNow;
     _p->panThrottle.restart();
     _p->autoFit = false;
@@ -1367,8 +1372,9 @@ bool ViewerWidget::eventFilter(QObject* obj, QEvent* event)
         const QPoint globalNow = mouseEvent->globalPosition().toPoint();
         const QPoint delta = globalNow - _p->panGlobalStart;
         const ftk::V2I current = _p->viewport->viewPos();
+        const double dpr = _p->viewport->devicePixelRatioF();
         _p->viewport->setViewPosAndZoom(
-            ftk::V2I(current.x + delta.x(), current.y + delta.y()),
+            ftk::V2I(current.x + qRound(delta.x() * dpr), current.y + qRound(delta.y() * dpr)),
             _p->viewport->zoom());
         _p->panGlobalStart = globalNow;
         _p->autoFit = false;

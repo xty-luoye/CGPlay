@@ -549,11 +549,13 @@ bool AIProviderDetector::saveConfiguration(
         return false;
     }
 
-    if (_credentialStore && !request.apiKey.trimmed().isEmpty()) {
+    if (!request.apiKey.trimmed().isEmpty()) {
+        if (!_credentialStore) {
+            if (error) *error = QStringLiteral("Credential store is unavailable.");
+            return false;
+        }
         QString storeError;
-        const QByteArray apiKey = request.apiKey.trimmed().toUtf8();
-        const bool genericStored = _credentialStore->storeSecret(
-            QString::fromLatin1(kGenericCredentialId), apiKey, &storeError);
+        QByteArray apiKey = request.apiKey.trimmed().toUtf8();
         QString categoryCredentialId;
         if (result.category == AIProviderCategory::Qwen) {
             categoryCredentialId = QString::fromLatin1(kQwenCredentialId);
@@ -569,9 +571,16 @@ bool AIProviderDetector::saveConfiguration(
                 ? QString::fromLatin1(kAzureOpenAICredentialId)
                 : QString::fromLatin1(kOpenAICredentialId);
         }
-        const bool categoryStored = categoryCredentialId.isEmpty() ||
-            _credentialStore->storeSecret(categoryCredentialId, apiKey, &storeError);
-        if (!genericStored || !categoryStored) {
+        QMap<QString, QByteArray> secrets{{QString::fromLatin1(kGenericCredentialId), apiKey}};
+        if (!categoryCredentialId.isEmpty()) secrets.insert(categoryCredentialId, apiKey);
+        auto* transactionStore = dynamic_cast<IAtomicAICredentialStore*>(_credentialStore);
+        const bool stored = transactionStore
+            ? transactionStore->storeSecrets(secrets, &storeError)
+            : (secrets.size() == 1 && _credentialStore->storeSecret(secrets.firstKey(), secrets.first(), &storeError));
+        if (!stored && !transactionStore && storeError.isEmpty()) storeError = QStringLiteral("Credential store does not support atomic multi-secret updates.");
+        for (auto it = secrets.begin(); it != secrets.end(); ++it) it.value().fill('\0');
+        apiKey.fill('\0');
+        if (!stored) {
             if (error) {
                 *error = storeError.isEmpty()
                     ? QStringLiteral("Failed to store API key.")

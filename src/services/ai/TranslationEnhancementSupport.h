@@ -73,7 +73,9 @@ QJsonObject cacheState(const QString& path, const QString& quickPath = {}, doubl
 QString semanticRepairText(const QString& quickText, bool* changed);
 QString normalizeOcrChineseForZhHans(QString text);
 QString detectSubtitleLanguageForDiagnostics(const QString& text);
-void writeCacheMediaIdentityIfExists(const QStringList& paths, const QString& mediaPath);
+QJsonObject cacheContentHashes(const QStringList& paths);
+void commitGeneratedCacheMediaIdentities(const QStringList& paths,
+    const QJsonObject& previousHashes, const QJsonObject& mediaIdentity);
 QString highQualityNeedReason(const TranslationEnhancementScheduleRequest& request,
     const QJsonObject& quickState, const QJsonObject& enhancedState);
 QJsonObject videoClassEntry(const QString& id, const QString& state, const QString& reason,

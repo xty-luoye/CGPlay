@@ -3,6 +3,8 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -13,8 +15,12 @@
 #include <QLineEdit>
 #include <QMap>
 #include <QPushButton>
+#include <QPointer>
+#include <QScopeGuard>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QStandardPaths>
+#include <QUuid>
 #include <QVBoxLayout>
 #include <initializer_list>
 
@@ -38,6 +44,29 @@ QString durationText(qint64 nanoseconds)
     const qint64 seconds = qMax<qint64>(0, nanoseconds) / 1000000000;
     return QStringLiteral("%1:%2:%3").arg(seconds / 3600, 2, 10, QLatin1Char('0'))
         .arg((seconds / 60) % 60, 2, 10, QLatin1Char('0')).arg(seconds % 60, 2, 10, QLatin1Char('0'));
+}
+QString recordingOutputSuggestion(const QString& text, const QString& initialDirectory)
+{
+    const QFileInfo current(text.trimmed());
+    QString directory;
+    if (!text.trimmed().isEmpty() && current.isAbsolute()) {
+        directory = current.isDir() ? current.absoluteFilePath() : current.absolutePath();
+        if (!current.isDir() && !current.exists()) {
+            QString candidate = current.absoluteFilePath();
+            if (current.suffix().isEmpty()) candidate += QStringLiteral(".mp4");
+            if (QFileInfo(candidate).suffix().compare(QStringLiteral("mp4"), Qt::CaseInsensitive) == 0 &&
+                !QFileInfo::exists(candidate)) return candidate;
+        }
+    }
+    if (directory.isEmpty()) directory = initialDirectory;
+    if (directory.isEmpty()) directory = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+    if (directory.isEmpty()) directory = QDir::homePath();
+    const QDir folder(directory);
+    const QString stem = QStringLiteral("录屏_%1").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss_zzz")));
+    QString path = folder.filePath(stem + QStringLiteral(".mp4"));
+    if (QFileInfo::exists(path))
+        path = folder.filePath(stem + QLatin1Char('_') + QUuid::createUuid().toString(QUuid::WithoutBraces) + QStringLiteral(".mp4"));
+    return path;
 }
 } // namespace
 
@@ -77,7 +106,7 @@ RecordingPanel::RecordingPanel(QWidget* parent) : QWidget(parent)
     sdr->setWordWrap(true); column->addWidget(sdr);
     auto* outputRow = new QHBoxLayout;
     _output = new QLineEdit(this); _output->setObjectName(QStringLiteral("RecordingOutput"));
-    _output->setPlaceholderText(QStringLiteral("选择保存 MP4 的位置")); outputRow->addWidget(_output,1);
+    _output->setPlaceholderText(QStringLiteral("保存位置（包含 .mp4 文件名）")); outputRow->addWidget(_output,1);
     _browse = new QPushButton(QStringLiteral("浏览…"),this); _browse->setObjectName(QStringLiteral("RecordingBrowse"));
     outputRow->addWidget(_browse); column->addLayout(outputRow);
     const auto addAudio = [&](const QString& title, const QString& prefix, QCheckBox*& enabled,
@@ -276,10 +305,41 @@ void RecordingPanel::publishAudio()
 }
 void RecordingPanel::chooseOutput()
 {
+    if (isBusy()) return;
     const bool background=qApp->property("cgplay.automationBackground").toBool();
-    const QString path=background ? property("cgplay.recordingInjectedOutput").toString()
-        : QFileDialog::getSaveFileName(this,QStringLiteral("保存录屏（新文件）"),_output->text(),QStringLiteral("MP4 视频 (*.mp4)"),nullptr,QFileDialog::DontConfirmOverwrite);
-    if (!path.isEmpty()) _output->setText(path);
+    const QString initial=recordingOutputSuggestion(_output->text(),background
+        ? property("cgplay.recordingOutputDialogDirectory").toString() : QString());
+    const QPointer<RecordingPanel> owner(this);
+    const QPointer<QFileDialog> dialog(new QFileDialog(this,QStringLiteral("保存录屏（选择文件夹，可修改文件名）"),
+        QFileInfo(initial).absolutePath(),QStringLiteral("MP4 视频 (*.mp4)")));
+    const auto cleanup=qScopeGuard([dialog] { delete dialog.data(); });
+    dialog->setAcceptMode(QFileDialog::AcceptSave);
+    dialog->setFileMode(QFileDialog::AnyFile);
+    dialog->setDefaultSuffix(QStringLiteral("mp4"));
+    dialog->setOption(QFileDialog::DontConfirmOverwrite);
+    dialog->selectFile(QFileInfo(initial).fileName());
+    QString path;
+    if (background) {
+        // Exercise the same dialog configuration without opening a native picker.
+        dialog->setOption(QFileDialog::DontUseNativeDialog);
+        dialog->setAttribute(Qt::WA_DontShowOnScreen);
+        setProperty("cgplay.recordingOutputDialogInitial",dialog->selectedFiles().value(0));
+        setProperty("cgplay.recordingOutputDialogSuffix",dialog->defaultSuffix());
+        const QString evidence=property("cgplay.recordingOutputDialogEvidence").toString();
+        if (!evidence.isEmpty()) {
+            dialog->resize(900,600);
+            setProperty("cgplay.recordingOutputDialogCaptured",dialog->grab().save(evidence,"PNG"));
+        }
+        path=property("cgplay.recordingInjectedOutput").toString();
+    } else {
+        const int result=dialog->exec();
+        if (!owner || !dialog) return;
+        if (result==QDialog::Accepted) path=dialog->selectedFiles().value(0);
+    }
+    if (owner && !path.isEmpty() && !owner->isBusy()) {
+        if (QFileInfo(path).suffix().isEmpty()) path+=QStringLiteral(".mp4");
+        owner->_output->setText(path);
+    }
 }
 void RecordingPanel::chooseRecovery()
 {

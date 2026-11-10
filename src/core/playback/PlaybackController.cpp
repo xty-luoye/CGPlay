@@ -21,6 +21,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QFile>
+#include <QLockFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -34,13 +35,18 @@
 #include <cmath>
 
 #if CGPLAY_HAS_TLRENDER
+  #include <tlRender/Core/Version.h>
   #include <tlRender/Timeline/Timeline.h>
   #include <tlRender/Timeline/Player.h>
   #include <tlRender/Timeline/PlayerOptions.h>
   #include <tlRender/Timeline/System.h>
   #include <tlRender/Timeline/Init.h>
-  #include <tlRender/Core/Version.h>
   #include <tlRender/IO/System.h>
+  #if __has_include(<tlRender/Timeline/AudioSystem.h>)
+    #include <tlRender/Timeline/AudioSystem.h>
+  #else
+    #include <tlRender/Core/AudioSystem.h>
+  #endif
 #endif
 
 #if CGPLAY_HAS_FTK
@@ -343,6 +349,22 @@ JobOutcome ensureAv1Cache(JobContext& context, const QString& path)
     }
     const QString cachePath = av1CachePath(path);
     if (hasUsableVideoStream(context, ffprobe, cachePath)) return JobOutcome::success(cachePath);
+
+    // Multiple open requests can target the same source while the first
+    // transcode is still running.  Coordinate the final cache path so the
+    // loser waits and reuses the completed cache instead of reporting a
+    // spurious commit failure.
+    QLockFile cacheLock(cachePath + QStringLiteral(".lock"));
+    cacheLock.setStaleLockTime(60 * 1000);
+    while (!cacheLock.tryLock(100)) {
+        if (context.shouldStop()) {
+            return JobOutcome::canceled(QStringLiteral("AV1 cache wait canceled"));
+        }
+    }
+    if (hasUsableVideoStream(context, ffprobe, cachePath)) {
+        return JobOutcome::success(cachePath);
+    }
+
     const QString tempPath = uniqueTranscodeTempPath(cachePath, QStringLiteral(".tmp.mp4"));
     context.reportProgress(10, QStringLiteral("Preparing AV1 playback"));
     QProcess proc;
@@ -364,8 +386,19 @@ JobOutcome ensureAv1Cache(JobContext& context, const QString& path)
         QFile::remove(tempPath);
         return JobOutcome::failure(QStringLiteral("invalid-cache"), QStringLiteral("AV1 transcode produced unusable media"));
     }
-    QFile::remove(cachePath);
+    // The cache is locked and has already been validated as absent/invalid.
+    // Remove only an invalid stale file so a valid cache is never destroyed.
+    if (QFileInfo::exists(cachePath) && !hasUsableVideoStream(context, ffprobe, cachePath)) {
+        QFile::remove(cachePath);
+    }
     if (!QFile::rename(tempPath, cachePath)) {
+        // Another process may have committed a valid cache without taking our
+        // lock (for example an older build).  Revalidate before failing.
+        if (hasUsableVideoStream(context, ffprobe, cachePath)) {
+            QFile::remove(tempPath);
+            context.reportProgress(100, QStringLiteral("AV1 playback ready"));
+            return JobOutcome::success(cachePath);
+        }
         QFile::remove(tempPath);
         return JobOutcome::failure(QStringLiteral("cache-commit-failed"), QStringLiteral("Cannot commit AV1 cache"));
     }
@@ -1149,12 +1182,25 @@ void PlaybackController::seekRelative(int deltaFrames)
 {
 #if CGPLAY_HAS_TLRENDER
     if (_p->player) {
-        auto cur = _p->player->getCurrentTime();
-        _p->player->seek(cur + OTIO_NS::RationalTime(deltaFrames, cur.rate()));
+        const auto currentTime = _p->player->getCurrentTime();
+        if (_p->loopMode == 0) {
+            const auto& range = _p->player->getTimeRange();
+            const double rate = range.duration().rate();
+            const auto sourceStart = range.start_time().rescaled_to(rate);
+            const qint64 totalFrames = std::max<qint64>(1, std::llround(range.duration().value()));
+            const qint64 currentFrame = std::llround(currentTime.value_rescaled_to(rate) - sourceStart.value());
+            // Normalize before calling the engine. Some native versions snap
+            // out-of-range seeks to an endpoint and discard the overshoot.
+            const qint64 targetFrame = ((currentFrame + static_cast<qint64>(deltaFrames)) % totalFrames +
+                totalFrames) % totalFrames;
+            _p->player->seek(sourceStart + OTIO_NS::RationalTime(static_cast<double>(targetFrame), rate));
+        } else {
+            _p->player->seek(currentTime + OTIO_NS::RationalTime(deltaFrames, currentTime.rate()));
+        }
     }
 #else
-    stop();
-    _p->frameStub = std::clamp(_p->frameStub + deltaFrames, 0, _p->totalStub - 1);
+    _p->frameStub = static_cast<int>(std::clamp<qint64>(static_cast<qint64>(_p->frameStub) + deltaFrames,
+        0, _p->totalStub - 1));
     Q_EMIT currentFrameChanged(_p->frameStub, _p->totalStub);
 #endif
 }
@@ -1460,21 +1506,17 @@ QStringList PlaybackController::availableAudioDevices() const
     QStringList list;
 #if CGPLAY_HAS_TLRENDER
     if (_p->player) {
-        // Query SDL2 directly for audio output device names
-        // tlRender wraps SDL2; device names can be set via SDL2 calls.
-        // Return the current device + common defaults.
         list << QString::fromStdString(_p->player->getAudioDevice().name);
-        // SDL2: enumerate output devices (requires SDL_Init)
-        #ifdef SDL_Init
-        SDL_Init(SDL_INIT_AUDIO);
-        int ndev = SDL_GetNumAudioDevices(0);
-        for (int i = 0; i < ndev; ++i) {
-            const char* name = SDL_GetAudioDeviceName(i, 0);
-            if (name) list << QString::fromUtf8(name);
-        }
-        list.removeDuplicates();
-        #endif
     }
+    if (_p->context) {
+        if (const auto audio = _p->context->getSystem<tl::AudioSystem>()) {
+            for (const auto& device : audio->getDevices()) {
+                list << QString::fromStdString(device.id.name);
+            }
+        }
+    }
+    list.removeAll(QString());
+    list.removeDuplicates();
 #endif
     if (list.isEmpty()) list << "Default";
     return list;

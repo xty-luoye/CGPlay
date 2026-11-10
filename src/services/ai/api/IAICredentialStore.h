@@ -4,6 +4,7 @@
 
 #include <QByteArray>
 #include <QString>
+#include <QMap>
 
 namespace cgplay {
 
@@ -23,6 +24,15 @@ public:
         const QString& secretId,
         QString* error = nullptr) = 0;
     virtual bool hasSecret(const QString& secretId) const = 0;
+};
+
+// Optional separate interface preserves the existing credential-store vtable.
+class IAtomicAICredentialStore
+{
+public:
+    virtual ~IAtomicAICredentialStore() = default;
+    // On false, existing secrets remain unchanged.
+    virtual bool storeSecrets(const QMap<QString, QByteArray>& secrets, QString* error = nullptr) = 0;
 };
 
 } // namespace cgplay

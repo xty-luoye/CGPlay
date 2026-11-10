@@ -20,6 +20,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QFile>
+#include <QSaveFile>
 #include <QFileInfo>
 #include <QDir>
 #include <QDateTime>
@@ -108,16 +109,20 @@ bool SessionManager::save(const QString& path)
 
     QJsonObject root = _serialize();
 
-    QFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    QSaveFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly)) {
         QMessageBox::warning(_mainWindow, tr("Save Failed"),
             tr("Could not write file:\n%1").arg(filePath));
         return false;
     }
 
     QJsonDocument doc(root);
-    file.write(doc.toJson(QJsonDocument::Indented));
-    file.close();
+    const QByteArray data = doc.toJson(QJsonDocument::Indented);
+    if (file.write(data) != data.size() || !file.commit()) {
+        QMessageBox::warning(_mainWindow, tr("Save Failed"),
+            tr("Could not save file:\n%1\n%2").arg(filePath, file.errorString()));
+        return false;
+    }
 
     _sessionPath = filePath;
     _setDirty(false);
@@ -215,10 +220,11 @@ void SessionManager::saveRecovery()
     const QString path = recoveryPath();
     QDir().mkpath(QFileInfo(path).absolutePath());
 
-    QFile file(path);
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
-        file.close();
+    QSaveFile file(path);
+    if (file.open(QIODevice::WriteOnly)) {
+        const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Compact);
+        if (file.write(data) != data.size() || !file.commit())
+            qWarning() << "[SessionManager] Cannot commit recovery:" << path << file.errorString();
     }
 }
 
@@ -399,8 +405,9 @@ void SessionManager::_finishRestore(quint64 generation)
         return;
     }
     const PendingRestore restored = *_pendingRestore;
-    if (!_deserialize(restored.root)) {
-        _failRestore(tr("Invalid session data."));
+    QString restoreError;
+    if (!_deserialize(restored.root, &restoreError)) {
+        _failRestore(restoreError.isEmpty() ? tr("Invalid session data.") : restoreError);
         return;
     }
     if (!_pendingRestore || _pendingRestore->generation != generation) return;
@@ -413,10 +420,29 @@ void SessionManager::_finishRestore(quint64 generation)
 }
 
 // ─── Private: apply state only after the requested media is ready ─────────
-bool SessionManager::_deserialize(const QJsonObject& root)
+bool SessionManager::_deserialize(const QJsonObject& root, QString* error)
 {
     if (root["version"].toInt(-1) < 1) return false;
     const int currentFrame = root["media"].toObject()["current_frame"].toInt(0);
+
+    // Validate color state before applying other session state. An unknown
+    // config or saved selection must leave the last valid transform intact.
+    if (_ocioMgr && root.contains("ocio")) {
+        const QJsonObject oo = root["ocio"].toObject();
+        OcioManager::PreviewTransformSettings settings;
+        settings.configPath = oo["config_path"].toString();
+        settings.input = oo["input"].toString();
+        settings.display = oo["display"].toString();
+        settings.view = oo["view"].toString();
+        settings.enabled = oo["enabled"].toBool(true);
+        QString colorError;
+        if (!_ocioMgr->applyConfiguration(settings, &colorError)) {
+            if (error) *error = tr("Cannot restore OCIO settings: %1").arg(colorError);
+            return false;
+        }
+        _ocioMgr->setExposure(static_cast<float>(oo["exposure"].toDouble(0.0)));
+        _ocioMgr->setGamma(static_cast<float>(oo["gamma"].toDouble(1.0)));
+    }
 
     // ── Playback ─────────────────────────────────────────────────────────
     auto* pb = _mainWindow->playbackController();
@@ -442,26 +468,6 @@ bool SessionManager::_deserialize(const QJsonObject& root)
         compareBar->setWipeRotation(static_cast<float>(co["wipe_rotation"].toDouble(0.0)));
         compareBar->setOverlay(static_cast<float>(co["overlay"].toDouble(0.5)));
         compareBar->setAutoClearB(co["auto_clear_b"].toBool(true));
-    }
-
-    // ── OCIO ─────────────────────────────────────────────────────────────
-    if (_ocioMgr && root.contains("ocio")) {
-        QJsonObject oo = root["ocio"].toObject();
-        QString configPath = oo["config_path"].toString();
-        if (!configPath.isEmpty() && configPath.startsWith("ocio://")) {
-            _ocioMgr->loadBuiltinConfig("ACES");   // 恢复为内置 ACES 配置
-        } else if (!configPath.isEmpty()) {
-            _ocioMgr->loadConfig(configPath);
-        }
-        if (!oo["input"].toString().isEmpty())
-            _ocioMgr->setInput(oo["input"].toString());
-        if (!oo["display"].toString().isEmpty())
-            _ocioMgr->setDisplay(oo["display"].toString());
-        if (!oo["view"].toString().isEmpty())
-            _ocioMgr->setView(oo["view"].toString());
-        _ocioMgr->setExposure(static_cast<float>(oo["exposure"].toDouble(0.0)));
-        _ocioMgr->setGamma(static_cast<float>(oo["gamma"].toDouble(1.0)));
-        _ocioMgr->setEnabled(oo["enabled"].toBool(true));
     }
 
     // ── Annotations ──────────────────────────────────────────────────────

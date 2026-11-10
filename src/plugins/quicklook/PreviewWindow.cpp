@@ -38,57 +38,54 @@ protected:
     void mousePressEvent(QMouseEvent* event) override
     {
         if (event->button() == Qt::LeftButton && orientation() == Qt::Horizontal && maximum() > minimum()) {
-            QStyleOptionSlider option;
-            initStyleOption(&option);
-            const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
-            const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
-            const int sliderMin = groove.x();
-            const int sliderMax = groove.right() - handle.width() + 1;
-            const int pos = qBound(sliderMin, static_cast<int>(event->position().x()) - handle.width() / 2, sliderMax);
-            const int value = QStyle::sliderValueFromPosition(
-                minimum(),
-                maximum(),
-                pos - sliderMin,
-                qMax(1, sliderMax - sliderMin),
-                option.upsideDown);
-            setValue(value);
-            Q_EMIT sliderMoved(value);
-            Q_EMIT sliderReleased();
+            setSliderDown(true);
+            updatePosition(event);
             event->accept();
             return;
         }
         QSlider::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        if (isSliderDown() && (event->buttons() & Qt::LeftButton)) {
+            updatePosition(event);
+            event->accept();
+            return;
+        }
+        QSlider::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        if (event->button() == Qt::LeftButton && isSliderDown()) {
+            updatePosition(event);
+            setSliderDown(false);
+            event->accept();
+            return;
+        }
+        QSlider::mouseReleaseEvent(event);
+    }
+
+private:
+    void updatePosition(QMouseEvent* event)
+    {
+        QStyleOptionSlider option;
+        initStyleOption(&option);
+        const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
+        const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
+        const int sliderMin = groove.x();
+        const int sliderMax = qMax(sliderMin, groove.right() - handle.width() + 1);
+        const int pos = qBound(sliderMin, static_cast<int>(event->position().x()) - handle.width() / 2, sliderMax);
+        setSliderPosition(QStyle::sliderValueFromPosition(
+            minimum(), maximum(), pos - sliderMin, qMax(1, sliderMax - sliderMin), option.upsideDown));
     }
 };
 
-class PreviewVolumeSlider : public QSlider
+class PreviewVolumeSlider : public PreviewSeekSlider
 {
 public:
-    using QSlider::QSlider;
-
-protected:
-    void mousePressEvent(QMouseEvent* event) override
-    {
-        if (event->button() == Qt::LeftButton && orientation() == Qt::Horizontal && maximum() > minimum()) {
-            QStyleOptionSlider option;
-            initStyleOption(&option);
-            const QRect groove = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderGroove, this);
-            const QRect handle = style()->subControlRect(QStyle::CC_Slider, &option, QStyle::SC_SliderHandle, this);
-            const int sliderMin = groove.x();
-            const int sliderMax = groove.right() - handle.width() + 1;
-            const int pos = qBound(sliderMin, static_cast<int>(event->position().x()) - handle.width() / 2, sliderMax);
-            const int value = QStyle::sliderValueFromPosition(
-                minimum(),
-                maximum(),
-                pos - sliderMin,
-                qMax(1, sliderMax - sliderMin),
-                option.upsideDown);
-            setValue(value);
-            event->accept();
-            return;
-        }
-        QSlider::mousePressEvent(event);
-    }
+    using PreviewSeekSlider::PreviewSeekSlider;
 };
 
 } // namespace

@@ -6,6 +6,8 @@
 #include "TranslationTextPolicy.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QSaveFile>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -700,7 +702,6 @@ QString semanticRepairText(const QString& quickText, bool* changed)
     replaceTerm(QStringLiteral("\u795e\u79d8\u9b54\u4eba\u6697\u5f71"),
                 QStringLiteral("\u795e\u79d8\u9b54\u5251\u58eb\u6697\u5f71"));
     replaceTerm(QStringLiteral("\u91ce\u65b9\u6c0f"), QStringLiteral("\u6211\u65b9"));
-    replaceTerm(QStringLiteral("\u673a\u5173"), QStringLiteral("\u88c5\u7f6e"));
     replaceTerm(QStringLiteral("\u5f3a\u8005\u7684\u6218\u6597\u65b9\u5f0f"),
                 QStringLiteral("\u5f3a\u8005\u7684\u6218\u6597\u65b9\u6cd5"));
     return text;
@@ -827,31 +828,9 @@ bool isCjkUnifiedIdeograph(QChar ch)
 
 QString stripLeadingIsolatedHanOcrNoise(QString text)
 {
-    text = text.trimmed();
-    const int firstSpace = text.indexOf(QLatin1Char(' '));
-    if (firstSpace != 1 || text.size() < 4 || !isCjkUnifiedIdeograph(text.at(0))) {
-        return text;
-    }
-
-    const QString rest = text.mid(firstSpace + 1).trimmed();
-    if (rest.isEmpty() || !isCjkUnifiedIdeograph(rest.at(0))) {
-        return text;
-    }
-
-    int restHan = 0;
-    for (const QChar ch : rest) {
-        if (isCjkUnifiedIdeograph(ch)) {
-            ++restHan;
-        }
-    }
-
-    const QString allowedPrefixes = QStringLiteral(
-        "\u554a\u55ef\u5443\u54e6\u5582\u662f\u4e0d\u6211\u4f60\u4ed6\u5979\u5b83"
-        "\u8fd9\u90a3\u597d\u6765\u53bb\u522b\u770b\u542c\u8bf4\u8d70\u4f4f\u5feb");
-    if (restHan >= 2 && !allowedPrefixes.contains(text.at(0))) {
-        return rest;
-    }
-    return text;
+    // An isolated Han character is valid dialogue too. Text alone provides
+    // no position or recognition confidence with which to remove it.
+    return text.trimmed();
 }
 
 QString normalizeOcrChineseForZhHans(QString text)
@@ -1022,16 +1001,45 @@ QJsonObject cacheState(const QString& path, const QString& quickPath, double cur
     };
 }
 
-void writeCacheMediaIdentityIfExists(const QStringList& paths, const QString& mediaPath)
+QJsonObject cacheContentHashes(const QStringList& paths)
 {
+    QJsonObject hashes;
     for (const QString& path : paths) {
-        if (path.trimmed().isEmpty() || !QFileInfo::exists(path)) {
-            continue;
+        if (path.trimmed().isEmpty()) continue;
+        QFile file(path);
+        QString digest;
+        if (file.open(QIODevice::ReadOnly)) {
+            QCryptographicHash hash(QCryptographicHash::Sha256);
+            if (hash.addData(&file)) digest = QString::fromLatin1(hash.result().toHex());
         }
-        QString error;
-        if (!SubtitleGenerationService::writeMediaIdentitySidecar(path, mediaPath, 0.0, &error)) {
-            qWarning() << "[TranslationEnhancement] Failed to write cache media identity"
-                       << path << error;
+        hashes.insert(path, digest);
+    }
+    return hashes;
+}
+
+void commitGeneratedCacheMediaIdentities(const QStringList& paths,
+    const QJsonObject& previousHashes, const QJsonObject& mediaIdentity)
+{
+    const QString fingerprint = mediaIdentity.value(QStringLiteral("mediaFingerprint")).toString();
+    const QString mediaPath = mediaIdentity.value(QStringLiteral("mediaPath")).toString();
+    if (fingerprint.isEmpty() ||
+        SubtitleGenerationService::mediaFingerprint(mediaPath) != fingerprint) return;
+    const QJsonObject currentHashes = cacheContentHashes(paths);
+    for (const QString& path : paths) {
+        const QString digest = currentHashes.value(path).toString();
+        // Reused and unchanged files keep their provenance, duration and creation time.
+        if (digest.isEmpty() || !previousHashes.contains(path) ||
+            digest == previousHashes.value(path).toString()) continue;
+        QJsonObject payload = mediaIdentity;
+        payload.insert(QStringLiteral("cachePath"), QFileInfo(path).absoluteFilePath());
+        payload.insert(QStringLiteral("schema"), QStringLiteral("cgplay-media-identity-v1"));
+        payload.insert(QStringLiteral("cacheContentSha256"), digest);
+        payload.insert(QStringLiteral("cacheContentSize"), QFileInfo(path).size());
+        payload.insert(QStringLiteral("createdAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+        QSaveFile file(SubtitleGenerationService::mediaIdentitySidecarPath(path));
+        const QByteArray data = QJsonDocument(payload).toJson(QJsonDocument::Indented);
+        if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit()) {
+            qWarning() << "[TranslationEnhancement] Failed to commit cache media identity" << path << file.errorString();
         }
     }
 }

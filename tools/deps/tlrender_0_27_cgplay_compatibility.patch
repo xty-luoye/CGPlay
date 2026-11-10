@@ -26,6 +26,39 @@
  
          // The range the sequence covers, whether or not every frame in it is
          // there. A policy that leaves frames out is settled by the timeline
+--- a/lib/tlRender/IO/FFmpegRead.cpp
++++ b/lib/tlRender/IO/FFmpegRead.cpp
+@@ -336,11 +336,28 @@
+                 {
+                     PromiseGuard<VideoData> guard(videoRequest->promise);
+ 
+-                    // Seek.
++                    // Small forward gaps occur when playback outruns a frame.
++                    // Keep the decoder's reference frames in that case: a
++                    // keyframe seek would repeatedly discard its threaded
++                    // pipeline and prevent it from ever catching up.
+                     if (!videoRequest->time.strictly_equal(p.currentTime))
+                     {
++                        const bool forwardGap = videoRequest->time > p.currentTime &&
++                            (videoRequest->time - p.currentTime).to_seconds() <= 1.0;
++                        if (forwardGap)
++                        {
++                            const OTIO_NS::RationalTime step(1.0, videoTime.duration().rate());
++                            while (p.currentTime < videoRequest->time && !p.readVideo->isBufferEmpty())
++                            {
++                                p.readVideo->popBuffer();
++                                p.currentTime += step;
++                            }
++                        }
+                         p.currentTime = videoRequest->time;
+-                        p.readVideo->seek(p.currentTime);
++                        if (!forwardGap)
++                        {
++                            p.readVideo->seek(p.currentTime);
++                        }
+                     }
+ 
+                     // Process.
 --- a/lib/tlRender/IO/FFmpeg.cpp
 +++ b/lib/tlRender/IO/FFmpeg.cpp
 @@ -330,7 +330,9 @@
@@ -39,3 +72,126 @@
              {
                  if (extensions.find(ext) == extensions.end())
                  {
+--- a/lib/tlRender/Timeline/Player.cpp
++++ b/lib/tlRender/Timeline/Player.cpp
+@@ -462,10 +462,15 @@
+                     std::unique_lock<std::mutex> lock(p.mutex.mutex);
+                     p.mutex.state.playback = value;
+                     p.mutex.state.currentTime = p.currentTime->get();
+-                    p.mutex.clearRequests = true;
+-                    p.mutex.cacheDir = Playback::Forward == value ?
++                    const CacheDir nextDir = Playback::Forward == value ?
+                         CacheDir::Forward :
+                         CacheDir::Reverse;
++                    // Pausing does not invalidate the cache. Keep requests
++                    // when resuming in the same direction: cancelling them
++                    // leaves the movie reader decoding abandoned work, then
++                    // seeks back when the replacement requests arrive.
++                    p.mutex.clearRequests |= p.mutex.cacheDir != nextDir;
++                    p.mutex.cacheDir = nextDir;
+                 }
+                 {
+                     std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
+@@ -484,7 +489,6 @@
+                 {
+                     std::unique_lock<std::mutex> lock(p.mutex.mutex);
+                     p.mutex.state.playback = value;
+-                    p.mutex.clearRequests = true;
+                 }
+                 {
+                     std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
+@@ -1182,6 +1186,30 @@
+                 }
+                 else if (p.thread.state.playback != Playback::Stop)
+                 {
++                    // A decoder can complete between two playhead ticks. If
++                    // playback is faster than decoding, requiring an exact
++                    // cache hit can leave the display empty indefinitely.
++                    // Present the nearest completed frame already reached in
++                    // the playback direction. Paused/stepped seeks still use
++                    // the exact-frame path above.
++                    auto nearest = p.thread.videoCache.lower_bound(p.thread.state.currentTime);
++                    if (p.thread.state.playback == Playback::Forward)
++                    {
++                        if (nearest != p.thread.videoCache.begin())
++                        {
++                            --nearest;
++                        }
++                        else
++                        {
++                            nearest = p.thread.videoCache.end();
++                        }
++                    }
++                    if (nearest != p.thread.videoCache.end() &&
++                        p.thread.state.inOutRange.contains(nearest->first))
++                    {
++                        std::unique_lock<std::mutex> lock(p.mutex.mutex);
++                        p.mutex.currentVideoFrame = nearest->second;
++                    }
+                     if (!p.timeRange.contains(p.thread.state.currentTime))
+                     {
+                         std::unique_lock<std::mutex> lock(p.mutex.mutex);
+--- a/lib/tlRender/Timeline/TimelineRequests.cpp
++++ b/lib/tlRender/Timeline/TimelineRequests.cpp
+@@ -481,6 +481,17 @@
+         // Gather requests.
+         std::list<std::shared_ptr<Private::PendingVideoRequest> > newVideoRequests;
+         std::list<std::shared_ptr<Private::PendingAudioRequest> > newAudioRequests;
++        // The path is immutable. Classify it once instead of rebuilding every
++        // plugin's extension sets on each high-frequency request tick.
++        if (!p.thread.prioritizeVideo.has_value())
++        {
++            p.thread.prioritizeVideo = true;
++            if (auto context = p.context.lock())
++            {
++                p.thread.prioritizeVideo = context->getSystem<ReadSystem>()->getFileType(
++                    p.path.getExt()) != FileType::Media;
++            }
++        }
+         {
+             std::unique_lock<std::mutex> lock(p.mutex.mutex);
+             p.thread.cv.wait_for(
+@@ -499,7 +510,11 @@
+             // oldest request is not the most urgent once the playhead has
+             // moved on from it. A stable sort, so that requests the same
+             // distance away keep their order.
+-            if (p.mutex.requestPriority.has_value() && p.mutex.videoRequests.size() > 1)
++            // Stateful movie readers must retain submission order. Promoting
++            // a newer frame ahead of pending older ones makes each older
++            // request seek back to a keyframe and flush the decode pipeline.
++            // Stateless sequences can still prioritize the current playhead.
++            if (*p.thread.prioritizeVideo && p.mutex.requestPriority.has_value() && p.mutex.videoRequests.size() > 1)
+             {
+                 const OTIO_NS::RationalTime priorityTime = p.mutex.requestPriority->time;
+                 const bool reverse = p.mutex.requestPriority->reverse;
+--- a/lib/tlRender/Timeline/TimelinePrivate.h
++++ b/lib/tlRender/Timeline/TimelinePrivate.h
+@@ -298,6 +298,7 @@
+         // handoff.
+         struct Thread
+         {
++            std::optional<bool> prioritizeVideo;
+             std::list<std::shared_ptr<PendingVideoRequest> > videoRequestsInProgress;
+             std::list<std::shared_ptr<PendingAudioRequest> > audioRequestsInProgress;
+             std::condition_variable cv;
+--- a/lib/tlRender/Timeline/PlayerPrivate.cpp
++++ b/lib/tlRender/Timeline/PlayerPrivate.cpp
+@@ -482,10 +482,17 @@
+                 {
+                     request(time);
+                 }
++                // Retain completed read-behind frames, but do not submit
++                // missing past frames while moving forward. At a loop the
++                // ahead requests can already target the next iteration;
++                // filling the previous tail afterwards seeks the movie
++                // reader backwards again. Paused exact-frame work keeps
++                // the original fill path.
+                 for (OTIO_NS::RationalTime time = std::max(
+                         videoCacheRange.start_time(),
+                         thread.state.inOutRange.start_time());
+-                    time < current && !full();
++                    thread.state.playback != Playback::Forward &&
++                        time < current && !full();
+                     time += inc)
+                 {
+                     request(time);

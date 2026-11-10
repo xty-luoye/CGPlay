@@ -1,5 +1,6 @@
 #include "CodexPlugin.h"
 #include "CodexPluginSupport.h"
+#include "LocalTaskStore.h"
 
 #include "common/jobs/JobSystem.h"
 #include "common/core/ServiceLocator.h"
@@ -776,14 +777,10 @@ void CodexPlugin::connectWorkspace(CodexAgentWorkspace* workspace)
     });
     connect(workspace, &CodexAgentWorkspace::localTaskManageRequested, this, [this, workspace] {
         const QString path = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath(QStringLiteral("cgplay_local_tasks.jsonl"));
-        QFile input(path);
         QJsonArray tasks;
-        if (input.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            while (!input.atEnd()) {
-                QJsonParseError error;
-                const QJsonDocument document = QJsonDocument::fromJson(input.readLine(), &error);
-                if (error.error == QJsonParseError::NoError && document.isObject()) tasks.push_back(document.object());
-            }
+        QString saveError;
+        if (!localTaskStore::read(path, &tasks, &saveError)) {
+            workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Local task queue unavailable: %1").arg(saveError)); return;
         }
         QStringList choices;
         for (const QJsonValue& value : tasks) {
@@ -798,24 +795,38 @@ void CodexPlugin::connectWorkspace(CodexAgentWorkspace* workspace)
         if (index < 0) return;
         const QString action = QInputDialog::getItem(workspace, tr("CGPlay local tasks"), tr("Action"), {tr("Cancel"), tr("Retry"), tr("Delete")}, 0, false, &ok);
         if (!ok) return;
-        QJsonObject task = tasks.at(index).toObject();
+        const QString taskId = tasks.at(index).toObject().value(QStringLiteral("id")).toString();
+        // Modal dialogs process events: reload the queue before applying an edit.
+        if (!localTaskStore::read(path, &tasks, &saveError)) {
+            workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Local task queue unavailable: %1").arg(saveError)); return;
+        }
+        int currentIndex = -1;
+        for (int i = 0; i < tasks.size(); ++i) {
+            if (tasks.at(i).toObject().value(QStringLiteral("id")).toString() == taskId) { currentIndex = i; break; }
+        }
+        if (currentIndex < 0) { workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Local task no longer exists.")); return; }
+        const bool running = taskId == _runningLocalTaskId;
+        if (running && action != tr("Cancel")) {
+            workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Cancel the running task and wait for it to stop before retrying or deleting it.")); return;
+        }
         if (action == tr("Delete")) {
-            tasks.removeAt(index);
-            QSaveFile output(path);
-            if (!output.open(QIODevice::WriteOnly)) { workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Local task queue save failed.")); return; }
-            for (const QJsonValue& value : tasks) { output.write(QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact)); output.write("\n"); }
-            if (!output.commit()) { workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Local task queue commit failed.")); return; }
+            tasks.removeAt(currentIndex);
+            if (!localTaskStore::write(path, tasks, &saveError)) {
+                workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Local task queue save failed: %1").arg(saveError)); return;
+            }
             workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Local task deleted."));
             return;
         }
-        task.insert(QStringLiteral("status"), action == tr("Cancel") ? QStringLiteral("cancelled") : QStringLiteral("queued"));
-        task.insert(QStringLiteral("updatedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
-        tasks.replace(index, task);
-        QSaveFile output(path);
-        if (!output.open(QIODevice::WriteOnly)) { workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Local task queue save failed.")); return; }
-        for (const QJsonValue& value : tasks) { output.write(QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact)); output.write("\n"); }
-        if (!output.commit()) { workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Local task queue commit failed.")); return; }
-        workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Local task updated: %1").arg(task.value(QStringLiteral("id")).toString()));
+        if (!updateLocalTaskStatus(taskId, action == tr("Cancel") ? QStringLiteral("cancelled") : QStringLiteral("queued"))) return;
+        if (running && action == tr("Cancel")) {
+            QString interruptError;
+            // A turn/start response can still be pending. Its response handler
+            // sends the interrupt once a concrete turn ID becomes available.
+            if (!_runningLocalTaskTurnId.isEmpty() && !interruptTurn(&interruptError)) {
+                workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Task cancellation request failed: %1").arg(interruptError));
+            }
+        }
+        workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Local task updated: %1").arg(taskId));
         if (action == tr("Retry")) QTimer::singleShot(0, this, &CodexPlugin::processLocalTaskQueue);
     });
     connect(workspace, &CodexAgentWorkspace::rulesAndConfigRequested, this, [this, workspace] {

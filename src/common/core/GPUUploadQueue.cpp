@@ -1,4 +1,4 @@
-﻿// CGPlay GPUUploadQueue.cpp — v1.1 性能层
+// CGPlay GPUUploadQueue.cpp — v1.1 性能层
 // PBO-based async texture upload pipeline.
 //
 // 管线：
@@ -75,23 +75,9 @@ void GPUUploadQueue::initialize(QOpenGLFunctions_4_1_Core* gl)
     if (_p->initialized) return;
     _p->gl = gl;
 
-    // 创建 PBO 双缓冲（初始大小 16MB，按需扩展）
-    GLsizeiptr initialSize = 16 * 1024 * 1024; // 16 MB
-    gl->glGenBuffers(1, &_p->pboA.id);
-    gl->glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _p->pboA.id);
-    gl->glBufferData(GL_PIXEL_UNPACK_BUFFER, initialSize, nullptr, GL_STREAM_DRAW);
-    _p->pboA.size = initialSize;
+    // Bind the GL owner now; allocate storage only when an upload arrives.
+    _p->initialized = gl != nullptr;
 
-    gl->glGenBuffers(1, &_p->pboB.id);
-    gl->glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _p->pboB.id);
-    gl->glBufferData(GL_PIXEL_UNPACK_BUFFER, initialSize, nullptr, GL_STREAM_DRAW);
-    _p->pboB.size = initialSize;
-
-    gl->glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-
-    _p->initialized = true;
-    qDebug() << "[GPUUploadQueue] Initialized with PBO double-buffer ("
-             << initialSize / (1024*1024) << "MB each)";
 }
 
 void GPUUploadQueue::shutdown()
@@ -110,6 +96,7 @@ void GPUUploadQueue::shutdown()
     if (_p->pboA.id) { _p->gl->glDeleteBuffers(1, &_p->pboA.id); _p->pboA.id = 0; }
     if (_p->pboB.id) { _p->gl->glDeleteBuffers(1, &_p->pboB.id); _p->pboB.id = 0; }
 
+    _p->pboA.size = _p->pboB.size = 0;
     _p->gl = nullptr;
     _p->initialized = false;
 }
@@ -157,6 +144,8 @@ int GPUUploadQueue::processUploads()
 
         pbo->inUse = true;
         auto* gl = _p->gl;
+
+        if (!pbo->id) gl->glGenBuffers(1, &pbo->id);
 
         // 确保 PBO 容量足够
         GLsizeiptr needed = static_cast<GLsizeiptr>(entry.image.sizeInBytes());

@@ -139,16 +139,12 @@ def native_layout(a: SourceSpec, b: SourceSpec, mode: str) -> Layout:
     h = a.height
     w = max(1, int(h * a.aspect))
     if mode == 'tile':
-        # Local tlRender: two inputs -> one column, two rows; choose max-area size.
-        chosen = a if a.width * a.height >= b.width * b.height else b
-        h = chosen.height if chosen.rotation_cw in (0, 180) else chosen.width
-        # The source-native reference uses max PAR; this adapter assumes rotation=0.
-        if a.rotation_cw or b.rotation_cw:
-            raise ValueError('rotated Tile requires a captured tl::getBoxes layout')
-        w = max(1, int(chosen.width * max(Fraction(1), a.pixel_aspect, b.pixel_aspect)))
+        # Current tlRender default sameSize=true uses A's cell dimensions;
+        # ceil(sqrt(2)) columns places the two inputs side by side.
+        return Layout(w * 2, h, Box(0, 0, w, h), Box(w, 0, w, h))
     if mode == 'horizontal':
         return Layout(w * 2, h, Box(0, 0, w, h), Box(w, 0, w, h))
-    if mode in ('vertical', 'tile'):
+    if mode == 'vertical':
         return Layout(w, h * 2, Box(0, 0, w, h), Box(0, h, w, h))
     return Layout(w, h, Box(0, 0, w, h), Box(0, 0, w, h))
 
@@ -207,8 +203,11 @@ def _fit(rgba: np.ndarray, aspect: Fraction, box: Box):
         width = box.width
         height = max(1, min(box.height, int(width / aspect)))
     # Float32 per-channel resize; no Pillow RGB uint8 intermediate.
-    result = np.stack([np.asarray(Image.fromarray(np.ascontiguousarray(rgba[..., c])).resize(
-        (width, height), Image.Resampling.BILINEAR), dtype=np.float32) for c in range(4)], axis=-1)
+    result = rgba if rgba.shape[:2] == (height, width) else np.stack([
+        np.asarray(Image.fromarray(np.ascontiguousarray(rgba[..., c])).resize(
+            (width, height), Image.Resampling.BILINEAR), dtype=np.float32) for c in range(4)], axis=-1)
+    if (height, width) == (box.height, box.width):
+        return result
     out = np.zeros((box.height, box.width, 4), dtype=np.float32)
     x, y = (box.width - width) // 2, (box.height - height) // 2
     out[y:y + height, x:x + width] = result
@@ -217,16 +216,22 @@ def _fit(rgba: np.ndarray, aspect: Fraction, box: Box):
 
 def compose_float(a_rgba, b_rgba, a_spec, b_spec, options, layout):
     """Premultiplied float layers; final opaque RGB uses a solid black background."""
-    a = np.zeros((layout.height, layout.width, 4), dtype=np.float32)
-    b = np.zeros_like(a)
-    for target, source, spec, box in ((a, a_rgba, a_spec, layout.a), (b, b_rgba, b_spec, layout.b)):
+    for box in (layout.a, layout.b):
         if min(box.x, box.y) < 0 or box.x + box.width > layout.width or box.y + box.height > layout.height:
             raise ValueError('layout box outside canvas')
-        target[box.y:box.y + box.height, box.x:box.x + box.width] = _fit(source, spec.aspect, box)
+    def place(source, spec, box):
+        fitted = _fit(source, spec.aspect, box)
+        if box == Box(0, 0, layout.width, layout.height):
+            return fitted
+        target = np.zeros((layout.height, layout.width, 4), dtype=np.float32)
+        target[box.y:box.y + box.height, box.x:box.x + box.width] = fitted
+        return target
     if options.mode == 'a':
-        return a[..., :3]
+        return place(a_rgba, a_spec, layout.a)[..., :3]
     if options.mode == 'b':
-        return b[..., :3]
+        return place(b_rgba, b_spec, layout.b)[..., :3]
+    a = place(a_rgba, a_spec, layout.a)
+    b = place(b_rgba, b_spec, layout.b)
     if options.mode in ('horizontal', 'vertical', 'tile'):
         return (a + b)[..., :3]
     if options.mode == 'overlay':

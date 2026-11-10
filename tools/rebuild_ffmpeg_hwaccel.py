@@ -156,6 +156,13 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.dry_run:
+        print("[DRY RUN] Would download FFmpeg if missing, configure and build with:")
+        print("  --enable-hwaccels --enable-d3d11va --enable-dxva2 --enable-nvdec")
+        print(f"  Source: {FFMPEG_URL}")
+        print(f"  Destination: {TLRENDER_DIR}")
+        return 0
+
     print("=" * 60)
     print("CGPlay FFmpeg Hardware Acceleration Rebuild")
     print("=" * 60)
@@ -189,10 +196,6 @@ def main():
         subprocess.run(["curl", "-L", "-o", str(archive), FFMPEG_URL], check=True)
         subprocess.run(["tar", "-xf", str(archive), "-C", str(build_dir)], check=True)
 
-    if args.dry_run:
-        print("\n[DRY RUN] Would configure and build FFmpeg with:")
-        print("  --enable-hwaccels --enable-d3d11va --enable-dxva2 --enable-nvdec")
-        return 0
 
     if not args.skip_build:
         # Configure and build FFmpeg via MSYS2

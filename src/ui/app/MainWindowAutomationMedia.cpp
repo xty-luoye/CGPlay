@@ -16,7 +16,8 @@
 #include <QLabel>
 #include <QLayout>
 #include <QMouseEvent>
-#include <QRegularExpression>
+#include <QScopeGuard>
+#include <QToolButton>
 #include <cmath>
 #if CGPLAY_HAS_TLRENDER
 #include <tlRender/Timeline/Player.h>
@@ -68,6 +69,17 @@ QJsonArray MainWindow::_runSequenceTimeSmokeChecks(const QString& mediaPath)
         add("Sequence player ready", false);
         return results;
     }
+    const bool navigationSeconds = _p->playbackBar->navigationInSeconds();
+    const int navigationAmount = _p->playbackBar->navigationStepAmount();
+    const bool displaySeconds = _p->playbackBar->displaySeconds();
+    const auto restoreNavigationDisplay = qScopeGuard([this, navigationSeconds, navigationAmount, displaySeconds] {
+        _p->playbackBar->setNavigationStep(navigationSeconds, navigationAmount);
+        _p->playbackBar->setDisplaySeconds(displaySeconds);
+        _p->timeline->setDisplaySeconds(displaySeconds);
+    });
+    _p->playbackBar->setNavigationStep(false, 1);
+    _p->playbackBar->setDisplaySeconds(false);
+    _p->timeline->setDisplaySeconds(false);
     playback->pause();
     playback->clearInOutPoints();
     const int total = files.size();
@@ -76,12 +88,8 @@ QJsonArray MainWindow::_runSequenceTimeSmokeChecks(const QString& mediaPath)
         std::abs(playback->fps() - fps) < 0.0001 &&
         std::abs(player->getTimeRange().start_time().value_rescaled_to(fps) - first) < 0.0001,
         {{"sourceFirst", first}, {"total", playback->totalFrames()}, {"fps", playback->fps()}});
-    const auto labelText = [](QWidget* parent, const QString& pattern) {
-        const QRegularExpression expression(pattern);
-        for (auto* label : parent->findChildren<QLabel*>())
-            if (expression.match(label->text()).hasMatch()) return label->text();
-        return QString();
-    };
+    auto* timeDisplay = _p->playbackBar->findChild<QToolButton*>(QStringLiteral("PlaybackBarTimeDisplay"));
+    auto* progressDisplay = _p->timeline->findChild<QToolButton*>(QStringLiteral("TimelineProgressDisplay"));
     const auto checkFrame = [&](const QString& name, int expected) {
         settle();
         const int nominalFps = qRound(fps);
@@ -89,11 +97,11 @@ QJsonArray MainWindow::_runSequenceTimeSmokeChecks(const QString& mediaPath)
         const QString expectedTime = QStringLiteral("%1:%2:%3:%4")
             .arg(seconds / 3600, 2, 10, QChar('0')).arg(seconds / 60 % 60, 2, 10, QChar('0'))
             .arg(seconds % 60, 2, 10, QChar('0')).arg(expected % nominalFps, 2, 10, QChar('0'));
-        const QString time = labelText(_p->playbackBar, QStringLiteral("^\\d{2}:\\d{2}:\\d{2}:\\d{2}$"));
-        const QString count = labelText(_p->timeline, QStringLiteral("^\\d+ / \\d+$"));
+        const QString time = timeDisplay ? timeDisplay->text() : QString();
+        const QString count = progressDisplay ? progressDisplay->text() : QString();
         const double source = player->getCurrentTime().value_rescaled_to(fps);
         add(name, playback->currentFrame() == expected && time == expectedTime &&
-            count == QStringLiteral("%1 / %2").arg(expected + 1).arg(total) &&
+            count == QStringLiteral("%1 / %2 帧").arg(expected + 1).arg(total) &&
             std::abs(source - (first + expected)) < 0.0001,
             {{"expectedFrame", expected}, {"frame", playback->currentFrame()}, {"sourceFrame", source},
              {"timecode", time}, {"expectedTimecode", expectedTime}, {"timelineCounter", count}});

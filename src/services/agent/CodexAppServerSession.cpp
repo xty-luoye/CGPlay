@@ -266,6 +266,13 @@ void CodexAppServerSession::emitLines(QByteArray* buffer, bool standardError, bo
     while (true) {
         const int newline = buffer->indexOf('\n');
         if (newline < 0) break;
+        if (newline > kMaximumBufferedLineBytes) {
+            buffer->clear();
+            emit sessionError(QStringLiteral("Codex app-server 输出的单行超过 %1 字节安全上限。")
+                                 .arg(kMaximumBufferedLineBytes));
+            kill();
+            return;
+        }
 
         QByteArray line = buffer->left(newline);
         buffer->remove(0, newline + 1);

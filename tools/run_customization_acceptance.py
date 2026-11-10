@@ -119,10 +119,11 @@ def restore_tree_state(root: Path, state: dict[str, bytes | None]) -> None:
             path.write_bytes(data)
 
 
-def run_process(exe: Path, args: list[str], timeout: int = 30) -> tuple[int, str, str]:
+def run_process(exe: Path, args: list[str], timeout: int = 30, overrides: dict | None = None) -> tuple[int, str, str]:
     env = os.environ.copy()
     args = ["--automation-settings-namespace", SETTINGS_NAMESPACE, *args]
     env["QT_IM_MODULE"] = "none"
+    env.update(overrides or {})
     proc = subprocess.run(
         [str(exe), *args],
         cwd=str(ROOT),
@@ -130,6 +131,7 @@ def run_process(exe: Path, args: list[str], timeout: int = 30) -> tuple[int, str
         capture_output=True,
         timeout=timeout,
         text=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     return proc.returncode, proc.stdout.decode("utf-8", "replace"), proc.stderr.decode("utf-8", "replace")
 
@@ -153,6 +155,8 @@ class Acceptance:
 
     def dump(self, name: str) -> dict[str, object]:
         path = self.output / f"{name}.json"
+        if path.exists():
+            path.rename(path.with_name(path.name + f".previous_{time.time_ns()}"))
         code, stdout, stderr = run_process(self.exe, ["--dump-runtime", "--dump-runtime-output", str(path)])
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -176,9 +180,12 @@ class Acceptance:
         for key, value in values.items():
             reg_set(f"{REG_PATH}\\appearance", key, value)
 
-    def run(self) -> int:
+    def run(self, profile_only: bool = False) -> int:
         try:
-            self.matrix()
+            if profile_only:
+                self.profile_package()
+            else:
+                self.matrix()
             result = {
                 "timestamp": datetime.now().isoformat(timespec="seconds"),
                 "exe": str(self.exe),
@@ -194,6 +201,51 @@ class Acceptance:
         finally:
             reg_restore(self.reg)
             restore_tree_state(APPDATA, self.tree)
+
+    def profile_package(self) -> None:
+        report = self.output / "profile_product_smoke.json"
+        if report.exists():
+            report.rename(report.with_name(report.name + f".previous_{time.time_ns()}"))
+        fixture = self.output / "profile_fixture.mp4"
+        generated = subprocess.run([str(self.exe.parent / "ffmpeg.exe"), "-y", "-v", "error",
+            "-f", "lavfi", "-i", "testsrc2=size=64x32:rate=24", "-t", "1", "-c:v", "libx264", str(fixture)],
+            capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=30)
+        if generated.returncode:
+            self.check("profile fixture generated", False, generated.stderr.decode("utf-8", "replace"))
+            return
+        code, stdout, stderr = run_process(self.exe,
+            ["--automation-background", "--smoke-player", str(fixture), "--smoke-output", str(report)], timeout=180,
+            overrides={"CGPLAY_SMOKE_GROUPS": "settings", "CGPLAY_PROFILE_PACKAGE_ONLY": "1"})
+        (self.output / "profile_process.log").write_text(stdout + stderr, encoding="utf-8")
+        try:
+            data = json.loads(report.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            self.check("profile product report exists", False, str(error))
+            return
+        results = data.get("results", [])
+        expected = {"Profile actual ZIP export import roundtrip", "Profile failed export import cannot report success"}
+        names = {item.get("name") for item in results}
+        self.check("profile product callbacks pass", code == 0 and expected <= names and
+            all(item.get("status") == "PASS" for item in results), data)
+        observed = [item.get("details", {}) for item in results if item.get("name") in expected]
+        self.check("profile background windows remain hidden", len(observed) == 2 and all(
+            item.get("background") is True and item.get("isolatedSettings") is True and
+            item.get("nativeVisibleWindows") == 0 and item.get("visiblePlatformWindows") == 0
+            for item in observed), observed)
+        package = self.output / "CGPlay_Workspace_Profile.zip"
+        required = {"theme.json", "shortcuts.json", "toolbar.json", "button_styles.json", "input.json",
+                    "mouse_bindings.json", "gamepad_bindings.json", "workspace.json", "metadata.json"}
+        try:
+            with zipfile.ZipFile(package) as archive:
+                parts = {name: json.loads(archive.read(name)) for name in required}
+            valid = (parts["shortcuts.json"].get("playback.nextFrame") == "Ctrl+Alt+Right" and
+                     parts["theme.json"].get("accentColor") == "#51a3d8" and
+                     parts["input.json"].get("mouseWheel") == "frames" and
+                     parts["workspace.json"].get("name") == "Profile Roundtrip Probe" and
+                     parts["metadata.json"].get("version") == 3)
+            self.check("profile real ZIP has v3 parts and persisted values", valid, parts)
+        except (OSError, KeyError, ValueError, zipfile.BadZipFile) as error:
+            self.check("profile real ZIP has v3 parts and persisted values", False, str(error))
 
     def matrix(self) -> None:
         # Presets must be distinct and must ignore stale custom surface keys.
@@ -300,17 +352,7 @@ class Acceptance:
         data = self.dump("workspace_corrupt_fallback")
         self.check("corrupt workspace falls back without crash", data.get("_process", {}).get("exitCode") == 0)
 
-        # Export schema is file-level but must contain every independently persisted part.
-        profile = self.output / "profile.json"
-        profile.write_text(json.dumps({"version": 3, "theme": {"mode": "custom"}, "shortcuts": {}, "toolbar": {"customButtons": custom}, "buttonStyles": {}, "input": {"mouseWheel": "frames"}, "mouseBindings": {"playback.nextFrame": "Mouse4"}, "gamepadBindings": {"playback.toggle": "A"}, "workspace": {"version": 2, "name": "Acceptance Layout", "panels": {}, "splitterSizes": [0, 200, 1000, 220]}, "workspacePreset": "Acceptance Layout"}, ensure_ascii=False, indent=2), encoding="utf-8")
-        package = self.output / "CGPlay_Workspace_Profile.zip"
-        with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED) as archive:
-            for name in ("theme.json", "shortcuts.json", "toolbar.json", "button_styles.json", "input.json", "mouse_bindings.json", "gamepad_bindings.json", "workspace.json", "metadata.json"):
-                archive.writestr(name, "{}")
-        with zipfile.ZipFile(package) as archive:
-            names = set(archive.namelist())
-        required = {"theme.json", "shortcuts.json", "toolbar.json", "button_styles.json", "input.json", "mouse_bindings.json", "gamepad_bindings.json", "workspace.json", "metadata.json"}
-        self.check("profile package contains all v3 parts", required <= names, sorted(names))
+        self.profile_package()
 
         self.capture("visual_1200", 1200, 760)
         self.capture("visual_1500", 1500, 843)
@@ -320,12 +362,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", type=Path, default=DEFAULT_EXE)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--profile-only", action="store_true")
     args = parser.parse_args()
     output = args.output or ROOT / "tests" / "artifacts" / f"customization_acceptance_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     if not args.exe.exists():
         print(f"missing executable: {args.exe}", file=sys.stderr)
         return 2
-    return Acceptance(args.exe, output).run()
+    return Acceptance(args.exe, output).run(profile_only=args.profile_only)
 
 
 if __name__ == "__main__":

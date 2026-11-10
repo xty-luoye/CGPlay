@@ -59,18 +59,22 @@ std::vector<ShotItem> OtioImporter::importFile(const QString& otioPath)
         return shots;
     }
 
-    // Try to cast to Timeline
+    // OpenTimelineIO deserializes a root object into a Retainer so that the
+    // object remains managed while callers inspect it.  Keep both retainers
+    // alive for the complete import; a raw pointer alone would leave the
+    // timeline dangling as soon as the temporary any/retainer is released.
+    OTIO::SerializableObject::Retainer<> rootRetainer;
+    OTIO::SerializableObject::Retainer<OTIO::Timeline> timelineRetainer;
     auto* timeline = std::any_cast<OTIO::Timeline>(&result);
     if (!timeline) {
-        // Try SerializableObject
-        auto* ser = std::any_cast<OTIO::SerializableObject>(&result);
-        if (ser) {
-            auto* tl = dynamic_cast<OTIO::Timeline*>(ser);
-            if (!tl) {
+        if (auto* retainer = std::any_cast<OTIO::SerializableObject::Retainer<> >(&result)) {
+            rootRetainer = *retainer;
+            timelineRetainer = OTIO::dynamic_retainer_cast<OTIO::Timeline>(rootRetainer);
+            timeline = timelineRetainer.value;
+            if (!timeline) {
                 qWarning() << "[OtioImporter] OTIO root is not a Timeline";
                 return shots;
             }
-            timeline = tl;
         } else {
             qWarning() << "[OtioImporter] Unknown OTIO root type";
             return shots;

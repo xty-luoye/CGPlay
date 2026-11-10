@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -57,6 +58,8 @@ def main() -> int:
     args = parser.parse_args()
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    if args.output.exists():
+        args.output.replace(args.output.with_name(args.output.name + '.previous.' + uuid.uuid4().hex))
     namespace = settings_namespace(args.output)
     cmd = [
         str(args.exe),

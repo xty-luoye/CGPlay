@@ -54,6 +54,12 @@ def safe_relative(value: str) -> str:
 def public_source_files(root: Path) -> list[Path]:
     root = root.resolve(strict=True)
     selected: set[Path] = set()
+    def blocked_directory(relative: Path) -> bool:
+        parts = tuple(part.lower() for part in relative.parts)
+        # This is application source, not a test-media fixture directory.
+        return any(part in BLOCKED_PARTS and not
+                   (index == 2 and parts[:3] == ("src", "services", "media"))
+                   for index, part in enumerate(parts))
     def require_contained_regular(path: Path) -> None:
         if any(parent.is_symlink() or
                getattr(parent.stat(follow_symlinks=False), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
@@ -72,7 +78,8 @@ def public_source_files(root: Path) -> list[Path]:
             continue
         candidates = []
         for directory, folders, files in os.walk(tree, followlinks=False):
-            folders[:] = [name for name in folders if name.lower() not in BLOCKED_PARTS]
+            folders[:] = [folder for folder in folders if not
+                          blocked_directory((Path(directory) / folder).relative_to(root))]
             candidates.extend(Path(directory) / name for name in files)
         for path in candidates:
             relative = path.relative_to(root)
@@ -81,7 +88,7 @@ def public_source_files(root: Path) -> list[Path]:
                 continue
             if name == "tests" and any(fnmatch.fnmatchcase(path.name, pattern) for pattern in PRIVATE_TEST_PATTERNS):
                 continue
-            if (not path.is_file() or any(p.lower() in BLOCKED_PARTS for p in relative.parts)
+            if (not path.is_file() or blocked_directory(relative.parent)
                     or path.name in BLOCKED_NAMES or path.name.lower().startswith((".env", "token_handoff"))
                     or path.suffix.lower() in BLOCKED_SUFFIXES):
                 continue
@@ -168,10 +175,11 @@ def build_bundle(application: Path, provenance: Path, local_map: Path, output: P
             sha = digest(target)
             sidecar = target.with_suffix(target.suffix + ".sha256")
             with sidecar.open("x", encoding="ascii") as stream:
+                created.append(sidecar)
                 stream.write(f"{sha}  {target.name}\n")
-            created.append(sidecar)
             assets.append({"name": target.name, "sha256": sha, "bytes": target.stat().st_size})
         with index_path.open("x", encoding="utf-8") as stream:
+            created.append(index_path)
             json.dump({"schema": 1, "version": version, "primary": output.name, "assets": assets}, stream, indent=2)
     except BaseException:
         for path in created:

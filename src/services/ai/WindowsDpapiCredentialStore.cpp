@@ -4,6 +4,9 @@
 #include <QFileInfo>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QTemporaryDir>
+#include <QSaveFile>
+#include <QMutex>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -13,6 +16,8 @@
 namespace cgplay {
 
 namespace {
+
+QMutex credentialMutex;
 
 QString normalizedSecretId(const QString& secretId)
 {
@@ -26,33 +31,64 @@ bool WindowsDpapiCredentialStore::storeSecret(
     const QByteArray& secret,
     QString* error)
 {
-    const QString normalized = normalizedSecretId(secretId);
-    if (normalized.isEmpty()) {
-        if (error) {
-            *error = QStringLiteral("Secret id is empty");
+    return storeSecrets({{secretId, secret}}, error);
+}
+
+bool WindowsDpapiCredentialStore::storeSecrets(const QMap<QString, QByteArray>& secrets, QString* error)
+{
+    QMutexLocker guard(&credentialMutex);
+    QMap<QString, QByteArray> encrypted;
+    for (auto it = secrets.cbegin(); it != secrets.cend(); ++it) {
+        const QString id = normalizedSecretId(it.key());
+        if (id.isEmpty() || encrypted.contains(id)) {
+            if (error) *error = QStringLiteral("Secret id is empty or duplicated");
+            return false;
         }
+        const QByteArray bytes = it.value().isEmpty() ? QByteArray() : _protect(it.value(), error);
+        if (!it.value().isEmpty() && bytes.isEmpty()) return false;
+        encrypted.insert(id, bytes);
+    }
+    const QString path = _settingsPath();
+    if (!QDir().mkpath(QFileInfo(path).absolutePath())) {
+        if (error) *error = QStringLiteral("Cannot create credential directory");
         return false;
     }
-
-    if (secret.isEmpty()) {
-        return removeSecret(normalized, error);
-    }
-
-    const QByteArray encrypted = _protect(secret, error);
-    if (encrypted.isEmpty()) {
-        return false;
-    }
-
-    QDir().mkpath(QFileInfo(_settingsPath()).absolutePath());
-    QSettings settings(_settingsPath(), QSettings::IniFormat);
-    settings.setValue(_settingsKey(normalized), encrypted.toBase64());
-    settings.sync();
-    if (settings.status() != QSettings::NoError) {
-        if (error) {
-            *error = QStringLiteral("Failed to persist AI credential");
+    // Serialize an independent INI candidate. Never mutate QSettings' shared
+    // cache for the active file before the atomic replacement succeeds.
+    QTemporaryDir staging(path + QStringLiteral(".stage-XXXXXX"));
+    if (!staging.isValid()) { if (error) *error = staging.errorString(); return false; }
+    const QString stagingPath = QDir(staging.path()).filePath(QStringLiteral("candidate.ini"));
+    {
+        QSettings current(path, QSettings::IniFormat);
+        current.sync();
+        if (current.status() != QSettings::NoError) {
+            if (error) *error = QStringLiteral("Cannot read existing credentials");
+            return false;
         }
+        QSettings candidate(stagingPath, QSettings::IniFormat);
+        for (const QString& key : current.allKeys()) candidate.setValue(key, current.value(key));
+        for (auto it = encrypted.cbegin(); it != encrypted.cend(); ++it) {
+            if (it.value().isEmpty()) candidate.remove(_settingsKey(it.key()));
+            else candidate.setValue(_settingsKey(it.key()), it.value().toBase64());
+        }
+        candidate.sync();
+        if (candidate.status() != QSettings::NoError) {
+            if (error) *error = QStringLiteral("Cannot stage credentials");
+            return false;
+        }
+    }
+    QFile input(stagingPath);
+    if (!input.open(QIODevice::ReadOnly)) { if (error) *error = input.errorString(); return false; }
+    const QByteArray bytes = input.readAll();
+    if (input.error() != QFileDevice::NoError) { if (error) *error = input.errorString(); return false; }
+    input.close();
+    QSaveFile output(path);
+    if (!output.open(QIODevice::WriteOnly) || output.write(bytes) != bytes.size() || !output.commit()) {
+        if (error) *error = output.errorString();
         return false;
     }
+    QSettings refresh(path, QSettings::IniFormat);
+    refresh.sync();
     return true;
 }
 
@@ -60,6 +96,7 @@ QByteArray WindowsDpapiCredentialStore::loadSecret(
     const QString& secretId,
     QString* error) const
 {
+    QMutexLocker guard(&credentialMutex);
     const QString normalized = normalizedSecretId(secretId);
     if (normalized.isEmpty()) {
         if (error) {
@@ -81,28 +118,12 @@ bool WindowsDpapiCredentialStore::removeSecret(
     const QString& secretId,
     QString* error)
 {
-    const QString normalized = normalizedSecretId(secretId);
-    if (normalized.isEmpty()) {
-        if (error) {
-            *error = QStringLiteral("Secret id is empty");
-        }
-        return false;
-    }
-
-    QSettings settings(_settingsPath(), QSettings::IniFormat);
-    settings.remove(_settingsKey(normalized));
-    settings.sync();
-    if (settings.status() != QSettings::NoError) {
-        if (error) {
-            *error = QStringLiteral("Failed to remove AI credential");
-        }
-        return false;
-    }
-    return true;
+    return storeSecrets({{secretId, {}}}, error);
 }
 
 bool WindowsDpapiCredentialStore::hasSecret(const QString& secretId) const
 {
+    QMutexLocker guard(&credentialMutex);
     const QString normalized = normalizedSecretId(secretId);
     if (normalized.isEmpty()) {
         return false;

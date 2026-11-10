@@ -58,24 +58,18 @@ bool AnnotationManager::update(const QString& annId, const AnnotationItem& newAn
     for (int i = 0; i < _annotations.size(); ++i) {
         if (_annotations[i].id == annId) {
             // Save old state for undo
-            QVariantMap oldState;
-            oldState["id"]     = _annotations[i].id;
-            oldState["type"]   = static_cast<int>(_annotations[i].type);
-            oldState["color"]  = _annotations[i].color;
-            oldState["comment"] = _annotations[i].comment;
-            oldState["points"] = QVariant::fromValue(_annotations[i].points);
-            oldState["status"] = static_cast<int>(_annotations[i].status);
-            oldState["assignee"] = _annotations[i].assignee;
+            const AnnotationItem oldState = _annotations[i];
 
             // Apply new values
             _annotations[i].type    = newAnn.type;
             _annotations[i].color   = newAnn.color;
             _annotations[i].comment = newAnn.comment;
+            _annotations[i].comments = newAnn.comments;
             _annotations[i].points  = newAnn.points;
             _annotations[i].status  = newAnn.status;
             _annotations[i].assignee = newAnn.assignee;
 
-            _pushUndo("update", oldState);
+            _pushUndo("update", QVariant::fromValue(oldState));
             _notify();
             return true;
         }
@@ -165,28 +159,12 @@ bool AnnotationManager::undo()
         }
         return false;
     } else if (entry.opType == "update") {
-        QString id = entry.data.toMap()["id"].toString();
+        const AnnotationItem old = entry.data.value<AnnotationItem>();
+        const QString id = old.id;
         for (auto& a : _annotations) {
             if (a.id == id) {
-                auto old = entry.data.toMap();
-                // Swap old state back
-                AnnotationItem backup = a;
-                a.type    = static_cast<AnnotationType>(old["type"].toInt());
-                a.color   = old["color"].value<QColor>();
-                a.comment = old["comment"].toString();
-                a.points  = old["points"].value<QVector<QPointF>>();
-                a.status  = static_cast<ReviewStatus>(old["status"].toInt());
-                a.assignee= old["assignee"].toString();
-
-                QVariantMap newState;
-                newState["id"] = a.id;
-                newState["type"] = static_cast<int>(backup.type);
-                newState["color"] = backup.color;
-                newState["comment"] = backup.comment;
-                newState["points"] = QVariant::fromValue(backup.points);
-                newState["status"] = static_cast<int>(backup.status);
-                newState["assignee"] = backup.assignee;
-                _redoStack.append({"update", newState});
+                _redoStack.append({"update", QVariant::fromValue(a)});
+                a = old;
                 _notify();
                 return true;
             }
@@ -220,27 +198,12 @@ bool AnnotationManager::redo()
             }
         }
     } else if (entry.opType == "update") {
-        QString id = entry.data.toMap()["id"].toString();
+        const AnnotationItem newState = entry.data.value<AnnotationItem>();
+        const QString id = newState.id;
         for (auto& a : _annotations) {
             if (a.id == id) {
-                auto newState = entry.data.toMap();
-                QVariantMap oldState;
-                oldState["id"] = a.id;
-                oldState["type"] = static_cast<int>(a.type);
-                oldState["color"] = a.color;
-                oldState["comment"] = a.comment;
-                oldState["points"] = QVariant::fromValue(a.points);
-                oldState["status"] = static_cast<int>(a.status);
-                oldState["assignee"] = a.assignee;
-
-                a.type    = static_cast<AnnotationType>(newState["type"].toInt());
-                a.color   = newState["color"].value<QColor>();
-                a.comment = newState["comment"].toString();
-                a.points  = newState["points"].value<QVector<QPointF>>();
-                a.status  = static_cast<ReviewStatus>(newState["status"].toInt());
-                a.assignee= newState["assignee"].toString();
-
-                _undoStack.append({"update", oldState});
+                _undoStack.append({"update", QVariant::fromValue(a)});
+                a = newState;
                 if (_undoStack.size() > kMaxUndo)
                     _undoStack.removeFirst();
                 _notify();
@@ -261,6 +224,8 @@ void AnnotationManager::clearUndoStack()
 void AnnotationManager::fromList(const QVector<AnnotationItem>& list)
 {
     _annotations = list;
+    _selectedAnnotationId.clear();
+    clearUndoStack();
     _notify();
 }
 

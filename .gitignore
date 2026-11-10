@@ -43,22 +43,3 @@
 /.vscode/
 *.user
 *.tmp
-
-# Local configuration, private records and credentials
-/CMakeUserPresets.json
-/AGENTS.md
-/.agents/
-/PLAN*.md
-/TOKEN_*.md
-/docs/handoffs/
-/docs/history/
-/tools/video/
-/.env
-/.env.*
-!/.env.example
-**/auth.json
-*.key
-*.pfx
-*.p12
-/.venv/
-/.pytest_cache/

@@ -12,6 +12,7 @@ import json
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -25,7 +26,8 @@ DEFAULT_EXE = PACKAGE / "CGPlay.exe"
 
 def run_cmd(args: list[str], timeout: int = 60) -> tuple[int, str, str, float]:
     start = time.perf_counter()
-    proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     elapsed = time.perf_counter() - start
     return proc.returncode, proc.stdout, proc.stderr, elapsed
 
@@ -59,11 +61,20 @@ def probe_media(ffprobe: Path, media_path: Path) -> dict:
     return {"ok": True, "stream": stream, "elapsed_s": elapsed}
 
 
+def playback_rate_passed(benchmark: dict) -> bool:
+    report = benchmark.get("report", {})
+    return (benchmark.get("ok") is True and report.get("playbackRatePass") is True and
+            report.get("playback_stats", {}).get("avg_fps", 0) > 0 and report.get("render_fps", 0) > 0)
+
+
 def run_benchmark(exe: Path, media_path: Path, out_path: Path, quick: bool, timeout: int | None = None) -> dict:
+    if out_path.exists():
+        out_path.replace(out_path.with_name(out_path.name + '.previous.' + uuid.uuid4().hex))
     duration = "1500" if quick else "8000"
     warmup = "800" if quick else "2000"
     args = [
         str(exe),
+        "--automation-background",
         "--benchmark-playback", str(media_path),
         "--benchmark-output", str(out_path),
         "--benchmark-warmup-ms", warmup,
@@ -197,7 +208,7 @@ def main() -> int:
         report = bench.get("report", {})
         avg = report.get("playback_stats", {}).get("avg_fps", 0)
         render = report.get("render_fps", 0)
-        status = "PASS" if bench["ok"] and avg > 0 and render > 0 else "FAIL"
+        status = "PASS" if playback_rate_passed(bench) else "FAIL"
         add_result(results, "Playback benchmark 4K60", status, f"avg={avg:.2f}, render={render:.2f}", benchmark=bench)
 
     alpha_mov = ROOT / "tests" / "fixtures" / "alpha_mov" / "alpha_png_rgba.mov"

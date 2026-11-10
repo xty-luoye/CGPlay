@@ -42,7 +42,8 @@ std::wstring moduleDirectory()
     return separator == std::wstring::npos ? std::wstring{} : path.substr(0, separator);
 }
 
-bool renderFrame(const std::wstring& source, UINT cx, std::vector<BYTE>* output)
+bool renderFrameAt(const std::wstring& source, UINT cx, std::vector<BYTE>* output,
+    const wchar_t* seconds, ULONGLONG deadline)
 {
     if (!output || source.empty()) return false;
     const std::wstring ffmpeg = moduleDirectory() + L"\\ffmpeg.exe";
@@ -54,7 +55,7 @@ bool renderFrame(const std::wstring& source, UINT cx, std::vector<BYTE>* output)
         L":force_original_aspect_ratio=decrease,pad=" + std::to_wstring(size) + L":" +
         std::to_wstring(size) + L":(ow-iw)/2:(oh-ih)/2:color=black";
     std::wstring command = quoteArg(ffmpeg) +
-        L" -hide_banner -loglevel error -threads 1 -ss 0.25 -i " + quoteArg(source) +
+        L" -hide_banner -loglevel error -threads 1 -ss " + seconds + L" -i " + quoteArg(source) +
         L" -an -frames:v 1 -vf " + quoteArg(filter) +
         L" -f image2pipe -vcodec mjpeg -q:v 4 pipe:1";
 
@@ -95,7 +96,6 @@ bool renderFrame(const std::wstring& source, UINT cx, std::vector<BYTE>* output)
 
     output->clear();
     bool timedOut = false;
-    ULONGLONG deadline = GetTickCount64() + 10000;
     for (;;) {
         DWORD available = 0;
         if (PeekNamedPipe(readPipe, nullptr, 0, nullptr, &available, nullptr) && available > 0) {
@@ -128,6 +128,15 @@ bool renderFrame(const std::wstring& source, UINT cx, std::vector<BYTE>* output)
     CloseHandle(process.hProcess);
     CloseHandle(readPipe);
     return !timedOut && exitCode == 0 && !output->empty();
+}
+
+bool renderFrame(const std::wstring& source, UINT cx, std::vector<BYTE>* output)
+{
+    const ULONGLONG deadline = GetTickCount64() + 10000;
+    if (renderFrameAt(source, cx, output, L"0.25", deadline)) return true;
+    // Very short clips can end before the preferred thumbnail timestamp.
+    // Keep both attempts within the same total Shell request budget.
+    return GetTickCount64() < deadline && renderFrameAt(source, cx, output, L"0", deadline);
 }
 
 bool decodeBitmap(const std::vector<BYTE>& encoded, HBITMAP* bitmap, WTS_ALPHATYPE* alpha)

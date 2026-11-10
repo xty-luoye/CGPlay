@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Dict, Iterable, Optional
@@ -153,6 +154,68 @@ def load_scan_result(path: Path, media: Path) -> Optional[Dict[str, object]]:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema") != "cgplay-subtitle-region-candidate-scan-v1":
+        return None
     if payload.get("mediaFingerprint") != media_identity(media).get("mediaFingerprint"):
         return None
+    candidates = payload.get("candidateCues")
+    if not isinstance(candidates, list):
+        return None
+    def number(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    for cue in candidates:
+        if not isinstance(cue, dict) or not isinstance(cue.get("text"), str):
+            return None
+        start, end = cue.get("start"), cue.get("end")
+        if not number(start) or not number(end) or start < 0 or end <= start:
+            return None
+        if "confidence" in cue and not number(cue["confidence"]):
+            return None
+    for field in ("scanStartSeconds", "scanEndSeconds", "durationSec", "sampleIntervalSeconds"):
+        if field in payload and not number(payload[field]):
+            return None
+    if "scannedIntervals" in payload:
+        intervals = payload["scannedIntervals"]
+        if not isinstance(intervals, list) or any(
+            not isinstance(item, list) or len(item) != 2 or
+            not all(number(value) for value in item) or item[0] < 0 or item[1] <= item[0]
+            for item in intervals
+        ):
+            return None
     return payload
+
+
+def merge_scanned_intervals(intervals):
+    merged = []
+    for start, end in sorted(intervals):
+        if end <= start:
+            continue
+        if merged and start <= merged[-1][1] + 1e-6:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
+def scan_intervals_cover(intervals, start, end):
+    return end > start and any(left <= start + 1e-6 and right + 1e-6 >= end
+                               for left, right in merge_scanned_intervals(intervals))
+
+
+def subtract_scanned_intervals(start, end, intervals):
+    remaining = []
+    for left, right in merge_scanned_intervals(intervals):
+        if right <= start:
+            continue
+        if left >= end:
+            break
+        if left > start:
+            remaining.append([start, min(left, end)])
+        start = max(start, right)
+        if start >= end:
+            break
+    if end > start:
+        remaining.append([start, end])
+    return remaining

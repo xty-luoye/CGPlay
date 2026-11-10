@@ -15,6 +15,7 @@
 #include <QComboBox>
 #include <QKeyEvent>
 #include <QCloseEvent>
+#include <QResizeEvent>
 #include <QTimer>
 #include <QApplication>
 #include <QEvent>
@@ -122,6 +123,8 @@ void SecondaryWindow::setCompareFile(const QString& path)
 
 void SecondaryWindow::closeEvent(QCloseEvent* event)
 {
+    ++_fullscreenGeneration;
+    if (_fullscreenChromeTimer) _fullscreenChromeTimer->stop();
     _setFullScreenCursorHidden(false);
     // Release the timeline thumbnail job and tlRender player before the
     // window is queued for deletion.  The application keeps secondary
@@ -139,6 +142,7 @@ void SecondaryWindow::closeEvent(QCloseEvent* event)
 
 bool SecondaryWindow::eventFilter(QObject* obj, QEvent* event)
 {
+    if (obj == centralWidget() && event->type() == QEvent::Resize) _positionFullScreenTimeline();
     if (isFullScreen()) {
         switch (event->type()) {
         case QEvent::MouseMove:
@@ -195,12 +199,15 @@ void SecondaryWindow::keyPressEvent(QKeyEvent* event)
 
 void SecondaryWindow::_toggleFullScreen()
 {
+    const quint64 generation = ++_fullscreenGeneration;
     if (isFullScreen()) {
         if (_fullscreenChromeTimer) {
             _fullscreenChromeTimer->stop();
         }
         _setFullScreenCursorHidden(false);
+        _fullscreenTimelineOverlay = false;
         if (_timeline) {
+            if (auto* layout = qobject_cast<QVBoxLayout*>(centralWidget()->layout())) layout->addWidget(_timeline, 0);
             _timeline->setVisible(_fullscreenTimeline);
         }
         if (_viewer) {
@@ -215,12 +222,15 @@ void SecondaryWindow::_toggleFullScreen()
 
     _fullscreenTimeline = _timeline ? _timeline->isVisible() : true;
     _fullscreenViewerChrome = true;
+    _fullscreenTimelineOverlay = true;
+    if (_timeline && centralWidget()->layout()) centralWidget()->layout()->removeWidget(_timeline);
     if (auto* vp = _viewer ? _viewer->viewport() : nullptr) {
         vp->setFrameView(true);
     }
     _setFullScreenChromeVisible(false, true);
     showFullScreen();
-    QTimer::singleShot(0, this, [this]() {
+    QTimer::singleShot(0, this, [this, generation]() {
+        if (generation != _fullscreenGeneration || !isFullScreen()) return;
         _setFullScreenChromeVisible(false, true);
     });
 }
@@ -251,12 +261,28 @@ void SecondaryWindow::_setFullScreenChromeVisible(bool visible, bool forceApply)
     }
     _fullscreenChromeVisible = visible;
     if (_timeline) {
+        _positionFullScreenTimeline();
         _timeline->setVisible(visible && _fullscreenTimeline);
+        if (_fullscreenTimelineOverlay) _timeline->raise();
     }
     if (_viewer) {
         _viewer->setChromeVisible(false);
     }
     _setFullScreenCursorHidden(!visible);
+}
+
+void SecondaryWindow::resizeEvent(QResizeEvent* event)
+{
+    QMainWindow::resizeEvent(event);
+    _positionFullScreenTimeline();
+}
+
+void SecondaryWindow::_positionFullScreenTimeline()
+{
+    if (!_fullscreenTimelineOverlay || !_timeline || !centralWidget()) return;
+    const QRect rect = centralWidget()->rect();
+    const int height = qMin(rect.height(), qMax(_timeline->minimumHeight(), _timeline->sizeHint().height()));
+    _timeline->setGeometry(rect.x(), rect.bottom() + 1 - height, rect.width(), height);
 }
 
 void SecondaryWindow::_setFullScreenCursorHidden(bool hidden)

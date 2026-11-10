@@ -337,16 +337,19 @@ def main(argv):
                 })
             values = cjk_values
             translations.extend(values)
-            report["batches"].append({"startIndex": i, "count": len(batch), "translatedCount": len(values)})
+            report["batches"].append({"startIndex": i, "count": len(batch), "translatedCount": sum(bool(t.strip()) for t in values)})
     except Exception as exc:
         report["success"] = False
         report["error"] = str(exc)
         Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         return 4
     write_vtt(cues, translations, output)
-    report["success"] = output.exists()
-    report["translatedCueCount"] = len([t for t in translations if t])
+    report["translatedCueCount"] = sum(bool(t.strip()) for t in translations)
     report["missingCueCount"] = len(cues) - report["translatedCueCount"]
+    report["success"] = output.exists() and report["translatedCueCount"] > 0 and report["missingCueCount"] == 0
+    report["status"] = "completed" if report["success"] else "partial" if report["translatedCueCount"] else "failed"
+    if not report["success"]:
+        report["error"] = "Translation did not produce all requested subtitle cues"
     Path(args.report).parent.mkdir(parents=True, exist_ok=True)
     Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0 if report["success"] else 5

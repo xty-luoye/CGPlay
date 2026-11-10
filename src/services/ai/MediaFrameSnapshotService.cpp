@@ -7,6 +7,13 @@
 #include "ui/viewer/api/IActivePlaybackView.h"
 #include "ui/viewer/api/IOverlayHost.h"
 #include "ui/viewer/api/IViewerCoordinateMapper.h"
+#include "component/ComponentRuntimePaths.h"
+#include "ocio/OcioManager.h"
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <cmath>
 
 #include <QBuffer>
 #include <QImage>
@@ -269,6 +276,59 @@ bool captureActiveViewImage(
 
 } // namespace
 
+bool MediaFrameSnapshotService::prepareRangeCapture(
+    const AIFrameCaptureRequest& capture, AIRequest* request, QString* error) const
+{
+    const auto fail = [error](const QString& message) { if (error) *error = message; return false; };
+    if (!request || QThread::currentThread() != QCoreApplication::instance()->thread())
+        return fail(QStringLiteral("Range capture must be prepared on the GUI thread"));
+    auto* media = ServiceLocator::getService<IMediaService>();
+    const auto& context = request->context;
+    if (!media || context.mediaPath.isEmpty() || context.totalFrames <= 0 ||
+        !std::isfinite(context.fps) || context.fps <= 0.0 || capture.sampleCount < 1 || capture.sampleCount > 32)
+        return fail(QStringLiteral("Invalid media range or sample count (1–32)"));
+    const int start = context.startFrame;
+    const int end = context.endFrame;
+    if (start < 0 || end < start || end >= context.totalFrames)
+        return fail(QStringLiteral("AI frame range is outside the current media"));
+    const bool video = media->isVideoPath(context.mediaPath);
+    QMap<int, QString> sequence;
+    int firstNumber = 0;
+    if (!video) {
+        const auto files = media->collectSequenceFiles(context.mediaPath);
+        for (const auto& frame : files) sequence.insert(frame.frameNumber, frame.path);
+        if (sequence.isEmpty()) return fail(QStringLiteral("No source frames available for range capture"));
+        firstNumber = sequence.firstKey();
+    }
+    const int count = std::min(capture.sampleCount, end - start + 1);
+    QJsonArray samples;
+    for (int i = 0; i < count; ++i) {
+        const int frame = count == 1 ? start : start + qRound64(double(i) * (end - start) / (count - 1));
+        const QString path = video ? context.mediaPath : sequence.value(firstNumber + frame);
+        const QFileInfo file(path);
+        if (path.isEmpty() || !file.isFile()) return fail(QStringLiteral("Missing source frame %1").arg(frame));
+        samples.append(QJsonObject{{"frame", frame}, {"path", file.absoluteFilePath()},
+            {"size", QString::number(file.size())}, {"mtimeMs", QString::number(file.lastModified().toMSecsSinceEpoch())}});
+    }
+    const auto runtime = captureComponentRuntimePaths();
+    const QString helper = runtime.script(QStringLiteral("cgplay/ai/capture_frame_range.py"));
+    if (runtime.pythonFor().isEmpty() || helper.isEmpty())
+        return fail(QStringLiteral("AI range capture Python runtime or helper is unavailable"));
+    ColorTransformSnapshot color;
+    if (auto* ocio = ServiceLocator::getService<OcioManager>()) color = ocio->exportColorSnapshot();
+    const QSize target = capture.targetSize.isValid() ? capture.targetSize : QSize(1024, 1024);
+    if (target.width() > 4096 || target.height() > 4096)
+        return fail(QStringLiteral("AI frame target size exceeds 4096"));
+    request->options.insert(QStringLiteral("rangeCaptureJob"), QJsonObject{
+        {"version", 1}, {"samples", samples}, {"sourceKind", video ? "video" : "image"},
+        {"fps", context.fps}, {"totalFrames", context.totalFrames},
+        {"width", context.mediaWidth}, {"height", context.mediaHeight},
+        {"targetWidth", target.width()}, {"targetHeight", target.height()}, {"color", color.toJson()},
+        {"python", runtime.pythonFor()}, {"pythonHome", runtime.pythonHome},
+        {"helper", helper}, {"toolsRoot", runtime.toolsRoot}});
+    return true;
+}
+
 bool MediaFrameSnapshotService::capture(
     const AIFrameCaptureRequest& request,
     QVector<AIMediaFrameReference>* outFrames,
@@ -403,17 +463,14 @@ bool MediaFrameSnapshotService::capture(
         bSegment = QStringLiteral("bottom");
         break;
     case 7:
-        if (image.width() >= image.height()) {
-            aRect = QRect(0, 0, image.width() / 2, image.height());
-            bRect = QRect(image.width() / 2, 0, image.width() - image.width() / 2, image.height());
-            aSegment = QStringLiteral("left");
-            bSegment = QStringLiteral("right");
-        } else {
-            aRect = QRect(0, 0, image.width(), image.height() / 2);
-            bRect = QRect(0, image.height() / 2, image.width(), image.height() - image.height() / 2);
-            aSegment = QStringLiteral("top");
-            bSegment = QStringLiteral("bottom");
-        }
+        // tlRender's Tile layout is a grid: two inputs use two columns even
+        // when both sources are portrait. The final canvas aspect is not a
+        // reliable layout oracle, so never switch to a top/bottom crop based
+        // on width versus height.
+        aRect = QRect(0, 0, image.width() / 2, image.height());
+        bRect = QRect(image.width() / 2, 0, image.width() - image.width() / 2, image.height());
+        aSegment = QStringLiteral("left");
+        bSegment = QStringLiteral("right");
         break;
     default:
         return true;

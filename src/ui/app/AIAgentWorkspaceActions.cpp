@@ -415,6 +415,7 @@ void AIAgentWorkspace::_submitReviewReport()
 
 void AIAgentWorkspace::_exportReviewReport(const AIResponse& response)
 {
+    const AIResponse reportResponse = response;
     QVector<AnnotationItem> annotations;
     if (_annotationService) {
         annotations = _annotationService->annotations();
@@ -431,17 +432,12 @@ void AIAgentWorkspace::_exportReviewReport(const AIResponse& response)
         return;
     }
 
-    bool ok = false;
-    if (filepath.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive)) {
-        ok = ReviewExport::exportJson(annotations, filepath);
-    } else {
-        QString mediaTitle;
-        IPlaybackService* playback = runtimePlaybackService(_playbackService);
-        if (playback && playback->isValid()) {
-            mediaTitle = QFileInfo(playback->currentPath()).fileName();
-        }
-        ok = ReviewExport::exportHtml(annotations, filepath, mediaTitle);
+    QString mediaTitle;
+    IPlaybackService* playback = runtimePlaybackService(_playbackService);
+    if (playback && playback->isValid()) {
+        mediaTitle = QFileInfo(playback->currentPath()).fileName();
     }
+    const bool ok = ReviewExport::exportAIReport(reportResponse, annotations, filepath, mediaTitle);
 
     if (ok) {
         _setStatusMessage(zh(u8"报告已导出：%1").arg(filepath), kSuccess);

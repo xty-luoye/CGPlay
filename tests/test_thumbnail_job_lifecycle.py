@@ -4,10 +4,11 @@ import json
 import os
 import re
 import subprocess
+from tests.native_probe_runtime import deploy_runtime
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT = Path(os.environ.get('CGPLAY_SMALL_FIX_ARTIFACT_DIR', ROOT/'tests/artifacts/small_fixes_1_0_8'))/'thumbnail_jobs'
+ARTIFACT = Path(os.environ.get('CGPLAY_SMALL_FIX_ARTIFACT_DIR', ROOT/'tests/artifacts/fix_review_20261101/remaining_regression'))/'thumbnail_jobs'
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
 PROXY = r'''
@@ -198,6 +199,10 @@ class ThumbnailJobLifecycleRuntime(unittest.TestCase):
             CGPLAY_RACE_READY=str(run/'ready.flag'),CGPLAY_RACE_JPEG=str(run/'complete.jpg'),
             CGPLAY_RACE_COUNTER=str(run/'starts.txt'),TMP=str(temporary),TEMP=str(temporary))
         env['PATH']=str(qt/'bin')+';'+str(tl/'bin')+';'+env.get('PATH','')
+        env['QT_QPA_PLATFORM_PLUGIN_PATH']=str(qt/'plugins'/'platforms')
+        env['QT_PLUGIN_PATH']=str(qt/'plugins')
+        deploy_runtime(build/'Release/thumbnail_jobs.exe', qt,
+                       (tl/'bin', ROOT/'build_win_full'/'bin'/'Release'))
         result=subprocess.run([str(build/'Release/thumbnail_jobs.exe'),str(run)],env=env,capture_output=True,creationflags=NO_WINDOW,timeout=30)
         (ARTIFACT/'runtime.log').write_bytes(result.stdout+result.stderr)
         self.assertEqual(result.returncode,0,(result.stdout+result.stderr)[-5000:])

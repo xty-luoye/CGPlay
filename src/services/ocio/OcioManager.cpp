@@ -10,6 +10,8 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
+#include <QSignalBlocker>
 #include <QComboBox>
 #include <QCheckBox>
 #include <QSlider>
@@ -69,33 +71,60 @@ OcioManager::~OcioManager() = default;
 // ─── Config loading ───────────────────────────────────────────────────────────
 void OcioManager::loadConfig(const QString& configPath)
 {
-    if (configPath.isEmpty()) return;
+    QString error;
+    if (!applyConfiguration({_p->userEnabled, configPath, {}, {}, {}}, &error))
+        qWarning() << "[OCIO] Failed to load config:" << error;
+}
 
+bool OcioManager::applyConfiguration(const PreviewTransformSettings& settings, QString* error)
+{
+    if (error) error->clear();
 #ifdef CGPLAY_OCIO_ENABLED
     try {
-        _p->config = OCIO::Config::CreateFromFile(configPath.toStdString().c_str());
-        _p->configPath = configPath;
-        _p->enabled    = true;
-
-        // Reset to sensible defaults for new config
-        if (_p->config->getNumDisplays() > 0) {
-            _p->display = QString::fromStdString(_p->config->getDefaultDisplay());
+        const QString path = settings.configPath.isEmpty() ? _p->configPath : settings.configPath;
+        if (path.isEmpty()) throw OCIO::Exception("OCIO config path is empty.");
+        auto config = OCIO::Config::CreateFromFile(path.toStdString().c_str());
+        config->validate();
+        QString input = settings.input;
+        if (input.isEmpty()) {
+            const char* role = config->getRoleColorSpace(OCIO::ROLE_SCENE_LINEAR);
+            input = role && *role ? QString::fromUtf8(role)
+                : QString::fromUtf8(config->getColorSpaceNameByIndex(0));
         }
-        const char* defView = _p->config->getDefaultView(_p->display.toStdString().c_str());
-        _p->view = defView ? QString::fromStdString(defView) : "sRGB";
-
-        qDebug() << "[OCIO] Loaded config:" << configPath;
-        Q_EMIT configLoaded(configPath);
+        const QString display = settings.display.isEmpty()
+            ? QString::fromUtf8(config->getDefaultDisplay()) : settings.display;
+        const QString view = settings.view.isEmpty()
+            ? QString::fromUtf8(config->getDefaultView(display.toStdString().c_str())) : settings.view;
+        if (!config->getColorSpace(input.toStdString().c_str()) || display.isEmpty() || view.isEmpty())
+            throw OCIO::Exception("OCIO input, display or view is invalid.");
+        // getProcessor may resolve LUT files and fail even for a valid config.
+        config->getProcessor(input.toStdString().c_str(), display.toStdString().c_str(),
+                             view.toStdString().c_str(), OCIO::TRANSFORM_DIR_FORWARD);
+        const bool enabledChangedValue = _p->userEnabled != settings.enabled;
+        const bool displayChangedValue = _p->display != display;
+        _p->config = config;
+        _p->configPath = path;
+        _p->input = input;
+        _p->display = display;
+        _p->view = view;
+        _p->enabled = true;
+        if (_p->exrOverrideActive && enabledChangedValue) {
+            _p->exrOverrideActive = false;
+            _p->exrOverrideSuppressed = true;
+        }
+        _p->userEnabled = settings.enabled;
+        Q_EMIT configLoaded(path);
         _rebuildOptions();
-
+        if (displayChangedValue) Q_EMIT displayChanged(display);
+        if (enabledChangedValue) Q_EMIT enabledChanged(settings.enabled);
+        return true;
     } catch (const OCIO::Exception& e) {
-        qWarning() << "[OCIO] Failed to load config:" << e.what();
-        _p->enabled = false;
+        if (error) *error = QString::fromUtf8(e.what());
+        return false;
     }
 #else
-    _p->configPath = configPath;
-    _p->enabled    = false;
-    qWarning() << "[OCIO] OpenColorIO not compiled in.";
+    if (error) *error = tr("OpenColorIO is not available in this build.");
+    return false;
 #endif
 }
 
@@ -112,40 +141,13 @@ void OcioManager::loadAces12Config()
     };
 
     for (const char* candidate : acesCandidates) {
-        try {
-            _p->config     = OCIO::Config::CreateFromBuiltinConfig(candidate);
-            _p->configPath = QString::fromStdString(candidate);
-            _p->enabled    = true;
-
-            if (_p->config->getNumDisplays() > 0) {
-                _p->display = QString::fromStdString(_p->config->getDefaultDisplay());
-            }
-
-            // ACES 1.2 default view
-            const char* defView = _p->config->getDefaultView(_p->display.toStdString().c_str());
-            _p->view = defView ? QString::fromStdString(defView) : "ACES 1.0 SDR-video";
-
-            // Keep the scene-linear role as the safe default for EXR. The
-            // previous automatic ACEScg selection changed Nuke scene-linear
-            // EXRs' exposure and saturation; ACEScg remains user-selectable.
-            _p->input = QStringLiteral("scene_linear");
-
-            qDebug() << "[OCIO] ACES 1.2 config loaded via:" << candidate;
-            Q_EMIT configLoaded(_p->configPath);
-            _rebuildOptions();
-            return; // Success — stop trying
-
-        } catch (const OCIO::Exception& e) {
-            qDebug() << "[OCIO] Builtin config not available:" << candidate
-                     << "—" << e.what();
-        }
+        QString error;
+        if (applyConfiguration({_p->userEnabled, QString::fromUtf8(candidate), {}, {}, {}}, &error)) return;
+        qDebug() << "[OCIO] Builtin config not available:" << candidate << error;
     }
 
     // All candidates failed — fall back to linear/sRGB
     qWarning() << "[OCIO] No ACES builtin config found. Falling back to linear/sRGB.";
-    _p->enabled = false;
-    _p->display = "sRGB";
-    _p->view    = "sRGB";
 
 #else
     _p->enabled = false;
@@ -156,39 +158,10 @@ void OcioManager::loadAces12Config()
 
 void OcioManager::loadBuiltinConfig(const QString& name)
 {
-#ifdef CGPLAY_OCIO_ENABLED
-    try {
-        std::string builtinName;
-        if (name == "ACES") {
-            builtinName = "ocio://default";
-        } else {
-            builtinName = "ocio://" + name.toLower().toStdString();
-        }
-        _p->config     = OCIO::Config::CreateFromBuiltinConfig(builtinName.c_str());
-        _p->configPath = QString::fromStdString(builtinName);
-        _p->enabled    = true;
-
-        if (_p->config->getNumDisplays() > 0) {
-            _p->display = QString::fromStdString(_p->config->getDefaultDisplay());
-        }
-        const char* defView = _p->config->getDefaultView(_p->display.toStdString().c_str());
-        _p->view = defView ? QString::fromStdString(defView) : "sRGB";
-
-        qDebug() << "[OCIO] Loaded builtin config:" << name;
-        _rebuildOptions();
-
-    } catch (const OCIO::Exception& e) {
-        qWarning() << "[OCIO] Builtin config not available:" << e.what()
-                   << "— falling back to linear/sRGB";
-        _p->enabled = false;
-        _p->display = "sRGB";
-        _p->view    = "sRGB";
-    }
-#else
-    _p->enabled = false;
-    _p->display = (name == "ACES") ? "ACES sRGB" : name;
-    _p->view    = name;
-#endif
+    const QString path = name.startsWith(QStringLiteral("ocio://")) ? name
+        : name == QStringLiteral("ACES") ? QStringLiteral("ocio://default")
+        : QStringLiteral("ocio://") + name.toLower();
+    loadConfig(path);
 }
 
 // ─── Accessors ────────────────────────────────────────────────────────────────
@@ -525,8 +498,9 @@ void OcioManager::showSettings(QWidget* parent)
     // ── 配置路径 ───────────────────────────────────────────────────────────
     auto* grpConfig = new QGroupBox("配置", &dlg);
     auto* glay = new QHBoxLayout(grpConfig);
-    auto* lblConfig = new QLabel(_p->configPath.isEmpty() ? "(内置)" : _p->configPath, &dlg);
-    lblConfig->setWordWrap(true);
+    auto* lblConfig = new QLineEdit(_p->configPath, &dlg);
+    lblConfig->setObjectName(QStringLiteral("ocioConfigPath"));
+    lblConfig->setReadOnly(true);
     auto* btnBrowse = new QPushButton("浏览…", &dlg);
     auto* btnBuiltin = new QPushButton("内置", &dlg);
     btnBuiltin->setToolTip("恢复内置 ACES 1.2/1.3 配置");
@@ -555,11 +529,28 @@ void OcioManager::showSettings(QWidget* parent)
     auto* cbInput   = addCombo("输入颜色空间:",   availableColorSpaces(), _p->input);
     auto* cbDisplay = addCombo("显示设备:", availableDisplays(),    _p->display);
     auto* cbView    = addCombo("视图变换:",    availableViews(_p->display), _p->view);
+    cbInput->setObjectName(QStringLiteral("ocioInput"));
+    cbDisplay->setObjectName(QStringLiteral("ocioDisplay"));
+    cbView->setObjectName(QStringLiteral("ocioView"));
+#ifdef CGPLAY_OCIO_ENABLED
+    auto dialogConfig = _p->config;
+#endif
+    const auto dialogViews = [&](const QString& display) {
+        QStringList views;
+#ifdef CGPLAY_OCIO_ENABLED
+        if (dialogConfig) {
+            const auto name = display.toStdString();
+            for (int i = 0; i < dialogConfig->getNumViews(name.c_str()); ++i)
+                views << QString::fromUtf8(dialogConfig->getView(name.c_str(), i));
+        }
+#endif
+        return views;
+    };
 
     // Update views when display changes
     connect(cbDisplay, &QComboBox::currentTextChanged, &dlg, [&](const QString& d) {
         cbView->clear();
-        cbView->addItems(availableViews(d));
+        cbView->addItems(dialogViews(d));
     });
 
     vlay->addWidget(grpColor);
@@ -598,7 +589,44 @@ void OcioManager::showSettings(QWidget* parent)
     // ── Buttons ───────────────────────────────────────────────────────────────
     auto* btns = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    auto* configError = new QLabel(&dlg);
+    configError->setObjectName(QStringLiteral("ocioConfigError"));
+    configError->setWordWrap(true);
+    vlay->addWidget(configError);
     vlay->addWidget(btns);
+
+    // Only the dialog owns this candidate. Cancel does not publish options or
+    // replace the active config. Refresh names before the user confirms it.
+    connect(lblConfig, &QLineEdit::textChanged, &dlg, [&](const QString& path) {
+#ifdef CGPLAY_OCIO_ENABLED
+        try {
+            auto candidate = OCIO::Config::CreateFromFile(path.toStdString().c_str());
+            candidate->validate();
+            QStringList inputs, displays;
+            for (int i = 0; i < candidate->getNumColorSpaces(); ++i)
+                inputs << QString::fromUtf8(candidate->getColorSpaceNameByIndex(i));
+            for (int i = 0; i < candidate->getNumDisplays(); ++i)
+                displays << QString::fromUtf8(candidate->getDisplay(i));
+            const QString oldInput = cbInput->currentText(), oldDisplay = cbDisplay->currentText();
+            const QString oldView = cbView->currentText();
+            dialogConfig = candidate;
+            const QSignalBlocker block(cbDisplay);
+            cbInput->clear(); cbInput->addItems(inputs);
+            const char* role = candidate->getRoleColorSpace(OCIO::ROLE_SCENE_LINEAR);
+            cbInput->setCurrentText(inputs.contains(oldInput) ? oldInput : QString::fromUtf8(role));
+            cbDisplay->clear(); cbDisplay->addItems(displays);
+            cbDisplay->setCurrentText(displays.contains(oldDisplay) ? oldDisplay
+                : QString::fromUtf8(candidate->getDefaultDisplay()));
+            const auto views = dialogViews(cbDisplay->currentText());
+            cbView->clear(); cbView->addItems(views);
+            cbView->setCurrentText(views.contains(oldView) ? oldView
+                : QString::fromUtf8(candidate->getDefaultView(cbDisplay->currentText().toStdString().c_str())));
+            configError->clear();
+        } catch (const OCIO::Exception& e) {
+            configError->setText(tr("Cannot load OCIO config: %1").arg(QString::fromUtf8(e.what())));
+        }
+#endif
+    });
 
     // Browse external .ocio file
     connect(btnBrowse, &QPushButton::clicked, &dlg, [&] {
@@ -609,36 +637,24 @@ void OcioManager::showSettings(QWidget* parent)
 
     // Reset to builtin config
     connect(btnBuiltin, &QPushButton::clicked, &dlg, [&] {
-        lblConfig->setText("(内置)");
+        lblConfig->setText(QStringLiteral("ocio://studio-config-v1.0.0_aces-v1.3_ocio-v2.1"));
     });
 
-    connect(btns, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(btns, &QDialogButtonBox::accepted, &dlg, [&] {
+        PreviewTransformSettings settings{chkEnabled->isChecked(), lblConfig->text(),
+            cbInput->currentText(), cbDisplay->currentText(), cbView->currentText()};
+        QString error;
+        if (!applyConfiguration(settings, &error)) {
+            configError->setText(tr("Cannot apply OCIO settings: %1").arg(error));
+            return;
+        }
+        setExposure(static_cast<float>(spExposure->value()));
+        setGamma(static_cast<float>(spGamma->value()));
+        dlg.accept();
+    });
     connect(btns, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
-    if (dlg.exec() == QDialog::Accepted) {
-        // Enable/disable
-        setEnabled(chkEnabled->isChecked());
-
-        // Config file
-        QString cfgPath = lblConfig->text();
-        if (cfgPath == "(内置)") {
-            // Switch back to builtin ACES config
-            if (!_p->configPath.startsWith("ocio://")) {
-                loadAces12Config();
-            }
-        } else if (cfgPath != _p->configPath && !cfgPath.isEmpty()) {
-            loadConfig(cfgPath);
-        }
-
-        // Color settings (only apply if enabled)
-        if (chkEnabled->isChecked()) {
-            setInput(cbInput->currentText());
-            setDisplay(cbDisplay->currentText());
-            setView(cbView->currentText());
-            setExposure(static_cast<float>(spExposure->value()));
-            setGamma(static_cast<float>(spGamma->value()));
-        }
-    }
+    dlg.exec();
 }
 
 } // namespace cgplay

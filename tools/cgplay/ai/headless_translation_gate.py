@@ -1639,14 +1639,20 @@ def fixed_checkpoint_report(
                 if float(sample.get("start", 0.0)) <= seconds <= float(sample.get("end", 0.0)):
                     suppressed = sample
                     break
-            passed = True
+            active = [cue for cue in cue_reports
+                      if float(cue.get("start", 0.0)) <= seconds < float(cue.get("end", 0.0))]
+            # A gap alone is not proof of a cleared display. Require an actual
+            # final sample, and inspect every overlapping cue for leaked text.
+            observed = active + ([suppressed] if suppressed else [])
+            verified = bool(observed) and all("finalDisplayedText" in cue for cue in observed)
+            passed = verified
             final_text = ""
             raw_text = ""
             source_kind = "visual-no-text"
             chosen_reason = "visual-no-text-current-frame-empty"
             fallback_reason = "visual-no-text-no-quick-asr-needed"
             asr_suppressed = False
-            stale_cleared = True
+            stale_cleared = False
             if suppressed:
                 raw_text = str(suppressed.get("rawQuickOrAsrText", ""))
                 final_text = str(suppressed.get("finalDisplayedText", ""))
@@ -1654,9 +1660,14 @@ def fixed_checkpoint_report(
                 chosen_reason = str(suppressed.get("chosenReason", "visual-no-text-suppress-quick-asr"))
                 fallback_reason = str(suppressed.get("fallbackReason", "visual-no-text-suppress-quick-asr"))
                 asr_suppressed = bool(suppressed.get("asrSuppressed", True))
-                stale_cleared = bool(suppressed.get("staleCueCleared", True))
+                stale_cleared = bool(suppressed.get("staleCueCleared", False))
+            leaked = [str(cue.get("finalDisplayedText", "")) for cue in observed
+                      if normalize_text(str(cue.get("finalDisplayedText", "")))]
+            if leaked:
+                final_text = "\n".join(leaked)
             if normalize_text(final_text):
                 passed = False
+            failure = "no-subtitle-false-positive" if leaked else "no-final-display-evidence"
             results.append({
                 "timeSeconds": seconds,
                 "expectedVideoText": "",
@@ -1669,18 +1680,19 @@ def fixed_checkpoint_report(
                 "fallbackReason": fallback_reason,
                 "asrSuppressed": asr_suppressed,
                 "staleCueCleared": stale_cleared,
+                "finalDisplayVerified": verified,
                 "expectedTextMatch": passed,
                 "hardExpectedGate": True,
                 "sampleGate": "strict-no-subtitle-current-frame-empty",
                 "acceptanceOnlyVisualSample": False,
                 "fidelity": {
                     "pass": passed,
-                    "failCategory": "" if passed else "no-subtitle-false-positive",
+                    "failCategory": "" if passed else failure,
                     "expectedCompact": "",
                     "finalCompact": compact_text(final_text),
                 },
                 "pass": passed,
-                "passReason": "visual-no-text-final-empty" if passed else "no-subtitle-false-positive",
+                "passReason": "visual-no-text-final-empty" if passed else failure,
             })
             continue
         active_candidates = []

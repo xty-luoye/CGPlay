@@ -107,6 +107,14 @@ QJsonObject TranslationEnhancementScheduler::evaluate(
         request.manualRequested &&
         (!request.playbackAlreadyRunning || request.allowManualWhilePlayback);
     const bool workerExecutionAllowed = manualAllowed && request.executeWorkers;
+    const QStringList identityCachePaths{
+        request.onlineSubtitleCachePath, request.onlineTranslatedCachePath,
+        request.ocrSubtitleCachePath, request.ocrTranslatedCachePath,
+        request.longAsrSourceCachePath, request.longAsrTranslatedCachePath,
+        request.enhancedTranslatedVttPath, request.repairTranslatedVttPath
+    };
+    const QJsonObject previousCacheHashes = workerExecutionAllowed
+        ? cacheContentHashes(identityCachePaths) : QJsonObject{};
     const bool configured =
         request.onlineConfigured ||
         request.ocrConfigured ||
@@ -188,18 +196,22 @@ QJsonObject TranslationEnhancementScheduler::evaluate(
         TranslationFusionController fusionController;
         manualFusionResult = fusionController.writeManualFusionCache(fusionRequest);
     }
-    writeCacheMediaIdentityIfExists(
-        {
-            request.onlineSubtitleCachePath,
-            request.onlineTranslatedCachePath,
-            request.ocrSubtitleCachePath,
-            request.ocrTranslatedCachePath,
-            request.longAsrSourceCachePath,
-            request.longAsrTranslatedCachePath,
-            request.enhancedTranslatedVttPath,
-            request.repairTranslatedVttPath
-        },
-        request.mediaPath);
+    if (workerExecutionAllowed) {
+        QStringList generatedPaths;
+        const auto addWritten = [&generatedPaths](const QJsonObject& result, const QString& key, const QString& path) {
+            if (!result.value(QStringLiteral("reusedExistingCache")).toBool() && result.value(key).toBool())
+                generatedPaths.append(path);
+        };
+        addWritten(onlineWorkerResult, QStringLiteral("onlineCacheWritten"), request.onlineSubtitleCachePath);
+        addWritten(onlineTranslationResult, QStringLiteral("translatedOnlineCacheWritten"), request.onlineTranslatedCachePath);
+        addWritten(ocrWorkerResult, QStringLiteral("ocrCacheWritten"), request.ocrSubtitleCachePath);
+        addWritten(ocrWorkerResult, QStringLiteral("ocrTranslatedCacheWritten"), request.ocrTranslatedCachePath);
+        addWritten(longAsrWorkerResult, QStringLiteral("sourceCacheWritten"), request.longAsrSourceCachePath);
+        addWritten(longAsrWorkerResult, QStringLiteral("translatedCacheWritten"), request.longAsrTranslatedCachePath);
+        addWritten(repairWorkerResult, QStringLiteral("repairCacheWritten"), request.repairTranslatedVttPath);
+        if (manualFusionResult.success) generatedPaths.append(request.enhancedTranslatedVttPath);
+        commitGeneratedCacheMediaIdentities(generatedPaths, previousCacheHashes, mediaIdentity);
+    }
 
     QJsonArray layers;
     layers.append(_layerState(
@@ -468,17 +480,24 @@ QJsonObject TranslationEnhancementScheduler::evaluate(
         candidateScan.value(QStringLiteral("mediaFingerprint")).toString() == mediaFingerprint;
     double candidateScanCoverageStartSeconds = -1.0;
     double candidateScanCoverageEndSeconds = 0.0;
+    bool currentTimeWithinCandidateScan = false;
     if (!candidateScan.isEmpty() && candidateScanFingerprintMatches) {
-        candidateScanCoverageStartSeconds =
-            candidateScan.value(QStringLiteral("scanStartSeconds")).toDouble(
-                candidateScan.value(QStringLiteral("startSeconds")).toDouble(0.0));
-        candidateScanCoverageEndSeconds =
-            candidateScan.value(QStringLiteral("scanEndSeconds")).toDouble(-1.0);
-        if (candidateScanCoverageEndSeconds <= candidateScanCoverageStartSeconds) {
-            const double duration = candidateScan.value(QStringLiteral("durationSec")).toDouble(0.0);
-            if (duration > 0.0) {
-                candidateScanCoverageEndSeconds = candidateScanCoverageStartSeconds + duration;
+        // Bounds cannot establish coverage across gaps or for legacy caches.
+        for (const auto& value : candidateScan.value(QStringLiteral("scannedIntervals")).toArray()) {
+            const auto interval = value.toArray();
+            if (interval.size() != 2 || !interval[0].isDouble() || !interval[1].isDouble()) {
+                continue;
             }
+            const double start = interval[0].toDouble();
+            const double end = interval[1].toDouble();
+            if (!std::isfinite(start) || !std::isfinite(end) || start < 0.0 || end <= start) {
+                continue;
+            }
+            candidateScanCoverageStartSeconds = candidateScanCoverageStartSeconds < 0.0
+                ? start : std::min(candidateScanCoverageStartSeconds, start);
+            candidateScanCoverageEndSeconds = std::max(candidateScanCoverageEndSeconds, end);
+            currentTimeWithinCandidateScan = currentTimeWithinCandidateScan ||
+                (request.currentSeconds + 0.005 >= start && request.currentSeconds < end);
         }
     }
     const bool candidateScanCoverageKnown =
@@ -504,9 +523,11 @@ QJsonObject TranslationEnhancementScheduler::evaluate(
         visualAuthorityCoverageStartSeconds >= 0.0 &&
         visualAuthorityCoverageEndSeconds > visualAuthorityCoverageStartSeconds;
     const bool currentTimeWithinVisualCoverage =
-        visualAuthorityCoverageKnown &&
-        request.currentSeconds + 0.005 >= visualAuthorityCoverageStartSeconds &&
-        request.currentSeconds <= visualAuthorityCoverageEndSeconds + 0.005;
+        !candidateScan.isEmpty()
+            ? currentTimeWithinCandidateScan
+            : (visualCoverageKnown &&
+               request.currentSeconds + 0.005 >= visualCoverageStartSeconds &&
+               request.currentSeconds <= visualCoverageEndSeconds + 0.005);
     const bool visualTrackAuthoritative =
         highQualityMode &&
         manualAllowed &&

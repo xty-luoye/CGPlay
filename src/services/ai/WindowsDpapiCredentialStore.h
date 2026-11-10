@@ -4,9 +4,10 @@
 
 namespace cgplay {
 
-class WindowsDpapiCredentialStore : public IAICredentialStore
+class WindowsDpapiCredentialStore : public IAICredentialStore, public IAtomicAICredentialStore
 {
 public:
+    bool storeSecrets(const QMap<QString, QByteArray>& secrets, QString* error = nullptr) override;
     bool storeSecret(
         const QString& secretId,
         const QByteArray& secret,

@@ -29,7 +29,7 @@ def contains_all(text: str, tokens: List[str]) -> bool:
 def audit(repo: Path) -> Dict[str, object]:
     scheduler_path = repo / "src" / "services" / "ai" / "TranslationEnhancementScheduler.cpp"
     scheduler_support_path = repo / "src" / "services" / "ai" / "TranslationEnhancementSupport.cpp"
-    application_path = repo / "src" / "ui" / "app" / "Application.cpp"
+    application_paths = [repo / "src/ui/app" / name for name in ("ApplicationInternal.h", "ApplicationEnhancement.cpp")]
     runtime_path = repo / "src" / "ui" / "app" / "ApplicationRuntime.cpp"
     skill_registry_path = repo / "src" / "services" / "ai" / "TranslationSkillRegistry.cpp"
     speed_guard_path = repo / "src" / "services" / "ai" / "TranslationSpeedGuard.cpp"
@@ -37,7 +37,7 @@ def audit(repo: Path) -> Dict[str, object]:
     headless_path = repo / "tools" / "cgplay" / "ai" / "headless_translation_gate.py"
 
     scheduler = "\n".join(read_text(path) for path in (scheduler_path, scheduler_support_path))
-    application = read_text(application_path)
+    application = "\n".join(read_text(path) for path in application_paths)
     runtime = read_text(runtime_path)
     skill_registry = read_text(skill_registry_path)
     speed_guard = read_text(speed_guard_path)
@@ -74,6 +74,7 @@ def audit(repo: Path) -> Dict[str, object]:
     ]
 
     checks = {
+        "requiredApplicationSourcesPresent": all(path.is_file() for path in application_paths),
         "backupManifestGateExists": True,
         "headlessFinalCueHelpersKeepReasons": contains_all(headless, [
             "choose_final_cue",
@@ -163,11 +164,12 @@ def audit(repo: Path) -> Dict[str, object]:
     }
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "validationMode": "static-source-structure-only",
         "task": "translation_mock_legacy_fallback_provenance_static_audit",
         "files": {
             "scheduler": str(scheduler_path),
             "schedulerSupport": str(scheduler_support_path),
-            "application": str(application_path),
+            "application": [str(path) for path in application_paths],
             "runtime": str(runtime_path),
             "skillRegistry": str(skill_registry_path),
             "speedGuard": str(speed_guard_path),
@@ -182,7 +184,7 @@ def audit(repo: Path) -> Dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", type=Path, default=Path(r"C:\Users\1\Desktop\RVLite"))
+    parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
     result = audit(args.repo)

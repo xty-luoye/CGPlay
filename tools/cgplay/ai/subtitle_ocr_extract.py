@@ -24,6 +24,9 @@ from subtitle_region_detector import (
     preprocess_filter,
     scan_cache_path,
     load_scan_result,
+    merge_scanned_intervals,
+    scan_intervals_cover,
+    subtract_scanned_intervals,
     text_temporal_policy,
     write_scan_result,
 )
@@ -853,15 +856,10 @@ def main():
     )
     cached_scan = load_scan_result(candidate_scan_path, Path(args.media))
     cached_candidates = cached_scan.get("candidateCues", []) if cached_scan else []
-    cached_scan_start = float(cached_scan.get("scanStartSeconds", -1.0)) if cached_scan else -1.0
-    cached_scan_end = float(cached_scan.get("scanEndSeconds", -1.0)) if cached_scan else -1.0
+    # Legacy bounding ranges cannot prove that the gap between scans was read.
+    cached_intervals = cached_scan.get("scannedIntervals", []) if cached_scan else []
     requested_scan_end = float(args.start) + float(args.duration)
-    cached_scan_covers_request = (
-        cached_scan_start >= 0.0 and
-        cached_scan_end > cached_scan_start and
-        cached_scan_start <= float(args.start) + 0.5 and
-        cached_scan_end + 0.5 >= requested_scan_end
-    )
+    cached_scan_covers_request = scan_intervals_cover(cached_intervals, float(args.start), requested_scan_end)
     vision_enabled = args.vision_provider in {"workbench", "codex-cli"}
     cached_vision_authoritative = bool(cached_candidates) and all(
         str(item.get("sourceKind", "")) == "workbench-vision"
@@ -1182,6 +1180,7 @@ def main():
                 )
                 samples.append({
                     "time": t,
+                    "recognitionCompleted": bool(payload.get("success")) or payload.get("error") == "NO_SUBTITLE",
                     "success": bool(text),
                     "text": text,
                     "rawText": raw_text if repaired["fixed"] else "",
@@ -1395,6 +1394,18 @@ def main():
             cue.setdefault("visionApiAttempted", args.vision_provider in {"workbench", "codex-cli"})
             cue.setdefault("visionApiSucceeded", args.vision_provider in {"workbench", "codex-cli"} and vision_succeeded > 0)
             cue.setdefault("visionApiFailed", args.vision_provider in {"workbench", "codex-cli"} and vision_failed > 0)
+    scanned_intervals = merge_scanned_intervals([
+        [max(float(args.start), sample["time"]), min(requested_scan_end, sample["time"] + float(args.sample_interval))]
+        for sample in samples if sample.get("recognitionCompleted")
+    ])
+    # Clamp newly generated cues to samples that were actually recognized.
+    clipped_cues = []
+    for cue in cues:
+        for left, right in scanned_intervals:
+            start, end = max(cue["start"], left), min(cue["end"], right)
+            if end > start:
+                clipped_cues.append(dict(cue, start=start, end=end))
+    cues = clipped_cues
     if cached_candidates:
         retained_cached_cues = []
         cached_detector_version = str(cached_scan.get("detectorVersion", "")) if cached_scan else ""
@@ -1409,20 +1420,21 @@ def main():
             start = float(item.get("start", 0.0)) + cached_onset_correction
             end = float(item.get("end", start))
             start = min(start, end)
-            if not text or end > float(args.start) + 0.01:
+            if not text:
                 continue
-            retained_cached_cues.append({
-                "start": start,
-                "end": end,
-                "text": text,
-                "sourceKind": item.get("sourceKind", "subtitle-region-candidate-cache"),
-                "confidence": item.get("confidence", 0.82),
-                "cropRect": item.get("cropRect", crop_rect("bottom-subtitle-band", args.crop_height.strip())),
-                "sampleFrame": item.get("sampleFrame", {}),
-                "detectorVersion": cached_scan.get("detectorVersion", DETECTOR_VERSION),
-                "candidateRegion": "subtitle-region-cue",
-                "reusedCandidateScanCache": True,
-            })
+            for fragment_start, fragment_end in subtract_scanned_intervals(start, end, scanned_intervals):
+                retained_cached_cues.append({
+                    "start": fragment_start,
+                    "end": fragment_end,
+                    "text": text,
+                    "sourceKind": item.get("sourceKind", "subtitle-region-candidate-cache"),
+                    "confidence": item.get("confidence", 0.82),
+                    "cropRect": item.get("cropRect", crop_rect("bottom-subtitle-band", args.crop_height.strip())),
+                    "sampleFrame": item.get("sampleFrame", {}),
+                    "detectorVersion": cached_scan.get("detectorVersion", DETECTOR_VERSION),
+                    "candidateRegion": "subtitle-region-cue",
+                    "reusedCandidateScanCache": True,
+                })
         if retained_cached_cues:
             cues = sorted(retained_cached_cues + cues, key=lambda cue: (cue["start"], cue["end"]))
 
@@ -1449,14 +1461,15 @@ def main():
         float(args.sample_interval or 0.0),
         "bottom-subtitle-band",
     )
-    union_scan_start = float(args.start or 0.0)
-    union_scan_end = float(args.start or 0.0) + float(args.duration or 0.0)
-    if cached_scan_start >= 0.0 and cached_scan_end > cached_scan_start:
-        union_scan_start = min(union_scan_start, cached_scan_start)
-        union_scan_end = max(union_scan_end, cached_scan_end)
+    all_scanned_intervals = merge_scanned_intervals(cached_intervals + scanned_intervals)
+    union_scan_start = all_scanned_intervals[0][0] if all_scanned_intervals else float(args.start)
+    union_scan_end = all_scanned_intervals[-1][1] if all_scanned_intervals else float(args.start)
+    candidate_scan["scanCoverageVersion"] = 2
+    candidate_scan["scannedIntervals"] = all_scanned_intervals
+    # Bounds are display metadata only; reuse requires the interval set above.
     candidate_scan["scanStartSeconds"] = round(union_scan_start, 3)
     candidate_scan["scanEndSeconds"] = round(union_scan_end, 3)
-    candidate_scan["durationSec"] = round(union_scan_end - union_scan_start, 3)
+    candidate_scan["durationSec"] = round(sum(end - start for start, end in all_scanned_intervals), 3)
     candidate_scan_path = Path(args.candidate_scan_json).resolve() if args.candidate_scan_json.strip() else scan_cache_path(
         Path(args.media),
         Path(args.output_vtt).resolve().parent,

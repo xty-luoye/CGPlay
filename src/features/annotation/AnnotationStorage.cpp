@@ -4,6 +4,7 @@
 #include "AnnotationItem.h"
 
 #include <QFile>
+#include <QSaveFile>
 #include <QFileInfo>
 #include <QDir>
 #include <QJsonDocument>
@@ -60,34 +61,53 @@ bool AnnotationStorage::save(const QVector<AnnotationItem>& annotations,
     }
     root["annotations"] = arr;
 
-    QFile f(filepath);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    QSaveFile f(filepath);
+    if (!f.open(QIODevice::WriteOnly)) {
         qWarning() << "[AnnotationStorage] Cannot write:" << filepath;
         return false;
     }
-    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    f.close();
-    return true;
+    const QByteArray data = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    return f.write(data) == data.size() && f.commit();
 }
 
 QVector<AnnotationItem> AnnotationStorage::load(const QString& filepath)
 {
     QVector<AnnotationItem> result;
+    load(filepath, &result);
+    return result;
+}
+
+bool AnnotationStorage::load(const QString& filepath, QVector<AnnotationItem>* annotations,
+                             QString* error)
+{
+    const auto fail = [error](const QString& message) {
+        if (error) *error = message;
+        return false;
+    };
+    if (!annotations) return fail(QStringLiteral("缺少批注接收对象"));
+    QVector<AnnotationItem> result;
 
     QFile f(filepath);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-        return result;
+    if (!f.open(QIODevice::ReadOnly)) return fail(f.errorString());
 
-    QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    const QByteArray data = f.readAll();
+    if (f.error() != QFileDevice::NoError) return fail(f.errorString());
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
     f.close();
 
-    if (!doc.isObject()) return result;
+    if (parseError.error != QJsonParseError::NoError) return fail(parseError.errorString());
+    if (!doc.isObject() || !doc.object().value("annotations").isArray())
+        return fail(QStringLiteral("无效的批注 JSON：缺少 annotations 数组"));
 
     auto root = doc.object();
     auto arr  = root["annotations"].toArray();
 
     for (const auto& val : arr) {
+        if (!val.isObject()) return fail(QStringLiteral("无效的批注记录"));
         auto obj = val.toObject();
+        if (obj.value("id").toString().isEmpty() || !obj.value("points").isArray())
+            return fail(QStringLiteral("批注缺少标识或坐标"));
         AnnotationItem ann;
         ann.id          = obj["id"].toString();
         ann.frame       = obj["frame"].toInt();
@@ -100,8 +120,9 @@ QVector<AnnotationItem> AnnotationStorage::load(const QString& filepath)
         auto ptsArr = obj["points"].toArray();
         for (const auto& p : ptsArr) {
             auto ptArr = p.toArray();
-            if (ptArr.size() >= 2)
-                ann.points.append(QPointF(ptArr[0].toDouble(), ptArr[1].toDouble()));
+            if (ptArr.size() < 2 || !ptArr[0].isDouble() || !ptArr[1].isDouble())
+                return fail(QStringLiteral("无效的批注坐标"));
+            ann.points.append(QPointF(ptArr[0].toDouble(), ptArr[1].toDouble()));
         }
 
         auto cmtsArr = obj["comments"].toArray();
@@ -120,7 +141,9 @@ QVector<AnnotationItem> AnnotationStorage::load(const QString& filepath)
 
         result.append(ann);
     }
-    return result;
+    *annotations = std::move(result);
+    if (error) error->clear();
+    return true;
 }
 
 QString AnnotationStorage::getReviewPath(const QString& mediaPath)

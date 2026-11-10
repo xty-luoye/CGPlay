@@ -805,12 +805,16 @@ switch ($selectedInstaller) {
         }
         $nsisPackageSource = ($appRoot -replace '\\','/')
         $nsisOutputDir = ($installerOut -replace '\\','/')
+        $nsisOwnershipInclude = Join-Path $validationArtifactRoot 'nsis_uninstall_owned_files.nsh'
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ProjectRoot 'tools\generate_nsis_uninstall.ps1') -SourceDirectory $appRoot -IncludePath $nsisOwnershipInclude
+        if (-not (Test-Path -LiteralPath $nsisOwnershipInclude -PathType Leaf)) { throw 'NSIS uninstall ownership include was not generated.' }
         & $makensis `
             "/DAPP_VERSION=$appVersion" `
             "/DAPP_FILE_VERSION=$appFileVersion" `
             "/DPACKAGE_MODE=$PackageMode" `
             "/DPACKAGE_SOURCE_DIR=$nsisPackageSource" `
             "/DINSTALLER_OUTPUT_DIR=$nsisOutputDir" `
+            "/DUNINSTALL_FILES_INCLUDE=$nsisOwnershipInclude" `
             $nsisScript
         if ($LASTEXITCODE -ne 0) {
             throw "NSIS compilation failed with exit code $LASTEXITCODE"

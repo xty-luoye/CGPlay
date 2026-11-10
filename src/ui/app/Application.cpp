@@ -280,18 +280,15 @@ bool MainWindow::rebuildViewerForRuntime()
         }
     });
     connect(_p->viewer, &ViewerWidget::droppedFile, this, [this](const QString& p) {
-        QFileInfo fi(p);
-        if (_p->currentPath.isEmpty()) {
-            _p->compareBar->setShotALabel(fi.completeBaseName());
-            openFile(p);
-        } else {
-            _p->compareBar->setShotBLabel(fi.completeBaseName());
-            _p->playbackCtrl->setCompareFile(p);
-            _p->compareBar->setCompareMode(5);
-        }
+        _p->compareBar->setShotALabel(QFileInfo(p).completeBaseName());
+        _p->compareBar->setShotBLabel(QStringLiteral("--"));
+        _p->compareBar->setCompareMode(0);
+        openFile(p);
     });
     connect(_p->viewer, &ViewerWidget::compareRequested, this, [this] {
-        _p->compareBar->setVisible(!_p->compareBar->isVisible());
+        const bool visible = !_p->compareBar->isVisible();
+        if (!visible) _p->compareBar->setCompareMode(0);
+        _p->compareBar->setVisible(visible);
     });
     connect(_p->viewer, &ViewerWidget::compareTileRequested, this, [this] {
         _p->compareBar->show();
@@ -458,6 +455,29 @@ void MainWindow::_setupUI()
     _p->playbackBar = new PlaybackBar(_p->playbackCtrl, centerSplitter);
     _p->playbackBar->setObjectName(QStringLiteral("cgplayPlaybackBarSurface"));
     _p->playbackBar->setProperty("cgplay.surfaceRole", QStringLiteral("toolbar"));
+    if (_p->userSettings) {
+        _p->playbackBar->setNavigationStep(
+            _p->userSettings->value(QStringLiteral("playback/navigationInSeconds"), true).toBool(),
+            _p->userSettings->value(QStringLiteral("playback/navigationStep"), 5).toInt());
+    }
+    connect(_p->playbackBar, &PlaybackBar::navigationStepChanged, this, [this](bool inSeconds, int amount) {
+        if (!_p->userSettings) return;
+        _p->userSettings->setValue(QStringLiteral("playback/navigationInSeconds"), inSeconds);
+        _p->userSettings->setValue(QStringLiteral("playback/navigationStep"), amount);
+    });
+    const bool displaySeconds = _p->userSettings && _p->userSettings->value(
+        QStringLiteral("playback/displaySeconds"), false).toBool();
+    _p->playbackBar->setDisplaySeconds(displaySeconds);
+    _p->timeline->setDisplaySeconds(displaySeconds);
+    connect(_p->playbackBar, &PlaybackBar::displaySecondsChanged,
+        _p->timeline, &TimelineWidget::setDisplaySeconds);
+    connect(_p->timeline, &TimelineWidget::displaySecondsChanged,
+        _p->playbackBar, &PlaybackBar::setDisplaySeconds);
+    connect(_p->playbackBar, &PlaybackBar::displaySecondsChanged, this, [this](bool enabled) {
+        if (_p->userSettings) {
+            _p->userSettings->setValue(QStringLiteral("playback/displaySeconds"), enabled);
+        }
+    });
     const QVector<std::pair<QString, QString>> transportButtons = {
         {QStringLiteral("PlaybackBarPlayToggle"), QStringLiteral("playback.toggle")},
         {QStringLiteral("PlaybackBarPreviousFrame"), QStringLiteral("playback.previousFrame")},
@@ -570,6 +590,7 @@ void MainWindow::_setupUI()
     _setupGeneratedSubtitleOverlay();
 
     connect(_p->navRail, &NavigationRail::pageChanged, this, [this](int page) {
+        if (page != NavigationRail::Compare) _p->compareBar->setCompareMode(0);
         _p->compareBar->setVisible(page == NavigationRail::Compare);
         switch (page) {
         case NavigationRail::Playlist:
@@ -763,7 +784,13 @@ void MainWindow::_setupMenuBar()
             tr("批注 JSON (*.review.json)"));
         if (!path.isEmpty()) {
             if (auto* annotationService = resolveAnnotationService(_p->annotationService, _annoMgr.get())) {
-                annotationService->replaceAnnotations(AnnotationStorage::load(path));
+                QVector<AnnotationItem> annotations;
+                QString error;
+                if (AnnotationStorage::load(path, &annotations, &error)) {
+                    annotationService->replaceAnnotations(annotations);
+                } else {
+                    QMessageBox::warning(this, QStringLiteral("加载批注失败"), error);
+                }
             }
         }
     });
@@ -1179,7 +1206,14 @@ void MainWindow::_setupMenuBar()
     auto* actCmp = viewMenu->addAction(QStringLiteral("对比工具栏"));
     actCmp->setCheckable(true);
     actCmp->setChecked(false);
-    connect(actCmp, &QAction::toggled, _p->compareBar, &QWidget::setVisible);
+    connect(viewMenu, &QMenu::aboutToShow, this, [this, actCmp] {
+        const QSignalBlocker blocker(actCmp);
+        actCmp->setChecked(!_p->compareBar->isHidden());
+    });
+    connect(actCmp, &QAction::toggled, this, [this](bool visible) {
+        if (!visible) _p->compareBar->setCompareMode(0);
+        _p->compareBar->setVisible(visible);
+    });
 
     if (_p->aiDock) {
         viewMenu->addSeparator();
@@ -1448,10 +1482,14 @@ void MainWindow::_loadHostExtensionContributions()
 
     addBuiltIn({QStringLiteral("playback.toggle"), QStringLiteral("播放/暂停"), {}, {}, QStringLiteral("play"), QStringLiteral("Space")},
                withPlayback([](IPlaybackService& playback) { playback.togglePlay(); }));
-    addBuiltIn({QStringLiteral("playback.previousFrame"), QStringLiteral("上一帧"), {}, {}, QStringLiteral("skip-back"), QStringLiteral("Left")},
-               withPlayback([](IPlaybackService& playback) { playback.prevFrame(); }));
-    addBuiltIn({QStringLiteral("playback.nextFrame"), QStringLiteral("下一帧"), {}, {}, QStringLiteral("skip-forward"), QStringLiteral("Right")},
-               withPlayback([](IPlaybackService& playback) { playback.nextFrame(); }));
+    addBuiltIn({QStringLiteral("playback.previousFrame"), QStringLiteral("后退"), {}, {}, QStringLiteral("skip-back"), QStringLiteral("Left")},
+               withPlayback([this](IPlaybackService& playback) {
+                   playback.seekRelative(-(_p->playbackBar ? _p->playbackBar->navigationStepFrames() : 1));
+               }));
+    addBuiltIn({QStringLiteral("playback.nextFrame"), QStringLiteral("前进"), {}, {}, QStringLiteral("skip-forward"), QStringLiteral("Right")},
+               withPlayback([this](IPlaybackService& playback) {
+                   playback.seekRelative(_p->playbackBar ? _p->playbackBar->navigationStepFrames() : 1);
+               }));
     addBuiltIn({QStringLiteral("playback.gotoStart"), QStringLiteral("跳到开头"), {}, {}, {}, QStringLiteral("Home")},
                withPlayback([](IPlaybackService& playback) { playback.gotoStart(); }));
     addBuiltIn({QStringLiteral("playback.gotoEnd"), QStringLiteral("跳到结尾"), {}, {}, {}, QStringLiteral("End")},
@@ -1476,6 +1514,10 @@ void MainWindow::_loadHostExtensionContributions()
                withPlayback([](IPlaybackService& playback) { playback.clearOutPoint(); }));
     addBuiltIn({QStringLiteral("audio.toggleMute"), QStringLiteral("静音切换"), {}, {}, QStringLiteral("volume-x"), QStringLiteral("M")},
                withPlayback([](IPlaybackService& playback) { playback.setMute(!playback.isMuted()); }));
+    addBuiltIn({QStringLiteral("audio.volumeUp"), QStringLiteral("增大音量"), {}, {}, QStringLiteral("volume-2"), QStringLiteral("Up")},
+               withPlayback([](IPlaybackService& playback) { playback.setVolume(qMin(1.0f, playback.getVolume() + 0.05f)); }));
+    addBuiltIn({QStringLiteral("audio.volumeDown"), QStringLiteral("减小音量"), {}, {}, QStringLiteral("volume-1"), QStringLiteral("Down")},
+               withPlayback([](IPlaybackService& playback) { playback.setVolume(qMax(0.0f, playback.getVolume() - 0.05f)); }));
     addBuiltIn({QStringLiteral("audio.openVolume"), QStringLiteral("打开音量控制"), {}, {}, QStringLiteral("volume-2")}, [this](bool) {
         if (auto* volume = findChild<QToolButton*>(QStringLiteral("PlaybackBarMute"))) { volume->click(); return true; }
         return false;
@@ -2529,13 +2571,22 @@ void MainWindow::_connectSignals()
                 _p->sessionMgr->markDirty();
             }
         });
+        connect(playbackSignals, &PlaybackServiceSignals::fileOpenFailed, this, [this](const QString& path, const QString&) {
+            if (path != _p->currentPath) return;
+            _p->autoPlayPending = false;
+            _p->pendingComparePath.clear();
+        });
 #if CGPLAY_HAS_TLRENDER
         connect(playbackSignals, &PlaybackServiceSignals::playerReady, this, [this](const std::shared_ptr<tl::Player>& player) {
-            if (!player || !_p->autoPlayPending || !_p->playbackCtrl) {
+            if (!player || !_p->playbackCtrl) {
                 return;
             }
+            const bool autoPlay = _p->autoPlayPending;
             _p->autoPlayPending = false;
-            _p->playbackCtrl->play();
+            const QString comparePath = _p->pendingComparePath;
+            _p->pendingComparePath.clear();
+            if (!comparePath.isEmpty()) _selectCompareB(comparePath);
+            if (autoPlay) _p->playbackCtrl->play();
         });
 #endif
     }
@@ -2568,14 +2619,21 @@ void MainWindow::_connectSignals()
     };
     connect(_p->playlist, &PlaylistPanel::shotsRemoved, this, closeIfCurrentWasRemoved);
     connect(_p->playlist, &PlaylistPanel::playlistCleared, this, closeIfCurrentWasRemoved);
-    connect(_p->playlist, &PlaylistPanel::shotASelected, this, [this](const QString& p){ _p->compareBar->setShotALabel(QFileInfo(p).completeBaseName()); });
+    connect(_p->playlist, &PlaylistPanel::shotASelected, this, [this](const QString& p){
+        _p->compareBar->setShotALabel(QFileInfo(p).completeBaseName());
+        _p->compareBar->setShotBLabel(QStringLiteral("--"));
+        _p->compareBar->setCompareMode(0);
+        _p->compareBar->show();
+        openFile(p);
+    });
     connect(_p->playlist, &PlaylistPanel::shotBSelected, this, [this](const QString& p){
-        _p->compareBar->setShotBLabel(QFileInfo(p).completeBaseName());
-        _p->playbackCtrl->setCompareFile(p);
-        _p->compareBar->setCompareMode(5);
+        _selectCompareB(p);
     });
 
     // Compare 鈫?Viewport
+    connect(_p->compareBar, &CompareToolbar::compareModeChanged, this, [this](int mode) {
+        if (mode == 0) _p->pendingComparePath.clear();
+    });
     connect(_p->compareBar, &CompareToolbar::compareOptionsChanged, this, [this](const tl::CompareOptions& o){
         if (auto* vp = _p->viewer->viewport()) vp->setCompareOptions(o);
     });
@@ -2585,16 +2643,18 @@ void MainWindow::_connectSignals()
         openFile(p);
     });
     connect(_p->compareBar, &CompareToolbar::shotBFileDropped, this, [this](const QString& p){
-        QFileInfo fi(p); _p->compareBar->setShotBLabel(fi.completeBaseName());
-        _p->playbackCtrl->setCompareFile(p); _p->compareBar->setCompareMode(5);
+        _selectCompareB(p);
     });
     connect(_p->viewer, &ViewerWidget::droppedFile, this, [this](const QString& p){
-        QFileInfo fi(p);
-        if (_p->currentPath.isEmpty()) { _p->compareBar->setShotALabel(fi.completeBaseName()); openFile(p); }
-        else { _p->compareBar->setShotBLabel(fi.completeBaseName()); _p->playbackCtrl->setCompareFile(p); _p->compareBar->setCompareMode(5); }
+        _p->compareBar->setShotALabel(QFileInfo(p).completeBaseName());
+        _p->compareBar->setShotBLabel(QStringLiteral("--"));
+        _p->compareBar->setCompareMode(0);
+        openFile(p);
     });
     connect(_p->viewer, &ViewerWidget::compareRequested, this, [this]{
-        _p->compareBar->setVisible(!_p->compareBar->isVisible());
+        const bool visible = !_p->compareBar->isVisible();
+        if (!visible) _p->compareBar->setCompareMode(0);
+        _p->compareBar->setVisible(visible);
     });
     connect(_p->viewer, &ViewerWidget::compareTileRequested, this, [this]{
         _p->compareBar->show();

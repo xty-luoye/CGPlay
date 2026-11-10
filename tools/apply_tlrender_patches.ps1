@@ -8,7 +8,7 @@ if ([string]::IsNullOrWhiteSpace($TlRenderSourceDir)) {
     if (-not [string]::IsNullOrWhiteSpace($env:TLRENDER_SOURCE_DIR)) {
         $TlRenderSourceDir = $env:TLRENDER_SOURCE_DIR
     } else {
-        throw "Set -TlRenderSourceDir or the TLRENDER_SOURCE_DIR environment variable to your compatible tlRender source tree."
+        $TlRenderSourceDir = "C:\Users\1\Desktop\CGV\tlRender-main"
     }
 }
 $source = [IO.Path]::GetFullPath($TlRenderSourceDir)
@@ -22,9 +22,8 @@ $patches = @(
 )
 
 function Invoke-GitApply([string[]]$Arguments) {
-    # Native argument splatting preserves source/patch paths containing spaces.
-    & git.exe @Arguments
-    return [int]$LASTEXITCODE
+    $process = Start-Process -FilePath "git.exe" -ArgumentList $Arguments -Wait -PassThru -WindowStyle Hidden
+    return [int]$process.ExitCode
 }
 
 Push-Location $source

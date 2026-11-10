@@ -3,7 +3,8 @@ from pathlib import Path
 import sys
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
-BASE = ROOT / 'tests/artifacts/compare_export_20261025'
+import os
+BASE = Path(os.environ.get('CGPLAY_TEST_ARTIFACTS', ROOT / 'tests/artifacts/compare_export_20261025'))
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(BASE))
 
@@ -125,7 +126,7 @@ class CompareExportTests(unittest.TestCase):
         lay = native_layout(a.spec, b, 'horizontal')
         self.assertEqual((128, 48), (lay.width, lay.height))
         tile = native_layout(a.spec, b, 'tile')
-        self.assertEqual((64, 96), (tile.width, tile.height))  # A has larger pixel area.
+        self.assertEqual((128, 48), (tile.width, tile.height))  # Current tlRender: two columns, A-sized cells.
         ar = np.ones((48, 64, 4), dtype=np.float32)
         br = np.ones((32, 80, 4), dtype=np.float32)
         image = compose_float(ar, br, a.spec, b, CompareOptions(mode='horizontal'), lay)
@@ -135,6 +136,19 @@ class CompareExportTests(unittest.TestCase):
     def test_current_public_float_pipeline(self):
         work = ColorPipeline({'mode': 'bypass'}).apply_float(np.array([[[2., -.25, .5]]], dtype=np.float32))
         np.testing.assert_allclose(work, [[[2., -.25, .5]]])
+
+    def test_same_size_and_single_side_skip_unused_work(self):
+        from unittest.mock import patch
+        from cgplay.export.compare_job import _fit
+        spec = SourceSpec('a', Clock(F(24), F(0), 1), 16, 8)
+        rgba = np.ones((8, 16, 4), dtype=np.float32)
+        layout = native_layout(spec, spec, 'a')
+        with patch('cgplay.export.compare_job.Image.fromarray', side_effect=AssertionError('unnecessary resize')):
+            self.assertTrue(np.shares_memory(_fit(rgba, spec.aspect, layout.a), rgba))
+            # An unused source must not be resized or dereferenced.
+            result = compose_float(rgba, None, spec, spec, CompareOptions(mode='a'), layout)
+        np.testing.assert_array_equal(result, rgba[..., :3])
+        self.assertTrue(np.shares_memory(result, rgba))
 
     def test_real_fractional_cfr_and_last_frame(self):
         a, b = self.source_pair(F(30000, 1001), 30)

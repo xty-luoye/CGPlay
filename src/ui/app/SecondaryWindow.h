@@ -35,6 +35,7 @@ Q_SIGNALS:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     bool eventFilter(QObject* obj, QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
 
@@ -46,6 +47,7 @@ private:
     void _hideFullScreenChrome();
     void _setFullScreenChromeVisible(bool visible, bool forceApply = false);
     void _setFullScreenCursorHidden(bool hidden);
+    void _positionFullScreenTimeline();
 
     std::shared_ptr<OcioManager>         _ocio;
     std::shared_ptr<CacheManager>        _cache;
@@ -58,6 +60,8 @@ private:
     bool _fullscreenViewerChrome = true;
     bool _fullscreenChromeVisible = false;
     bool _fullscreenCursorHidden = false;
+    bool _fullscreenTimelineOverlay = false;
+    quint64 _fullscreenGeneration = 0;
 
 public:
     int _index = 0;  // Public for re-indexing

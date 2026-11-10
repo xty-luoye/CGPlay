@@ -4,10 +4,11 @@ import hashlib
 import json
 import os
 import subprocess
+from tests.native_probe_runtime import deploy_runtime
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
-OUT=Path(os.environ.get('CGPLAY_RECORDING_QUIT_ARTIFACTS',ROOT/'tests/artifacts/recording_quit_1_0_8'))
+OUT=Path(os.environ.get('CGPLAY_RECORDING_QUIT_ARTIFACTS',ROOT/'tests/artifacts/fix_review_20261101/remaining_regression/recording_quit_guards'))
 QT=Path(os.environ.get('CGPLAY_TEST_QT_ROOT','E:/rjkf/CGPlay-deps/QtClean/6.5.3/msvc2019_64'))
 
 FIXTURE=r'''
@@ -113,14 +114,20 @@ target_compile_options(recording_quit_guards PRIVATE /utf-8)
 '''
         (OUT/'CMakeLists.txt').write_text(cmake,encoding='utf-8')
         build=OUT/'build'
-        environment=os.environ.copy();environment['PATH']=str(QT/'bin')+os.pathsep+environment.get('PATH','')
+        environment=os.environ.copy();environment['PATH']=str(QT/'bin')+os.pathsep+str(ROOT/'build_win_full'/'bin'/'Release')+os.pathsep+environment.get('PATH','')
+        environment['QT_QPA_PLATFORM']='offscreen'
+        environment['QT_QPA_PLATFORM_PLUGIN_PATH']=str(QT/'plugins'/'platforms')
+        environment['QT_PLUGIN_PATH']=str(QT/'plugins')
         commands=[['cmake','-S',OUT,'-B',build,'-G','Visual Studio 17 2022','-A','x64',f'-DCMAKE_PREFIX_PATH={QT}'],
             ['cmake','--build',build,'--config','Release','--parallel','2'],
             [build/'Release/recording_quit_guards.exe',OUT/'report.json']]
         with (OUT/'commands.log').open('wb') as log:
-            for command in commands:
+            for index, command in enumerate(commands):
                 subprocess.run([str(v) for v in command],cwd=ROOT,env=environment,check=True,
                     stdout=log,stderr=log,creationflags=subprocess.CREATE_NO_WINDOW,timeout=180)
+                if index == 1:
+                    deploy_runtime(build/'Release/recording_quit_guards.exe', QT,
+                                   (ROOT/'build_win_full'/'bin'/'Release',))
         report=json.loads((OUT/'report.json').read_text(encoding='utf-8'))
         report['productionExtracts']={'updateSHA256':hashlib.sha256(update.encode()).hexdigest(),
             'closeGateSHA256':hashlib.sha256(close.encode()).hexdigest()}

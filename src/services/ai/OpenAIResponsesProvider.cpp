@@ -1778,6 +1778,7 @@ AIAudioTranscriptionResult OpenAIResponsesProvider::transcribe(const AIAudioTran
         baseUrl,
         &keyError);
     if (apiKey.isEmpty() && !looksLikeOllamaBaseUrl(baseUrl)) {
+        delete audioFile;
         return finishWithError(
             keyError.isEmpty()
                 ? QStringLiteral("Current AI gateway has no API key configured")

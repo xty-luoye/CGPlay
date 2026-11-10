@@ -113,6 +113,8 @@ QString subtitleSuffix(const QString& targetLanguage)
 
 QString defaultSubtitleOutputDirectory(const QString& mediaPath)
 {
+    const QString automationRoot = qEnvironmentVariable("CGPLAY_AUTOMATION_SUBTITLE_CACHE_ROOT");
+    if (!automationRoot.isEmpty()) return automationRoot;
     const QString desktopPath = QStandardPaths::writableLocation(QStandardPaths::DesktopLocation);
     if (!desktopPath.trimmed().isEmpty()) {
         return QDir(desktopPath).filePath(QStringLiteral("CGPlay_Translations"));
@@ -338,16 +340,22 @@ double parseSubtitleTime(QString value)
     value = value.trimmed();
     value.replace(QLatin1Char(','), QLatin1Char('.'));
     const QStringList parts = value.split(QLatin1Char(':'));
-    if (parts.size() != 3) {
+    if (parts.size() != 2 && parts.size() != 3) {
         return 0.0;
     }
-    bool okH = false;
     bool okM = false;
     bool okS = false;
-    const int hours = parts.at(0).toInt(&okH);
-    const int minutes = parts.at(1).toInt(&okM);
-    const double seconds = parts.at(2).toDouble(&okS);
-    if (!okH || !okM || !okS) {
+    int hours = 0;
+    int minuteIndex = 0;
+    if (parts.size() == 3) {
+        bool okH = false;
+        hours = parts.at(0).toInt(&okH);
+        if (!okH || hours < 0) return 0.0;
+        minuteIndex = 1;
+    }
+    const int minutes = parts.at(minuteIndex).toInt(&okM);
+    const double seconds = parts.at(minuteIndex + 1).toDouble(&okS);
+    if (!okM || !okS || minutes < 0 || minutes >= 60 || seconds < 0.0 || seconds >= 60.0) {
         return 0.0;
     }
     return hours * 3600.0 + minutes * 60.0 + seconds;

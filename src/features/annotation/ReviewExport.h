@@ -38,6 +38,7 @@ class QWidget;
 namespace cgplay {
 
 struct AnnotationItem;
+struct AIResponse;
 
 enum class VideoExportCodec
 {
@@ -63,6 +64,10 @@ public:
     // ── JSON 导出 ─────────────────────────────────────────────────────
     static bool exportJson(const QVector<AnnotationItem>& annotations,
                            const QString& filepath);
+    static bool exportAIReport(const AIResponse& response,
+                               const QVector<AnnotationItem>& annotations,
+                               const QString& filepath,
+                               const QString& mediaTitle = {});
 
     // ── HTML Report 导出 ──────────────────────────────────────────────
     static bool exportHtml(const QVector<AnnotationItem>& annotations,

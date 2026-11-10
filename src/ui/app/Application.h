@@ -341,6 +341,7 @@ private:
     void _autoLoadReview();
     void _onAnnotationModeToggled(bool active);
     void _closeCurrentMedia();
+    void _selectCompareB(const QString& path);
     void _resetMediaSession(const QString& path, const QString& fingerprint);
     void _openFileWithMediaInfo(
         const QString& path,
@@ -351,11 +352,13 @@ private:
     QJsonArray _runSettingsSmokeChecks();
     QJsonObject _runMediaOpenSmokeCheck(const QString& mediaPath);
     QJsonObject _automationCoverage() const;
+    QJsonArray _runPlayerSmokeGroups(const QStringList& groups, const QString& mediaPath);
     QJsonArray _runMediaStateSmokeChecks(const QString& mediaPath);
     QJsonArray _runSequenceTimeSmokeChecks(const QString& mediaPath);
     QJsonArray _runCacheRuntimeSmokeChecks(const QString& mediaPath);
     QJsonArray _runInOutSmokeChecks(const QString& mediaPath);
     QJsonArray _runSessionRestoreSmokeChecks(const QString& mediaPath);
+    QJsonArray _runPlaybackInteractionSmokeChecks(const QString& mediaPath);
     void _showFullScreenChromeTemporarily();
     void _hideFullScreenChrome();
     void _setFullScreenChromeVisible(bool visible, bool forceApply = false);

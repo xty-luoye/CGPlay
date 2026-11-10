@@ -58,7 +58,7 @@ def audit(repo: Path) -> Dict[str, object]:
     scheduler_support_path = repo / "src" / "services" / "ai" / "TranslationEnhancementSupport.cpp"
     scheduler_support_header_path = repo / "src" / "services" / "ai" / "TranslationEnhancementSupport.h"
     subtitle_service_path = repo / "src" / "services" / "ai" / "SubtitleGenerationService.cpp"
-    application_path = repo / "src" / "ui" / "app" / "Application.cpp"
+    application_paths = [repo / "src/ui/app" / name for name in ("ApplicationInternal.h", "ApplicationEnhancement.cpp")]
     acceptance_report_path = repo / "tools" / "cgplay" / "ai" / "write_acceptance_report.py"
     visual_translate_path = repo / "tools" / "cgplay" / "ai" / "translate_visual_source_cache.py"
 
@@ -70,7 +70,7 @@ def audit(repo: Path) -> Dict[str, object]:
         if path.exists()
     )
     subtitle_service = read_text(subtitle_service_path) if subtitle_service_path.exists() else ""
-    application = read_text(application_path) if application_path.exists() else ""
+    application = "\n".join(read_text(path) for path in application_paths if path.is_file())
     acceptance_report = read_text(acceptance_report_path) if acceptance_report_path.exists() else ""
     visual_translate = read_text(visual_translate_path) if visual_translate_path.exists() else ""
 
@@ -235,6 +235,7 @@ def audit(repo: Path) -> Dict[str, object]:
     ]
 
     checks = {
+        "requiredApplicationSourcesPresent": all(path.is_file() for path in application_paths),
         "cppPolicyExists": cpp_path.exists(),
         "headlessGateExists": headless_path.exists(),
         "schedulerExists": scheduler_path.exists(),
@@ -284,6 +285,7 @@ def audit(repo: Path) -> Dict[str, object]:
     }
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "validationMode": "static-source-structure-only",
         "task": "runtime_headless_final_display_policy_parity",
         "files": {
             "cppPolicy": str(cpp_path),
@@ -292,7 +294,7 @@ def audit(repo: Path) -> Dict[str, object]:
             "schedulerSupport": str(scheduler_support_path),
             "schedulerSupportHeader": str(scheduler_support_header_path),
             "subtitleService": str(subtitle_service_path),
-            "application": str(application_path),
+            "application": [str(path) for path in application_paths],
             "acceptanceReport": str(acceptance_report_path),
             "visualSourceTranslator": str(visual_translate_path),
         },
@@ -304,7 +306,7 @@ def audit(repo: Path) -> Dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", type=Path, default=Path(r"C:\Users\1\Desktop\RVLite"))
+    parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[3])
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
     result = audit(args.repo)

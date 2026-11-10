@@ -740,29 +740,7 @@ QJsonObject MainWindow::runPlayerSmokeChecks(const QString& mediaPath)
     const QStringList smokeGroups = qEnvironmentVariable("CGPLAY_SMOKE_GROUPS")
         .split(QLatin1Char(','), Qt::SkipEmptyParts);
     if (!smokeGroups.isEmpty()) {
-        for (const QString& requested : smokeGroups) {
-            const QString group = requested.trimmed();
-            if (group == QStringLiteral("fullscreen")) {
-                results.append(_runMediaOpenSmokeCheck(mediaPath));
-                for (const auto& result : _runFullscreenSmokeChecks()) results.append(result);
-            } else if (group == QStringLiteral("state-switch")) {
-                for (const auto& result : _runMediaStateSmokeChecks(mediaPath)) results.append(result);
-            } else if (group == QStringLiteral("sequence-time")) {
-                for (const auto& result : _runSequenceTimeSmokeChecks(mediaPath)) results.append(result);
-            } else if (group == QStringLiteral("cache")) {
-                for (const auto& result : _runCacheRuntimeSmokeChecks(mediaPath)) results.append(result);
-            } else if (group == QStringLiteral("settings")) {
-                results.append(_runMediaOpenSmokeCheck(mediaPath));
-                for (const auto& result : _runSettingsSmokeChecks()) results.append(result);
-            } else if (group == QStringLiteral("in-out")) {
-                for (const auto& result : _runInOutSmokeChecks(mediaPath)) results.append(result);
-            } else if (group == QStringLiteral("session-restore")) {
-                for (const auto& result : _runSessionRestoreSmokeChecks(mediaPath)) results.append(result);
-            } else {
-                results.append(QJsonObject{{"name", "Smoke group"}, {"status", "FAIL"},
-                    {"message", QStringLiteral("Unknown smoke group: %1").arg(group)}});
-            }
-        }
+        results = _runPlayerSmokeGroups(smokeGroups, mediaPath);
         report["coverage"] = _automationCoverage();
         if (!report["coverage"].toObject().value("complete").toBool())
             results.append(QJsonObject{{"name", "Automation coverage gate"}, {"status", "FAIL"}});
@@ -1019,14 +997,14 @@ QJsonObject MainWindow::runPlayerSmokeChecks(const QString& mediaPath)
         } else if (key == Qt::Key_Left) {
             const int total = std::max(1, before.value("total").toInt());
             const int first = before.value("range_first_frame").toInt();
-            const int step = (mods & Qt::ShiftModifier) ? 10 : 1;
+            const int step = (mods & Qt::ShiftModifier) ? 10 : _p->playbackBar->navigationStepFrames();
             const int expected = first + ((before.value("frame").toInt() - first - step) % total + total) % total;
             passed = after.value("frame").toInt() == expected;
             message = (mods & Qt::ShiftModifier) ? QStringLiteral("back 10 frames") : QStringLiteral("prev frame");
         } else if (key == Qt::Key_Right) {
             const int total = std::max(1, before.value("total").toInt());
             const int first = before.value("range_first_frame").toInt();
-            const int step = (mods & Qt::ShiftModifier) ? 10 : 1;
+            const int step = (mods & Qt::ShiftModifier) ? 10 : _p->playbackBar->navigationStepFrames();
             const int expected = first + (before.value("frame").toInt() - first + step) % total;
             passed = after.value("frame").toInt() == expected;
             message = (mods & Qt::ShiftModifier) ? QStringLiteral("forward 10 frames") : QStringLiteral("next frame");
@@ -2751,9 +2729,19 @@ QJsonObject MainWindow::runPhase14StressChecks(
         windowSwitchSection.insert(QStringLiteral("metrics"), stats.metrics());
         windowSwitchSection.insert(QStringLiteral("samples"), samples);
         windowSwitchSection.insert(QStringLiteral("finalState"), captureRuntimeAnnotationState());
-        addAssertion(QStringLiteral("Window switch stress"), stats.fail == 0,
-                     QStringLiteral("multi-window switch loop completed without binding drift"),
-                     windowSwitchSection.value(QStringLiteral("metrics")).toObject());
+        if (stats.requested == 0) {
+            assertions.append(QJsonObject{
+                {QStringLiteral("name"), QStringLiteral("Window switch stress")},
+                {QStringLiteral("status"), QStringLiteral("SKIP")},
+                {QStringLiteral("message"), QStringLiteral("no window switches requested")}
+            });
+        } else {
+            addAssertion(QStringLiteral("Window switch stress"),
+                         secondary && secondary->viewerWidget() &&
+                             stats.completed == stats.requested && stats.fail == 0,
+                         QStringLiteral("all requested multi-window switches must complete without binding drift"),
+                         windowSwitchSection.value(QStringLiteral("metrics")).toObject());
+        }
     }
 
     QJsonObject pluginReloadSection;

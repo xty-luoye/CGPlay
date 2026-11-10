@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // CGPlay PlaylistModel.h
 // Qt item model for the shot/clip list
 

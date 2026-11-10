@@ -49,6 +49,20 @@ class ReleaseSourceTests(unittest.TestCase):
             self.write(self.app/name,'private')
         self.build()
         with zipfile.ZipFile(self.bundle) as archive:self.assertFalse(any('private' in n or '.env' in n or 'auth.json' in n or 'credentials.json' in n or 'handoffs' in n for n in archive.namelist()))
+    def test_media_service_sources_retained_without_media_fixtures(self):
+        sources = ['src/services/media/MediaProbe.cpp', 'src/services/media/MediaService.h',
+                   'src/services/media/api/IMediaService.h']
+        private = ['tests/media/private.txt', 'src/services/media/artifacts/private.txt',
+                   'src/services/media/media/private.txt', 'src/services/media/clip.mp4']
+        for name in sources + private:
+            self.write(self.app/name, 'fixture')
+        self.build()
+        with zipfile.ZipFile(self.bundle) as archive:
+            for name in sources:
+                self.assertIn('application/' + name, archive.namelist())
+            for name in private:
+                self.assertNotIn('application/' + name, archive.namelist())
+        self.assertTrue(validate(self.prov, bundle=self.bundle)['passed'])
     def test_personal_tests_and_internal_roadmaps_excluded(self):
         for name in ['tests/test_adaptive_orchestrator.py','tests/test_context_router.py','tests/test_rvlite_defect_triage.py','docs/CGPlay_B站个人作品视频脚本.md','docs/CGPlay_1.0.8_PLAN.md']:
             self.write(self.app/name,'private personal workflow')

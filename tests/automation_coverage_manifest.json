@@ -7,16 +7,16 @@
   },
   "commands": {
     "playback.toggle": {
-      "test": "player-smoke:Space",
-      "shortcutTest": "player-smoke:Space"
+      "test": "player-smoke:Space; playback-interaction:First-open Space works on transport; Held navigation repeats and Space does not",
+      "shortcutTest": "player-smoke:Space; playback-interaction:Space on first open, transport, text input, popup and other window isolation"
     },
     "playback.previousFrame": {
-      "test": "player-smoke:Left",
-      "shortcutTest": "player-smoke:Left"
+      "test": "player-smoke:Left; playback-interaction:Left seek preserves reverse and speed; Navigation frame and second menu choices",
+      "shortcutTest": "player-smoke:Left; playback-interaction:Left on transport; Navigation custom and cleared shortcuts"
     },
     "playback.nextFrame": {
-      "test": "player-smoke:Right",
-      "shortcutTest": "player-smoke:Right"
+      "test": "player-smoke:Right; playback-interaction:First-open Right seeks without pausing; Navigation frame and second menu choices; Held navigation repeats and Space does not",
+      "shortcutTest": "player-smoke:Right; playback-interaction:Right on playlist before viewer click; Navigation custom and cleared shortcuts"
     },
     "playback.gotoStart": {
       "test": "player-smoke:Home",
@@ -71,6 +71,14 @@
     "audio.toggleMute": {
       "test": "player-smoke:M",
       "shortcutTest": "player-smoke:M"
+    },
+    "audio.volumeUp": {
+      "test": "playback-interaction:Up Down volume shortcuts and bounds",
+      "shortcutTest": "playback-interaction:Up Down volume shortcuts and bounds; text input, popup and other window isolation"
+    },
+    "audio.volumeDown": {
+      "test": "playback-interaction:Up Down volume shortcuts and bounds",
+      "shortcutTest": "playback-interaction:Up Down volume shortcuts and bounds; text input, popup and other window isolation"
     },
     "audio.openVolume": {
       "test": "player-smoke:Playback volume control"
@@ -190,7 +198,7 @@
       "test": "compare-export-smoke:registered command, immutable player snapshot, controls, background export; tests/test_compare_export.py"
     },
     "recording.open": {
-      "test": "recording-smoke:lazy panel, actual OBS properties, native/720p/1080p/2K/4K/8K and 24/25/30/50/60/90/120 FPS controls, old component rejection, actual encoded FPS and skipped frame statistics, synthetic start/pause/resume/gain/mute/stop, MP4 probe, recovery and deferred close; tests/test_recording_ui.py; tests/test_recording_helper.py:real native pixels and 2K/4K/8K120 output"
+      "test": "recording-smoke:prefilled MP4 save filename, folder-to-filename suggestion, suffix completion, custom filename/cancel/existing-file/busy-state guards and hidden save picker capture; lazy panel, actual OBS properties, native/720p/1080p/2K/4K/8K and 24/25/30/50/60/90/120 FPS controls, old component rejection, actual encoded FPS and skipped frame statistics, synthetic start/pause/resume/gain/mute/stop, MP4 probe, recovery and deferred close; tests/test_recording_ui.py; tests/test_recording_helper.py:real native pixels and 2K/4K/8K120 output"
     },
     "workspace.save": {
       "test": "player-smoke:Workspace save"
@@ -235,7 +243,8 @@
     "playlist.asyncImport": "test_playlist_async_contract.py; test_playlist_restore_performance.py:GUI heartbeat, order, removal/clear cancellation, metadata deduplication",
     "playlist.thumbnailDispatch": "test_playlist_async_contract.py:at most two dispatched thumbnails; shared pool remains available; canceled jobs counted until finished",
     "session.recovery": "run_session_restore_regression.py:media-ready A/B and seek, superseded requests, failed recovery retained, ordinary source switch reset",
-    "export.sequenceContract": "test_export_sequence_contract.py:relative source frames, real EXR RGBZ/RGBA/unsupported channels, metadata rejects deep before pixel decode, one decode per selected frame"
+    "export.sequenceContract": "test_export_sequence_contract.py:relative source frames, real EXR RGBZ/RGBA/unsupported channels, metadata rejects deep before pixel decode, one decode per selected frame",
+    "settings.profilePackage": "tools/run_customization_acceptance.py --profile-only: actual UI ZIP export/import, persisted values roundtrip, corrupt ZIP and failed export; tests/artifacts/fix_review_20261101/stage30"
   },
   "environmentCapabilities": [
     "physical-audio-output-device",

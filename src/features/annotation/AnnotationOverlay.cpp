@@ -296,9 +296,9 @@ QString AnnotationOverlay::_hitTest(const QPointF& imgPos) const
                 double d = QLineF(pt, imgPos).length();
                 if (d < tolerance + 2) { hit = true; dist = d; break; }
             }
-            if (!hit && ann.type == AnnotationType::Arrow && ann.points.size() >= 2) {
+            for (int i = 1; !hit && i < ann.points.size(); ++i) {
                 // Point-to-segment distance
-                QPointF a = ann.points[0], b = ann.points[1];
+                QPointF a = ann.points[i - 1], b = ann.points[i];
                 double dx = b.x() - a.x(), dy = b.y() - a.y();
                 if (dx == 0 && dy == 0) {
                     dist = QLineF(a, imgPos).length();

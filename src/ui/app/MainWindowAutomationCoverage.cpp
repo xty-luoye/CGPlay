@@ -8,6 +8,39 @@
 #include <QJsonDocument>
 
 namespace cgplay {
+QJsonArray MainWindow::_runPlayerSmokeGroups(const QStringList& groups, const QString& mediaPath)
+{
+    QJsonArray results;
+    for (const QString& requested : groups) {
+        const QString group = requested.trimmed();
+        QJsonArray groupResults;
+        if (group == QStringLiteral("fullscreen")) {
+            results.append(_runMediaOpenSmokeCheck(mediaPath));
+            groupResults = _runFullscreenSmokeChecks();
+        } else if (group == QStringLiteral("state-switch")) {
+            groupResults = _runMediaStateSmokeChecks(mediaPath);
+        } else if (group == QStringLiteral("sequence-time")) {
+            groupResults = _runSequenceTimeSmokeChecks(mediaPath);
+        } else if (group == QStringLiteral("cache")) {
+            groupResults = _runCacheRuntimeSmokeChecks(mediaPath);
+        } else if (group == QStringLiteral("settings")) {
+            results.append(_runMediaOpenSmokeCheck(mediaPath));
+            groupResults = _runSettingsSmokeChecks();
+        } else if (group == QStringLiteral("in-out")) {
+            groupResults = _runInOutSmokeChecks(mediaPath);
+        } else if (group == QStringLiteral("session-restore")) {
+            groupResults = _runSessionRestoreSmokeChecks(mediaPath);
+        } else if (group == QStringLiteral("playback-interaction")) {
+            groupResults = _runPlaybackInteractionSmokeChecks(mediaPath);
+        } else {
+            results.append(QJsonObject{{"name", "Smoke group"}, {"status", "FAIL"},
+                {"message", QStringLiteral("Unknown smoke group: %1").arg(group)}});
+        }
+        for (const auto& result : groupResults) results.append(result);
+    }
+    return results;
+}
+
 QJsonObject MainWindow::_automationCoverage() const
 {
     QJsonObject manifestCommands; QString coverageManifestPath;

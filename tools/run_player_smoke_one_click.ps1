@@ -91,6 +91,10 @@ try {
         $ReportDir = Split-Path -Parent $ReportPath
     }
     New-Item -ItemType Directory -Path $ReportDir -Force | Out-Null
+    if (Test-Path -LiteralPath $ReportPath) {
+        if (-not (Test-Path -LiteralPath $ReportPath -PathType Leaf)) { throw "Report path is not a file: $ReportPath" }
+        Move-Item -LiteralPath $ReportPath -Destination ($ReportPath + ".previous." + [Guid]::NewGuid().ToString("N"))
+    }
     $SettingsNamespace = New-SettingsNamespace -ReportPath $ReportPath
 
     Write-Host "CGPlay player function and shortcut smoke test" -ForegroundColor Cyan
@@ -109,7 +113,7 @@ try {
         "--smoke-output",
         (Quote-ProcessArg $ReportPath)
     )
-    $Process = Start-Process -FilePath $ResolvedExe -ArgumentList $ProcessArgs -Wait -PassThru
+    $Process = Start-Process -FilePath $ResolvedExe -ArgumentList $ProcessArgs -Wait -PassThru -WindowStyle Hidden
     $ExeExit = [int]$Process.ExitCode
     if ($ExeExit -ne 0) {
         Write-Host ""

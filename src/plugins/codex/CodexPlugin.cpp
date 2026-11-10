@@ -1,5 +1,6 @@
 #include "CodexPlugin.h"
 #include "CodexPluginSupport.h"
+#include "LocalTaskStore.h"
 
 #include "common/jobs/JobSystem.h"
 #include "common/core/ServiceLocator.h"
@@ -105,6 +106,8 @@ CodexPlugin::CodexPlugin(QObject* parent)
         for (const QString& path : files) {
             QFile input(path); if (!input.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
             QList<QByteArray> lines; while (!input.atEnd()) { lines.push_back(input.readLine()); while (lines.size() > 500) lines.removeFirst(); }
+            if (input.error() != QFileDevice::NoError) continue;
+            input.close();
             QSaveFile output(path); if (!output.open(QIODevice::WriteOnly | QIODevice::Text)) continue;
             for (const QByteArray& line : lines) output.write(line); output.commit();
         }
@@ -130,6 +133,7 @@ CodexPlugin::CodexPlugin(QObject* parent)
         &CodexAppServerSession::sessionStopped,
         this,
         [this](int exitCode, QProcess::ExitStatus exitStatus) {
+            finishLocalTask(QStringLiteral("failed"), tr("Local task interrupted: session stopped."));
             _pendingRequests.clear();
             _pendingThreadSettings.clear();
             _threadId.clear();
@@ -155,6 +159,7 @@ CodexPlugin::CodexPlugin(QObject* parent)
             emit standardErrorLineReceived(redactSensitiveText(line));
         });
     connect(&_session, &CodexAppServerSession::sessionError, this, [this](const QString& message) {
+        finishLocalTask(QStringLiteral("failed"), message);
         _lastError = message;
         _pendingRequests.clear();
         _pendingThreadSettings.clear();
@@ -195,6 +200,7 @@ void CodexPlugin::shutdown()
 {
     if (!_initialized) return;
     _initialized = false;
+    finishLocalTask(QStringLiteral("cancelled"), tr("Local task interrupted: plugin stopped."));
     if (_localTaskTimer) _localTaskTimer->stop();
     if (_terminalTimeoutTimer) _terminalTimeoutTimer->stop();
     if (_localFileWatcher) {
@@ -373,15 +379,15 @@ bool CodexPlugin::clearThreadGoal(QString* error) { return !_threadId.isEmpty() 
 bool CodexPlugin::startReview(QString* error) { return !_threadId.isEmpty() && sendNativeRpc(QStringLiteral("review/start"), {{QStringLiteral("threadId"), _threadId}, {QStringLiteral("target"), QJsonObject{{QStringLiteral("type"), QStringLiteral("uncommittedChanges")}}}}, nullptr, error); }
 bool CodexPlugin::refreshNativeCatalog(QString* error)
 {
-    if (!sendNativeRpc(QStringLiteral("mcpServerStatus/list"), {}, nullptr, error)) return false;
+    if (!sendRequest(PendingRequest::McpServerStatus, QStringLiteral("mcpServerStatus/list"), {}, error)) return false;
     if (!listSkills(true, error)) return false;
-    if (!sendNativeRpc(QStringLiteral("plugin/list"), {}, nullptr, error)) return false;
-    return sendNativeRpc(QStringLiteral("app/list"), {}, nullptr, error);
+    if (!sendRequest(PendingRequest::PluginList, QStringLiteral("plugin/list"), {}, error)) return false;
+    return sendRequest(PendingRequest::AppList, QStringLiteral("app/list"), {}, error);
 }
 
 bool CodexPlugin::listSkills(bool forceReload, QString* error)
 {
-    return sendNativeRpc(QStringLiteral("skills/list"), {{QStringLiteral("forceReload"), forceReload}}, nullptr, error);
+    return sendRequest(PendingRequest::SkillsList, QStringLiteral("skills/list"), {{QStringLiteral("forceReload"), forceReload}}, error);
 }
 
 bool CodexPlugin::readPlugin(const QString& pluginName, QString* error)
@@ -917,6 +923,22 @@ void CodexPlugin::handleResponse(qint64 requestId, const QJsonObject& message)
             return;
         }
         _activeTurnId = turnId;
+        if (!_runningLocalTaskId.isEmpty() && _runningLocalTaskThreadId == _threadId) {
+            _runningLocalTaskTurnId = turnId;
+            const QString path = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath(QStringLiteral("cgplay_local_tasks.jsonl"));
+            QJsonArray tasks;
+            QString error;
+            if (localTaskStore::read(path, &tasks, &error)) {
+                for (const QJsonValue& value : tasks) {
+                    const auto task = value.toObject();
+                    if (task.value(QStringLiteral("id")).toString() == _runningLocalTaskId &&
+                        task.value(QStringLiteral("status")).toString() == QStringLiteral("cancelled")) {
+                        if (!interruptTurn(&error) && _workspace) _workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("Task cancellation request failed: %1").arg(error));
+                        break;
+                    }
+                }
+            }
+        }
         emit turnStarted(_threadId, _activeTurnId);
         return;
     }
@@ -1105,93 +1127,140 @@ void CodexPlugin::handleNotification(const QString& method, const QJsonObject& p
         reportProtocolError(tr("Codex turn/completed 通知缺少 turn。"));
         return;
     }
-    if (turn.value(QStringLiteral("id")).toString() == _activeTurnId) {
+    const QString turnId = turn.value(QStringLiteral("id")).toString();
+    const QString threadId = params.value(QStringLiteral("threadId")).toString();
+    const bool matchesThread = threadId.isEmpty() || threadId == _threadId;
+    if (matchesThread && !turnId.isEmpty() && turnId == _activeTurnId) {
         _activeTurnId.clear();
         setProtocolState(ProtocolState::Ready);
     }
     emit turnCompleted(turn);
-    if (!_runningLocalTaskId.isEmpty()) {
-        updateLocalTaskStatus(_runningLocalTaskId,
+    if (!_runningLocalTaskId.isEmpty() && matchesThread &&
+        _runningLocalTaskThreadId == _threadId && turnId == _runningLocalTaskTurnId) {
+        finishLocalTask(
             turn.value(QStringLiteral("status")).toString() == QStringLiteral("completed") ? QStringLiteral("completed") : QStringLiteral("failed"),
             turn.value(QStringLiteral("status")).toString());
-        _runningLocalTaskId.clear();
         QTimer::singleShot(0, this, &CodexPlugin::processLocalTaskQueue);
     }
 }
 
-void CodexPlugin::updateLocalTaskStatus(const QString& taskId, const QString& status, const QString& detail)
+bool CodexPlugin::updateLocalTaskStatus(const QString& taskId, const QString& status, const QString& detail)
 {
-    const QString path = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath(QStringLiteral("cgplay_local_tasks.jsonl"));
-    QFile input(path);
+    const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    const QString path = QDir(directory).filePath(QStringLiteral("cgplay_local_tasks.jsonl"));
     QJsonArray tasks;
-    if (input.open(QIODevice::ReadOnly | QIODevice::Text)) while (!input.atEnd()) {
-        QJsonParseError error;
-        const QJsonDocument document = QJsonDocument::fromJson(input.readLine(), &error);
-        if (error.error == QJsonParseError::NoError && document.isObject()) tasks.push_back(document.object());
-    }
-    bool changed = false;
+    QString error;
+    const auto failed = [this, &error]() {
+        _lastError = tr("Local task queue save failed: %1").arg(error);
+        if (_workspace) _workspace->appendWorkbenchEvent(QStringLiteral("agents"), _lastError);
+        return false;
+    };
+    if (!localTaskStore::read(path, &tasks, &error)) return failed();
     for (int i = 0; i < tasks.size(); ++i) {
         QJsonObject task = tasks.at(i).toObject();
         if (task.value(QStringLiteral("id")).toString() != taskId) continue;
+        // A user's cancellation remains terminal even if the server completes later.
+        if (task.value(QStringLiteral("status")).toString() == QStringLiteral("cancelled") &&
+            (status == QStringLiteral("completed") || status == QStringLiteral("failed"))) return true;
         task.insert(QStringLiteral("status"), status);
         task.insert(QStringLiteral("updatedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
         if (!detail.isEmpty()) task.insert(QStringLiteral("detail"), detail.left(12000));
         if (status == QStringLiteral("completed") || status == QStringLiteral("failed") || status == QStringLiteral("cancelled")) {
-            const QString resultDirectory = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath(QStringLiteral("local_task_results"));
-            QDir().mkpath(resultDirectory);
-            const QString resultPath = QDir(resultDirectory).filePath(taskId + QStringLiteral(".json"));
+            const QString resultDirectory = QDir(directory).filePath(QStringLiteral("local_task_results"));
+            if (!QDir().mkpath(resultDirectory)) { error = tr("Cannot create local task result directory."); return failed(); }
+            // Keep identifiers from imported queues inside the results directory.
+            const QString filename = QString::fromLatin1(QCryptographicHash::hash(taskId.toUtf8(), QCryptographicHash::Sha256).toHex()) + QStringLiteral(".json");
+            const QString resultPath = QDir(resultDirectory).filePath(filename);
             QJsonObject result{{QStringLiteral("protocol"), QStringLiteral("cgplay.local-task.v1")}, {QStringLiteral("taskId"), taskId}, {QStringLiteral("status"), status}, {QStringLiteral("detail"), detail.left(12000)}, {QStringLiteral("completedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)}};
             QSaveFile resultFile(resultPath);
-            if (resultFile.open(QIODevice::WriteOnly) && resultFile.write(QJsonDocument(result).toJson(QJsonDocument::Indented)) >= 0 && resultFile.commit()) task.insert(QStringLiteral("resultPath"), resultPath);
+            const QByteArray bytes = QJsonDocument(result).toJson(QJsonDocument::Indented);
+            if (!resultFile.open(QIODevice::WriteOnly) || resultFile.write(bytes) != bytes.size() || !resultFile.commit()) {
+                error = resultFile.errorString(); return failed();
+            }
+            task.insert(QStringLiteral("resultPath"), resultPath);
         }
-        tasks.replace(i, task); changed = true; break;
+        tasks.replace(i, task);
+        return localTaskStore::write(path, tasks, &error) || failed();
     }
-    if (!changed) return;
-    QSaveFile output(path);
-    if (!output.open(QIODevice::WriteOnly)) return;
-    for (const QJsonValue& value : tasks) { output.write(QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact)); output.write("\n"); }
-    output.commit();
+    error = tr("Local task no longer exists: %1").arg(taskId);
+    return failed();
+}
+
+void CodexPlugin::finishLocalTask(const QString& status, const QString& detail)
+{
+    if (_runningLocalTaskId.isEmpty()) return;
+    if (_localTaskFinalStatus.isEmpty()) {
+        _localTaskFinalStatus = status;
+        _localTaskFinalDetail = detail;
+    }
+    flushLocalTaskStatus();
+}
+
+bool CodexPlugin::flushLocalTaskStatus()
+{
+    if (_localTaskFinalStatus.isEmpty()) return true;
+    if (!updateLocalTaskStatus(_runningLocalTaskId, _localTaskFinalStatus, _localTaskFinalDetail)) return false;
+    _runningLocalTaskId.clear();
+    _runningLocalTaskThreadId.clear();
+    _runningLocalTaskTurnId.clear();
+    _localTaskFinalStatus.clear();
+    _localTaskFinalDetail.clear();
+    return true;
 }
 
 void CodexPlugin::processLocalTaskQueue()
 {
-    if (!_runningLocalTaskId.isEmpty() || _protocolState != ProtocolState::Ready || !_activeTurnId.isEmpty() || _threadId.isEmpty()) return;
-    const QString scheduledPath = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath(QStringLiteral("codex_local_scheduled_tasks.jsonl"));
-    QFile scheduledInput(scheduledPath);
-    if (scheduledInput.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QJsonArray remaining;
-        while (!scheduledInput.atEnd()) {
-            QJsonParseError parseError; const QJsonDocument document = QJsonDocument::fromJson(scheduledInput.readLine(), &parseError);
-            if (parseError.error != QJsonParseError::NoError || !document.isObject()) continue;
-            QJsonObject task = document.object();
-            const QDateTime runAt = QDateTime::fromString(task.value(QStringLiteral("runAt")).toString(), Qt::ISODate);
-            if (task.value(QStringLiteral("status")).toString() == QStringLiteral("queued") && runAt.isValid() && runAt <= QDateTime::currentDateTimeUtc()) {
-                const QString queuePath = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath(QStringLiteral("cgplay_local_tasks.jsonl"));
-                QFile queue(queuePath);
-                if (queue.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
-                    QJsonObject queued{{QStringLiteral("id"), task.value(QStringLiteral("id")).toString()}, {QStringLiteral("objective"), task.value(QStringLiteral("objective")).toString()}, {QStringLiteral("status"), QStringLiteral("queued")}, {QStringLiteral("scheduledRunAt"), task.value(QStringLiteral("runAt")).toString()}};
-                    queue.write(QJsonDocument(queued).toJson(QJsonDocument::Compact)); queue.write("\n");
-                    task.insert(QStringLiteral("status"), QStringLiteral("dispatched"));
-                }
-            }
-            remaining.push_back(task);
+    if (!_initialized || !flushLocalTaskStatus() || !_runningLocalTaskId.isEmpty() ||
+        _protocolState != ProtocolState::Ready || !_activeTurnId.isEmpty() || _threadId.isEmpty()) return;
+    const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    const QString path = QDir(directory).filePath(QStringLiteral("cgplay_local_tasks.jsonl"));
+    const QString scheduledPath = QDir(directory).filePath(QStringLiteral("codex_local_scheduled_tasks.jsonl"));
+    QJsonArray tasks, scheduled;
+    QString error;
+    const auto failed = [this, &error]() {
+        _lastError = tr("Local task queue unavailable: %1").arg(error);
+        if (_workspace) _workspace->appendWorkbenchEvent(QStringLiteral("agents"), _lastError);
+    };
+    if (!localTaskStore::read(path, &tasks, &error) || !localTaskStore::read(scheduledPath, &scheduled, &error)) { failed(); return; }
+    bool scheduledChanged = false;
+    for (int i = 0; i < scheduled.size(); ++i) {
+        QJsonObject task = scheduled.at(i).toObject();
+        const QDateTime runAt = QDateTime::fromString(task.value(QStringLiteral("runAt")).toString(), Qt::ISODate);
+        if (task.value(QStringLiteral("status")).toString() != QStringLiteral("queued") || !runAt.isValid() || runAt > QDateTime::currentDateTimeUtc()) continue;
+        const QString id = task.value(QStringLiteral("id")).toString();
+        bool exists = false;
+        for (const QJsonValue& queued : tasks) if (queued.toObject().value(QStringLiteral("id")).toString() == id) { exists = true; break; }
+        if (!exists) {
+            tasks.append(QJsonObject{{QStringLiteral("id"), id}, {QStringLiteral("objective"), task.value(QStringLiteral("objective"))}, {QStringLiteral("status"), QStringLiteral("queued")}, {QStringLiteral("scheduledRunAt"), task.value(QStringLiteral("runAt"))}});
         }
-        QSaveFile scheduledOutput(scheduledPath);
-        if (scheduledOutput.open(QIODevice::WriteOnly)) { for (const QJsonValue& value : remaining) { scheduledOutput.write(QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact)); scheduledOutput.write("\n"); } scheduledOutput.commit(); }
+        task.insert(QStringLiteral("status"), QStringLiteral("dispatched"));
+        scheduled.replace(i, task);
+        scheduledChanged = true;
     }
-    const QString path = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath(QStringLiteral("cgplay_local_tasks.jsonl"));
-    QFile input(path);
-    if (!input.open(QIODevice::ReadOnly | QIODevice::Text)) return;
-    while (!input.atEnd()) {
-        QJsonParseError error;
-        const QJsonDocument document = QJsonDocument::fromJson(input.readLine(), &error);
-        if (error.error != QJsonParseError::NoError || !document.isObject()) continue;
-        const QJsonObject task = document.object();
+    if (scheduledChanged) {
+        // If the second commit fails, the stable ID prevents duplicate transfer on retry.
+        if (!localTaskStore::write(path, tasks, &error) || !localTaskStore::write(scheduledPath, scheduled, &error)) { failed(); return; }
+    }
+    // A new process has no live turn that could finish persisted running tasks.
+    for (const QJsonValue& value : tasks) {
+        const auto task = value.toObject();
+        if (task.value(QStringLiteral("status")).toString() == QStringLiteral("running") &&
+            !updateLocalTaskStatus(task.value(QStringLiteral("id")).toString(), QStringLiteral("failed"), tr("Local task interrupted before this session."))) return;
+    }
+    for (const QJsonValue& value : tasks) {
+        const auto task = value.toObject();
         if (task.value(QStringLiteral("status")).toString() != QStringLiteral("queued")) continue;
+        const QString taskId = task.value(QStringLiteral("id")).toString();
+        if (taskId.isEmpty()) continue;
+        // Persist before dispatch. A failed commit must never start external work.
+        if (!updateLocalTaskStatus(taskId, QStringLiteral("running"))) return;
+        _runningLocalTaskId = taskId;
+        _runningLocalTaskThreadId = _threadId;
         QString startError;
-        if (!submitPrompt(task.value(QStringLiteral("objective")).toString(), &startError)) return;
-        _runningLocalTaskId = task.value(QStringLiteral("id")).toString();
-        updateLocalTaskStatus(_runningLocalTaskId, QStringLiteral("running"));
+        if (!submitPrompt(task.value(QStringLiteral("objective")).toString(), &startError)) {
+            finishLocalTask(QStringLiteral("failed"), startError);
+            return;
+        }
         if (_workspace) _workspace->appendWorkbenchEvent(QStringLiteral("agents"), tr("CGPlay local task running: %1").arg(task.value(QStringLiteral("objective")).toString()));
         return;
     }
@@ -1726,6 +1795,7 @@ void CodexPlugin::setProtocolState(ProtocolState state)
 
 void CodexPlugin::reportProtocolError(const QString& message)
 {
+    finishLocalTask(QStringLiteral("failed"), message);
     _lastError = message;
     setProtocolState(ProtocolState::Failed);
     if (_workspace) {

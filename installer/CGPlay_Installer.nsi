@@ -1,10 +1,10 @@
 !define PRODUCT_NAME "CGPlay"
 !ifndef APP_VERSION
-  !define APP_VERSION "1.0.8"
+  !define APP_VERSION "1.0.8.01"
 !endif
 !define PRODUCT_VERSION "${APP_VERSION}"
 !ifndef APP_FILE_VERSION
-  !define APP_FILE_VERSION "1.0.8.0"
+  !define APP_FILE_VERSION "1.0.8.1"
 !endif
 !ifndef PACKAGE_MODE
   !define PACKAGE_MODE "full"
@@ -38,6 +38,11 @@ SetCompressorDictSize 64
 !include "LogicLib.nsh"
 
 !insertmacro GetSize
+!insertmacro GetParent
+!ifndef UNINSTALL_FILES_INCLUDE
+  !error "Generate UNINSTALL_FILES_INCLUDE from the actual package payload before compiling NSIS. Use tools/package_installer.ps1."
+!endif
+!include "${UNINSTALL_FILES_INCLUDE}"
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "..\resources\CGPlay.ico"
@@ -149,6 +154,44 @@ Function un.onInit
   SetRegView 64
   Call un.CloseCGPlayProcesses
 FunctionEnd
+
+; The compiled package list supplies the file paths. Never recurse through an
+; installation directory: it may also contain user media or project files.
+; Skip files whose path now traverses a junction/symlink, including INSTDIR.
+!macro CGPlayRemoveOwnedPath FUNCTION OPERATION
+Function ${FUNCTION}
+  Exch $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  GetFullPathName $0 "$0"
+  GetFullPathName $3 "$INSTDIR"
+  StrCpy $1 $0
+  owned_check:
+    System::Call 'kernel32::GetFileAttributesW(w r1) i .r2'
+    IntCmp $2 -1 owned_done
+    IntOp $2 $2 & 0x400
+    IntCmp $2 0 owned_parent owned_done owned_done
+  owned_parent:
+    StrCmp $1 $3 owned_delete
+    ${GetParent} "$1" $4
+    StrCmp $4 "" owned_done
+    StrCmp $4 $1 owned_done
+    StrCpy $1 $4
+    Goto owned_check
+  owned_delete:
+    ${OPERATION} "$0"
+  owned_done:
+    Pop $4
+    Pop $3
+    Pop $2
+    Pop $1
+    Pop $0
+FunctionEnd
+!macroend
+!insertmacro CGPlayRemoveOwnedPath un.DeleteOwnedFile Delete
+!insertmacro CGPlayRemoveOwnedPath un.RemoveOwnedDirectory RMDir
 
 Section "!CGPlay" SecMain
   SectionIn RO
@@ -302,8 +345,14 @@ Section "Uninstall"
   DeleteRegKey ${PRODUCT_UNINST_ROOT_KEY} "${PRODUCT_UNINST_KEY}"
 
   Delete "$DESKTOP\CGPlay.lnk"
-  RMDir /r "$SMPROGRAMS\${PRODUCT_NAME}"
+  Delete "$SMPROGRAMS\${PRODUCT_NAME}\CGPlay.lnk"
+  Delete "$SMPROGRAMS\${PRODUCT_NAME}\CGPlay QuickLook.lnk"
+  Delete "$SMPROGRAMS\${PRODUCT_NAME}\Uninstall CGPlay.lnk"
+  RMDir "$SMPROGRAMS\${PRODUCT_NAME}"
 
-  Delete "$INSTDIR\uninst.exe"
-  RMDir /r "$INSTDIR"
+  !insertmacro CGPlayUninstallOwnedFiles
+  Push "$INSTDIR\uninst.exe"
+  Call un.DeleteOwnedFile
+  Push "$INSTDIR"
+  Call un.RemoveOwnedDirectory
 SectionEnd

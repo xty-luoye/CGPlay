@@ -8,7 +8,6 @@
 
 #include <tlRender/UI/Viewport.h>
 #include <tlRender/GL/Render.h>
-#include <tlRender/Core/Version.h>
 
 #include <ftk/GL/Init.h>
 #include <ftk/GL/Mesh.h>
@@ -32,6 +31,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace cgplay {
 
@@ -100,6 +100,16 @@ protected:
 // ─── Private ───────────────────────────────────────────────────────────────────
 struct TlViewport::Private
 {
+    QString glRenderer;
+    qint64 paintCpuNs = 0;
+    qint64 drawCpuNs = 0;
+    qint64 maxPaintCpuNs = 0;
+    qint64 drawnSourceFrameChanges = 0;
+    qint64 lastDrawnSourceAtNs = -1;
+    qint64 maxDrawnSourceGapNs = 0;
+    double maxDrawnSourceGapFrom = 0.0;
+    double maxDrawnSourceGapTo = 0.0;
+    double lastDrawnSourceTime = std::numeric_limits<double>::quiet_NaN();
     std::weak_ptr<ftk::Context> context;
     std::shared_ptr<ftk::Style> style;
     std::shared_ptr<ftk::IconSystem> iconSystem;
@@ -140,6 +150,7 @@ struct TlViewport::Private
     qint64 timerIntervalChangeCount = 0;
     qint64 hiddenSkipCount = 0;
     qint64 pausedFrameWakeCount = 0;
+    qint64 playingFrameWakeCount = 0;
     qint64 restoreWakeCount = 0;
     qint64 settingsWakeCount = 0;
     qint64 updateRequestsTotal = 0;
@@ -156,6 +167,7 @@ struct TlViewport::Private
     tl::CompareOptions lastCompareOptions;
     QSize lastWidgetSize;
     qreal lastDevicePixelRatio = 0.0;
+    qreal geometryDevicePixelRatio = 0.0;
     ftk::V2I lastEmittedViewPos;
     double lastEmittedZoom = 0.0;
     bool hasLastEmittedViewTransform = false;
@@ -293,6 +305,12 @@ GPUUploadQueue* TlViewport::uploadQueue() const
 
 void TlViewport::resetRenderStats()
 {
+    _p->paintCpuNs = _p->drawCpuNs = _p->maxPaintCpuNs = 0;
+    _p->drawnSourceFrameChanges = 0;
+    _p->lastDrawnSourceAtNs = -1;
+    _p->maxDrawnSourceGapNs = 0;
+    _p->maxDrawnSourceGapFrom = _p->maxDrawnSourceGapTo = 0.0;
+    _p->lastDrawnSourceTime = std::numeric_limits<double>::quiet_NaN();
     _p->renderFrameCount = 0;
     _p->renderTimer.restart();
     _p->timerTickCount = 0;
@@ -308,6 +326,7 @@ void TlViewport::resetRenderStats()
     _p->timerIntervalChangeCount = 0;
     _p->hiddenSkipCount = 0;
     _p->pausedFrameWakeCount = 0;
+    _p->playingFrameWakeCount = 0;
     _p->restoreWakeCount = 0;
     _p->settingsWakeCount = 0;
     _p->updateRequestsTotal = 0;
@@ -340,6 +359,17 @@ double TlViewport::renderFps() const
 QJsonObject TlViewport::benchmarkDiagnostics() const
 {
     QJsonObject out;
+    out["gl_renderer"] = _p->glRenderer;
+    out["paint_cpu_total_ms"] = _p->paintCpuNs / 1.e6;
+    out["draw_cpu_total_ms"] = _p->drawCpuNs / 1.e6;
+    out["paint_cpu_max_ms"] = _p->maxPaintCpuNs / 1.e6;
+    out["drawn_source_frame_changes"] = static_cast<double>(_p->drawnSourceFrameChanges);
+    out["drawn_source_gap_max_ms"] = _p->maxDrawnSourceGapNs / 1.e6;
+    out["drawn_source_gap_from_seconds"] = _p->maxDrawnSourceGapFrom;
+    out["drawn_source_gap_to_seconds"] = _p->maxDrawnSourceGapTo;
+    out["drawn_source_age_ms"] = _p->lastDrawnSourceAtNs >= 0
+        ? (_p->renderTimer.nsecsElapsed() - _p->lastDrawnSourceAtNs) / 1.e6
+        : -1.0;
     out["timer_tick_count"] = static_cast<double>(_p->timerTickCount);
     out["timer_pending_size_sync_count"] = static_cast<double>(_p->timerPendingSizeSyncCount);
     out["timer_has_draw_update_count"] = static_cast<double>(_p->timerHasDrawUpdateCount);
@@ -354,6 +384,7 @@ QJsonObject TlViewport::benchmarkDiagnostics() const
     out["current_timer_interval_ms"] = _p->timerIntervalMs;
     out["hidden_skip_count"] = static_cast<double>(_p->hiddenSkipCount);
     out["paused_frame_wake_count"] = static_cast<double>(_p->pausedFrameWakeCount);
+    out["playing_frame_wake_count"] = static_cast<double>(_p->playingFrameWakeCount);
     out["restore_wake_count"] = static_cast<double>(_p->restoreWakeCount);
     out["settings_wake_count"] = static_cast<double>(_p->settingsWakeCount);
     out["logical_visible"] = isVisible();
@@ -396,11 +427,11 @@ void TlViewport::setPlayer(const std::shared_ptr<tl::Player>& player) {
                     });
                 });
                 if (!hasImage) return;
-                // A real decoded frame, rather than the seek command, wakes a
-                // paused display. The receiver context cancels queued work on
+                // A real decoded frame wakes the display without waiting for
+                // the polling timer. The receiver context cancels queued work on
                 // destruction and the generation rejects an old player.
                 QMetaObject::invokeMethod(this, [this, generation] {
-                    _wakePausedFrame(generation);
+                    _wakeVideoFrame(generation);
                 }, Qt::QueuedConnection);
             });
     }
@@ -496,21 +527,22 @@ void TlViewport::zoomOut() {
 }
 
 // ─── Coordinate Mapping ──────────────────────────────────────────────────────
-// viewPos 语义：图像左上角在 widget 逻辑坐标系中的位置。
-// zoom 语义：1 个图像像素对应 zoom 个 widget 逻辑像素。
-// 因此坐标转换直接在逻辑像素空间完成，无需 dpr。
+// tlRender's geometry/viewPos/zoom use physical pixels; Qt input and overlays
+// use logical pixels. Convert once at this boundary, including fractional DPR.
 QPointF TlViewport::imageToWidget(double ix, double iy, int /*imgW*/, int /*imgH*/) const
 {
     ftk::V2I vp = viewPos();
     double z = zoom();
-    return QPointF(vp.x + ix * z, vp.y + iy * z);
+    const double dpr = devicePixelRatioF();
+    return QPointF((vp.x + ix * z) / dpr, (vp.y + iy * z) / dpr);
 }
 
 QPointF TlViewport::widgetToImage(double wx, double wy, int /*imgW*/, int /*imgH*/) const
 {
     ftk::V2I vp = viewPos();
     double z = zoom();
-    return QPointF((wx - vp.x) / z, (wy - vp.y) / z);
+    const double dpr = devicePixelRatioF();
+    return QPointF((wx * dpr - vp.x) / z, (wy * dpr - vp.y) / z);
 }
 
 bool TlViewport::event(QEvent* event)
@@ -548,6 +580,8 @@ void TlViewport::initializeGL()
         };
         if (!initializeNativeGL(load))
             throw std::runtime_error("Cannot initialize GLAD for the Qt OpenGL context");
+        const auto* renderer = glGetString(GL_RENDERER);
+        _p->glRenderer = renderer ? QString::fromLatin1(reinterpret_cast<const char*>(renderer)) : QString();
         glEnable(GL_DITHER);
         auto ctx = _p->context.lock();
         if (!ctx) {
@@ -619,6 +653,8 @@ void TlViewport::paintGL()
 {
     _p->updateQueued = false;
     ++_p->renderFrameCount;
+    QElapsedTimer paintCpuTimer;
+    paintCpuTimer.start();
 
     // v1.1: 处理 PBO 上传队列
     if (_p->uploadQueue) {
@@ -641,6 +677,8 @@ void TlViewport::paintGL()
     _p->pendingDrawUpdate = false;
 
     if (hasDrawUpdate) {
+        QElapsedTimer drawCpuTimer;
+        drawCpuTimer.start();
         ++_p->paintDrawUpdateCount;
         try {
             // Create / resize offscreen buffer
@@ -681,6 +719,29 @@ void TlViewport::paintGL()
                     drawEvent);
                 _p->render->setClipRectEnabled(false);
                 _p->render->end();
+                // Diagnostic count of distinct source-A frames submitted to
+                // rendering, not paint events or physical display refreshes.
+                if (_p->player) {
+                    const auto& frames = _p->player->getCurrentVideo();
+                    if (!frames.empty() && std::any_of(frames.front().layers.begin(),
+                            frames.front().layers.end(), [](const tl::VideoLayer& layer) {
+                                return static_cast<bool>(layer.image) || static_cast<bool>(layer.imageB);
+                            })) {
+                        const double time = frames.front().time.to_seconds();
+                        if (std::isfinite(time) && time != _p->lastDrawnSourceTime) {
+                            const qint64 nowNs = _p->renderTimer.nsecsElapsed();
+                            if (_p->lastDrawnSourceAtNs >= 0 &&
+                                nowNs - _p->lastDrawnSourceAtNs > _p->maxDrawnSourceGapNs) {
+                                _p->maxDrawnSourceGapNs = nowNs - _p->lastDrawnSourceAtNs;
+                                _p->maxDrawnSourceGapFrom = _p->lastDrawnSourceTime;
+                                _p->maxDrawnSourceGapTo = time;
+                            }
+                            _p->lastDrawnSourceAtNs = nowNs;
+                            _p->lastDrawnSourceTime = time;
+                            ++_p->drawnSourceFrameChanges;
+                        }
+                    }
+                }
             }
         }
         catch (const std::exception& e) {
@@ -691,6 +752,7 @@ void TlViewport::paintGL()
                     ftk::LogType::Error);
             }
         }
+        _p->drawCpuNs += drawCpuTimer.nsecsElapsed();
     } else {
         ++_p->paintNoDrawUpdateCount;
     }
@@ -746,6 +808,9 @@ void TlViewport::paintGL()
             _p->vao->draw(GL_TRIANGLES, 0, _p->vbo->getSize());
         }
     }
+    const qint64 paintNs = paintCpuTimer.nsecsElapsed();
+    _p->paintCpuNs += paintNs;
+    _p->maxPaintCpuNs = std::max(_p->maxPaintCpuNs, paintNs);
 }
 
 // ─── Tick / Size / Draw internals ──────────────────────────────────────────────
@@ -780,12 +845,26 @@ void TlViewport::_sizeHintEvent()
 
 void TlViewport::_setGeometry()
 {
-    const float dpr = window()->devicePixelRatio();
+    const qreal dpr = devicePixelRatioF();
+    const qreal previous = _p->geometryDevicePixelRatio;
+    _p->geometryDevicePixelRatio = dpr;
+    const bool changedDpr = previous > 0.0 && !qFuzzyCompare(previous, dpr);
+    if (changedDpr && !_p->viewport->hasFrameView()) {
+        // Preserve a manual logical transform when moving between displays.
+        const double ratio = dpr / previous;
+        const auto pos = _p->viewport->getViewPos();
+        _p->viewport->setViewPosAndZoom(
+            ftk::V2I(qRound(pos.x * ratio), qRound(pos.y * ratio)), _p->viewport->getZoom() * ratio);
+    }
     const ftk::Box2I geom(
         0, 0,
         static_cast<int>(width() * dpr),
         static_cast<int>(height() * dpr));
     _p->window->setGeometry(geom);
+    if (changedDpr) {
+        _p->hasLastEmittedViewTransform = false;
+        _emitViewPosAndZoomChangedIfNeeded(_p->viewport->getViewPos(), _p->viewport->getZoom());
+    }
 }
 
 void TlViewport::_emitViewPosAndZoomChangedIfNeeded(const ftk::V2I& pos, double zoom)
@@ -847,10 +926,18 @@ void TlViewport::_queuePresentationRefresh()
     });
 }
 
-void TlViewport::_wakePausedFrame(quint64 generation)
+void TlViewport::_wakeVideoFrame(quint64 generation)
 {
     if (generation != _p->playerGeneration || !_p->player ||
-        isActivePlayback(_p->playback) || !_displayPollingAllowed()) return;
+        !_displayPollingAllowed()) return;
+    if (isActivePlayback(_p->playback)) {
+        ++_p->playingFrameWakeCount;
+        // _requestUpdate coalesces notifications and discards a stale timer
+        // draw decision. The decoded frame is already installed by the native
+        // viewport observer; retain the timer for layout/settings changes.
+        _requestUpdate("video_frame");
+        return;
+    }
     ++_p->pausedFrameWakeCount;
     _markInteractionActive();
     _requestUpdate("paused_video");
@@ -868,11 +955,12 @@ int TlViewport::_desiredPlaybackTimerIntervalMs() const
 {
     double playbackFps = 0.0;
     if (_p->player) {
-        const double speed = std::abs(_p->player->getSpeed());
+        // tlRender stores speed in frames per second. getActualSpeed()
+        // already includes speedMult; multiplying by the timeline rate
+        // again mixes the clock units and overdrives low-speed playback.
+        const double speed = std::abs(_p->player->getActualSpeed());
         const double mediaRate = _p->player->getTimeRange().duration().rate();
-        if (mediaRate > 0.0 && speed > 0.0 && speed <= 8.0) {
-            playbackFps = mediaRate * speed;
-        } else if (speed > 0.0) {
+        if (mediaRate > 0.0 && speed > 0.0) {
             playbackFps = speed;
         } else {
             playbackFps = mediaRate;
@@ -883,9 +971,12 @@ int TlViewport::_desiredPlaybackTimerIntervalMs() const
         return 24;
     }
 
-    const double clampedPlaybackFps = std::clamp(playbackFps, 1.0, 60.0);
+    // Do not impose an artificial 60 FPS ceiling.  QTimer remains subject to
+    // the platform scheduler, but a 120 FPS timeline now gets an ~8 ms tick
+    // instead of being forced to 16 ms.
+    const double clampedPlaybackFps = std::clamp(playbackFps, 1.0, 1000.0);
     const int intervalMs = static_cast<int>(std::floor(1000.0 / clampedPlaybackFps));
-    return std::clamp(intervalMs, 16, 50);
+    return std::clamp(intervalMs, 1, 1000);
 }
 
 void TlViewport::_refreshTimerInterval(bool pendingSizeUpdate)

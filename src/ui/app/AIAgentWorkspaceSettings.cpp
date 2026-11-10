@@ -1,5 +1,6 @@
 #include "AIAgentWorkspace.h"
 #include "AIAgentWorkspaceSupport.h"
+#include "common/core/MediaStatusUrl.h"
 
 #include "services/ai/SubtitleAsrApiClient.h"
 #include "services/ai/api/IAICredentialStore.h"
@@ -316,11 +317,11 @@ void AIAgentWorkspace::_saveMediaGenerationConfigs()
         _mediaConfigsStatusLabel->setText(error); _mediaConfigsStatusLabel->setStyleSheet(QStringLiteral("color:%1;font-size:11px;").arg(kError)); return;
     }
     const auto saveStatusEndpoint = [this, &error](QLineEdit* edit, const char* key) {
-        const QString value = edit->text().trimmed();
+        const QString value = normalizeMediaStatusTemplate(edit->text().trimmed());
         if (value.isEmpty()) { _userSettings->remove(QString::fromLatin1(key)); return true; }
         const QUrl url(value);
         if (!url.isValid() || url.isRelative() || url.scheme() != QStringLiteral("https") || url.host().isEmpty() || !url.userInfo().isEmpty() || hasSensitiveCredentialQuery(url.toString()) || !value.contains(QStringLiteral("{id}"))) { error = zh(u8"异步状态 URL 必须为无密钥 HTTPS 地址，并包含 {id}。 "); return false; }
-        _userSettings->setValue(QString::fromLatin1(key), url.toString(QUrl::FullyEncoded)); return true;
+        _userSettings->setValue(QString::fromLatin1(key), normalizeMediaStatusTemplate(url.toString(QUrl::FullyEncoded))); return true;
     };
     if (!saveStatusEndpoint(_videoStatusEndpointEdit, kVideoStatusEndpointKey) || !saveStatusEndpoint(_audioStatusEndpointEdit, kAudioStatusEndpointKey)) { _mediaConfigsStatusLabel->setText(error); _mediaConfigsStatusLabel->setStyleSheet(QStringLiteral("color:%1;font-size:11px;").arg(kError)); return; }
     _userSettings->sync();

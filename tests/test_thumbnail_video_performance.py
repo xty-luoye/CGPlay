@@ -9,15 +9,16 @@ import shutil
 import subprocess
 import textwrap
 import unittest
+from tests.native_probe_runtime import deploy_runtime
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT = ROOT / "tests" / "artifacts" / "optimization_round2_20260922" / "video_thumbnails"
-QT = Path(os.environ.get("CGPLAY_TEST_QT_ROOT", "C:/QtClean/6.5.3/msvc2019_64"))
-TL = Path(os.environ.get("CGPLAY_TEST_TL_ROOT", "C:/Users/1/Desktop/CGV/tlRender-main/install-Release"))
+ARTIFACT = ROOT / "tests" / "artifacts" / "fix_review_20261101" / "remaining_regression" / "video_thumbnails"
+QT = Path(os.environ.get("CGPLAY_TEST_QT_ROOT", "E:/rjkf/CGPlay-deps/QtClean/6.5.3/msvc2019_64"))
+TL = Path(os.environ.get("CGPLAY_TEST_TL_ROOT", "E:/rj/CGV/tlRender-main/install-Release"))
 FFMPEG = Path(os.environ.get(
     "CGPLAY_TEST_FFMPEG",
-    "C:/Users/1/Desktop/RVLite/build_win_full/bin/Release/ffmpeg.exe",
+    str(ROOT / "build_win_full/bin/Release/ffmpeg.exe"),
 ))
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -66,7 +67,8 @@ RUNNER = r'''
 #include "common/jobs/JobSystem.h"
 #include "media/MediaProbe.h"
 #include "media/ThumbnailService.h"
-#include <QApplication>
+#include "media/ThumbnailDiskCache.h"
+#include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -199,8 +201,18 @@ static bool longClipFallsBack(const QString& path)
 
 int main(int argc, char** argv)
 {
-    QApplication app(argc, argv);
+    QCoreApplication app(argc, argv);
     app.setProperty("cgplay.automationBackground", true);
+    cgplay::ThumbnailDiskCache::Policy cachePolicy;
+    cachePolicy.baseDirectory = qEnvironmentVariable("CGPLAY_TEST_CACHE_ROOT");
+    if (!cachePolicy.baseDirectory.isEmpty()) {
+        QString cacheError;
+        if (!cgplay::ThumbnailDiskCache::prepare(cachePolicy, &cacheError)) {
+            std::fprintf(stderr, "thumbnail cache setup failed: %s\\n", cacheError.toUtf8().constData());
+            return 2;
+        }
+        cgplay::ThumbnailDiskCache::configure(cachePolicy);
+    }
     const QString scenario = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString();
     const QString path = argc > 2 ? QString::fromLocal8Bit(argv[2]) : QString();
     const bool ok = scenario == "batch" ? batch(path) :
@@ -238,6 +250,8 @@ class ThumbnailVideoPerformance(unittest.TestCase):
             "find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Concurrent)\n"
             "find_package(OpenEXR REQUIRED)\n"
             f'add_executable(video_thumbnail_runner runner.cpp "{thumbnail.as_posix()}" "{thumbnail_h.as_posix()}" '
+            f'"{(ROOT / "src/services/media/ThumbnailDiskCache.cpp").as_posix()}" '
+            f'"{(ROOT / "src/services/media/ThumbnailDiskCache.h").as_posix()}" '
             f'"{job_cpp.as_posix()}" "{job_h.as_posix()}" "{async_cpp.as_posix()}" "{async_h.as_posix()}")\n'
             "add_executable(ffmpeg_proxy proxy.cpp)\n"
             f'target_include_directories(video_thumbnail_runner PRIVATE "{(ROOT / "src/common").as_posix()}" '
@@ -281,12 +295,16 @@ class ThumbnailVideoPerformance(unittest.TestCase):
         shutil.copy2(cls.short, cls.cache)
 
     def run_scenario(self, scenario, path):
+        deploy_runtime(self.runner, QT, (TL / "bin", ROOT / "build_win_full" / "bin" / "Release"))
         env = os.environ.copy()
         env["PATH"] = os.pathsep.join([str(QT / "bin"), str(TL / "bin"), env.get("PATH", "")])
         env["QT_QPA_PLATFORM"] = "offscreen"
+        env["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(QT / "plugins" / "platforms")
+        env["QT_PLUGIN_PATH"] = str(QT / "plugins")
         env["CGPLAY_TEST_FFMPEG"] = str(self.proxy)
         env["CGPLAY_TEST_FFPROBE"] = str(FFMPEG.with_name("ffprobe.exe"))
         env["CGPLAY_REAL_FFMPEG"] = str(FFMPEG)
+        env["CGPLAY_TEST_CACHE_ROOT"] = str(ARTIFACT / ("cache_root_" + scenario))
         result = subprocess.run([str(self.runner), scenario, str(path)], cwd=ARTIFACT, env=env,
                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                                 creationflags=NO_WINDOW, timeout=60)

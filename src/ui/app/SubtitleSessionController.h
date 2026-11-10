@@ -30,6 +30,13 @@ public:
         QVector<GeneratedSubtitleCue> generatedSubtitleCues;
         QString generatedSubtitlePath;
         QString generatedSubtitleMediaFingerprint;
+        // Signature of the media-local partial VTT last merged into the
+        // in-memory track. Frame refreshes can run many times per second;
+        // avoid reparsing and re-merging an unchanged file.
+        QString generatedSubtitlePartialPath;
+        qint64 generatedSubtitlePartialSize = -1;
+        qint64 generatedSubtitlePartialModifiedMs = -1;
+        bool generatedSubtitlePartialSignatureValid = false;
         QString subtitleGenerationLastError;
         QString subtitleGenerationActiveTranslatedVttPath;
         bool translationPlaybackModeWaited = false;

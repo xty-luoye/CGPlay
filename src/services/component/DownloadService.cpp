@@ -14,6 +14,7 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QProgressDialog>
+#include <QPointer>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
@@ -787,9 +788,9 @@ JobOutcome runBlockingDownloadJob(
     QWidget* parentWidget,
     JobRunner::Worker worker)
 {
-    std::unique_ptr<QProgressDialog> dialog;
+    QPointer<QProgressDialog> dialog;
     if (parentWidget) {
-        dialog = std::make_unique<QProgressDialog>(
+        dialog = new QProgressDialog(
             label, QObject::tr("取消"), 0, 100, parentWidget);
         dialog->setWindowModality(Qt::WindowModal);
         dialog->setMinimumDuration(0);
@@ -803,13 +804,15 @@ JobOutcome runBlockingDownloadJob(
     QEventLoop loop;
     JobHandle* handle = JobRunner::start(id, &loop, kDownloadTotalTimeoutMs, std::move(worker));
     if (dialog) {
-        QObject::connect(handle, &JobHandle::progressChanged, dialog.get(),
-            [dialogPtr = dialog.get(), label](int percent, const QString&) {
+        QObject::connect(handle, &JobHandle::progressChanged, dialog.data(),
+            [dialogPtr = dialog, label](int percent, const QString&) {
+                if (!dialogPtr) return;
                 dialogPtr->setRange(0, 100);
                 dialogPtr->setValue(percent);
                 dialogPtr->setLabelText(label);
             });
-        QObject::connect(dialog.get(), &QProgressDialog::canceled, handle, &JobHandle::cancel);
+        QObject::connect(dialog.data(), &QProgressDialog::canceled, handle, &JobHandle::cancel);
+        QObject::connect(parentWidget, &QObject::destroyed, handle, &JobHandle::cancel);
         dialog->show();
     }
     QObject::connect(handle, &JobHandle::finished, &loop,
@@ -821,6 +824,7 @@ JobOutcome runBlockingDownloadJob(
     loop.exec();
     if (dialog) {
         dialog->close();
+        delete dialog.data();
     }
     return outcome;
 }

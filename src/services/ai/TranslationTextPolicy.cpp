@@ -67,8 +67,7 @@ bool isLikelyVisualWatermarkText(const QString& text)
     return compact.contains(QStringLiteral("levelinganimation")) ||
            compact.contains(QStringLiteral("animationpartners")) ||
            compact.contains(QStringLiteral("sololeveling")) ||
-           compact.contains(QStringLiteral("©")) ||
-           compact.contains(QStringLiteral("动画"));
+           compact.contains(QStringLiteral("©"));
 }
 
 bool isFinalDisplayableText(const QString& text)

@@ -7,6 +7,10 @@ void MainWindow::_loadGeneratedSubtitleTrack()
     _setupGeneratedSubtitleOverlay();
     _p->subtitleSession.state().generatedSubtitleCues.clear();
     _p->subtitleSession.state().generatedSubtitlePath.clear();
+    _p->subtitleSession.state().generatedSubtitlePartialPath.clear();
+    _p->subtitleSession.state().generatedSubtitlePartialSize = -1;
+    _p->subtitleSession.state().generatedSubtitlePartialModifiedMs = -1;
+    _p->subtitleSession.state().generatedSubtitlePartialSignatureValid = false;
     _p->subtitleSession.state().generatedSubtitleLastText.clear();
     _p->subtitleSession.state().generatedSubtitleLastCueStartSeconds = -1.0;
     _p->subtitleSession.state().generatedSubtitleLastCueEndSeconds = -1.0;
@@ -572,6 +576,10 @@ void MainWindow::_updateGeneratedSubtitleForFrame(int frame)
             _p->subtitleSession.state().generatedSubtitleCues.clear();
             _p->subtitleSession.state().generatedSubtitlePath.clear();
             _p->subtitleSession.state().generatedSubtitleMediaFingerprint.clear();
+            _p->subtitleSession.state().generatedSubtitlePartialPath.clear();
+            _p->subtitleSession.state().generatedSubtitlePartialSize = -1;
+            _p->subtitleSession.state().generatedSubtitlePartialModifiedMs = -1;
+            _p->subtitleSession.state().generatedSubtitlePartialSignatureValid = false;
             clearGeneratedSubtitleOverlay();
             return;
         }
@@ -625,7 +633,18 @@ void MainWindow::_updateGeneratedSubtitleForFrame(int frame)
         const QString partialPath = SubtitleGenerationService::defaultTranslatedVttPath(
             _p->currentPath,
             QStringLiteral("zh-Hans"));
-        if (QFileInfo::exists(partialPath)) {
+        const QFileInfo partialInfo(partialPath);
+        auto& subtitleState = _p->subtitleSession.state();
+        const qint64 partialModifiedMs = partialInfo.exists()
+            ? partialInfo.lastModified().toMSecsSinceEpoch()
+            : -1;
+        const bool partialSignatureChanged =
+            !subtitleState.generatedSubtitlePartialSignatureValid ||
+            subtitleState.generatedSubtitlePartialPath != partialInfo.absoluteFilePath() ||
+            subtitleState.generatedSubtitlePartialSize != partialInfo.size() ||
+            subtitleState.generatedSubtitlePartialModifiedMs != partialModifiedMs;
+        if (partialInfo.exists() && partialSignatureChanged) {
+            bool partialCacheReady = false;
             QString partialMismatchReason;
             if (!generatedSubtitleCacheMatchesCurrentMedia(
                     partialPath,
@@ -638,6 +657,7 @@ void MainWindow::_updateGeneratedSubtitleForFrame(int frame)
             } else {
                 const QVector<GeneratedSubtitleCue> partialCues =
                     SubtitleGenerationService::readSubtitleFile(partialPath);
+                partialCacheReady = !partialCues.isEmpty();
                 QVector<GeneratedSubtitleCue> scrubbedPartialCues = partialCues;
                 QString partialLeakReason;
                 const int partialLeakCount = scrubGeneratedSubtitleCrossMediaLeaks(
@@ -666,6 +686,20 @@ void MainWindow::_updateGeneratedSubtitleForFrame(int frame)
                     }
                 }
             }
+            // The writer uses QSaveFile, so this signature represents a
+            // complete replacement.  Record it only after the read/merge has
+            // finished; a transient read failure will be retried next tick.
+            if (partialCacheReady) {
+                subtitleState.generatedSubtitlePartialPath = partialInfo.absoluteFilePath();
+                subtitleState.generatedSubtitlePartialSize = partialInfo.size();
+                subtitleState.generatedSubtitlePartialModifiedMs = partialModifiedMs;
+                subtitleState.generatedSubtitlePartialSignatureValid = true;
+            }
+        } else if (!partialInfo.exists()) {
+            subtitleState.generatedSubtitlePartialPath.clear();
+            subtitleState.generatedSubtitlePartialSize = -1;
+            subtitleState.generatedSubtitlePartialModifiedMs = -1;
+            subtitleState.generatedSubtitlePartialSignatureValid = false;
         }
     }
     if (_p->subtitleSession.state().generatedSubtitleCues.isEmpty() &&

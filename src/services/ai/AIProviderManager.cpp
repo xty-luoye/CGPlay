@@ -1,4 +1,5 @@
 #include "AIProviderManager.h"
+#include "AIFrameRangeCapture.h"
 
 #include "common/events/api/EventTypes.h"
 #include "common/events/api/IEventBus.h"
@@ -21,6 +22,15 @@ QVector<AIProviderInfo> sortProviderInfos(QVector<AIProviderInfo> infos)
         return lhs.providerId < rhs.providerId;
     });
     return infos;
+}
+
+void releaseFinishedRequestPayload(AIRequest& request)
+{
+    // Keep source identities and dimensions for diagnostics, not screenshot
+    // bytes or full conversation/annotation copies after a terminal state.
+    for (auto& frame : request.frames) frame.encodedBytes.clear();
+    request.chatHistory.clear();
+    request.context.annotations.clear();
 }
 
 } // namespace
@@ -177,6 +187,7 @@ QString AIProviderManager::submit(const AIRequest& request)
                 it->snapshot.response.success = false;
                 it->snapshot.response.errorMessage = it->snapshot.errorMessage;
                 it->snapshot.response.finishedAt = it->snapshot.finishedAt;
+                releaseFinishedRequestPayload(it->snapshot.request);
                 failedSnapshot = it->snapshot;
             }
         }
@@ -244,6 +255,7 @@ QString AIProviderManager::submit(const AIRequest& request)
                 it->snapshot.state = response.success ? AIJobState::Succeeded : AIJobState::Failed;
             }
 
+            releaseFinishedRequestPayload(it->snapshot.request);
             snapshot = it->snapshot;
         }
 
@@ -268,8 +280,18 @@ QString AIProviderManager::submit(const AIRequest& request)
     });
 
     const AIRequest requestForTask = normalizedRequest;
-    watcher->setFuture(QtConcurrent::run([provider, requestForTask, startedAt]() {
-        AIResponse response = provider->chat(requestForTask);
+    watcher->setFuture(QtConcurrent::run([provider, requestForTask, startedAt, cancelRequested]() {
+        AIRequest preparedRequest = requestForTask;
+        AIResponse response;
+        QString captureError;
+        if (prepareDeferredAIFrames(&preparedRequest, cancelRequested, &captureError)) {
+            if (!cancelRequested || !cancelRequested->load()) response = provider->chat(preparedRequest);
+            else response.errorMessage = QStringLiteral("Canceled");
+        } else {
+            response.errorMessage = captureError;
+            response.frameCaptureError = captureError;
+        }
+        response.frameCount = preparedRequest.frames.size();
         if (!response.startedAt.isValid()) {
             response.startedAt = startedAt;
         }
@@ -401,6 +423,7 @@ bool AIProviderManager::cancel(const QString& jobId)
     it->snapshot.state = AIJobState::Canceled;
     it->snapshot.errorMessage = QStringLiteral("Canceled");
     it->snapshot.finishedAt = QDateTime::currentDateTimeUtc();
+    releaseFinishedRequestPayload(it->snapshot.request);
     return true;
 }
 

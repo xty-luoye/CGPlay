@@ -22,6 +22,7 @@
 #include "ui/viewer/CompareToolbar.h"
 
 #include <QAction>
+#include <QDockWidget>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -615,6 +616,14 @@ bool setWindowActionChecked(const QWidget* anchor, const QString& text, bool che
     if (QAction* action = findWindowAction(anchor, text)) {
         if (!action->isEnabled()) {
             return false;
+        }
+        if (anchor && anchor->window()) {
+            for (auto* dock : anchor->window()->findChildren<QDockWidget*>()) {
+                if (dock->toggleViewAction() == action) {
+                    dock->setVisible(checked);
+                    return dock->isHidden() != checked;
+                }
+            }
         }
         if (action->isCheckable()) {
             action->setChecked(checked);

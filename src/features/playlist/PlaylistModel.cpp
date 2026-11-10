@@ -1,4 +1,4 @@
-// CGPlay PlaylistModel.cpp
+﻿// CGPlay PlaylistModel.cpp
 
 #include "PlaylistModel.h"
 #include "common/jobs/JobSystem.h"
@@ -234,9 +234,10 @@ void PlaylistModel::removeShotAt(int index)
     const quint64 token = _shots[index]._metadataToken;
     beginRemoveRows({}, index, index);
     _shots.erase(_shots.begin() + index);
+    if (_currentIndex == index) _currentIndex = -1;
+    else if (_currentIndex > index) --_currentIndex;
     endRemoveRows();
-    if (_currentIndex >= static_cast<int>(_shots.size()))
-        _currentIndex = static_cast<int>(_shots.size()) - 1;
+    if (!_shots.empty()) Q_EMIT dataChanged(this->index(0), this->index(rowCount() - 1), {Qt::BackgroundRole});
     _cancelUnusedMetadataRequest(token);
     if (std::none_of(_shots.begin(), _shots.end(), [&path](const ShotItem& s) { return s.path == path; })) {
         _thumbnailQueue.removeAll(path);
@@ -264,7 +265,10 @@ void PlaylistModel::moveUp(int index)
     if (index <= 0 || index >= static_cast<int>(_shots.size())) return;
     beginMoveRows({}, index, index, {}, index - 1);
     std::swap(_shots[index], _shots[index - 1]);
+    if (_currentIndex == index) --_currentIndex;
+    else if (_currentIndex == index - 1) ++_currentIndex;
     endMoveRows();
+    Q_EMIT dataChanged(this->index(index - 1), this->index(index), {Qt::BackgroundRole});
 }
 
 void PlaylistModel::moveDown(int index)
@@ -272,16 +276,29 @@ void PlaylistModel::moveDown(int index)
     if (index < 0 || index >= static_cast<int>(_shots.size()) - 1) return;
     beginMoveRows({}, index + 1, index + 1, {}, index);
     std::swap(_shots[index], _shots[index + 1]);
+    if (_currentIndex == index) ++_currentIndex;
+    else if (_currentIndex == index + 1) --_currentIndex;
     endMoveRows();
+    Q_EMIT dataChanged(this->index(index), this->index(index + 1), {Qt::BackgroundRole});
 }
 
 void PlaylistModel::sort(bool ascending)
 {
     beginResetModel();
-    std::sort(_shots.begin(), _shots.end(),
-              [ascending](const ShotItem& a, const ShotItem& b) {
-                  return ascending ? (a.name < b.name) : (a.name > b.name);
-              });
+    // Sort an index permutation so duplicate paths and names retain row identity.
+    std::vector<int> order(_shots.size());
+    for (int i = 0; i < rowCount(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [this, ascending](int a, int b) {
+        return ascending ? (_shots[a].name < _shots[b].name) : (_shots[a].name > _shots[b].name);
+    });
+    const int previous = _currentIndex;
+    std::vector<ShotItem> sorted;
+    sorted.reserve(_shots.size());
+    for (int i = 0; i < static_cast<int>(order.size()); ++i) {
+        if (order[i] == previous) _currentIndex = i;
+        sorted.push_back(std::move(_shots[order[i]]));
+    }
+    _shots = std::move(sorted);
     endResetModel();
 }
 

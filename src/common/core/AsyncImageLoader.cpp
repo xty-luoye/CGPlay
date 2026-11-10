@@ -1,4 +1,4 @@
-﻿// CGPlay AsyncImageLoader.cpp — v1.1 性能层
+// CGPlay AsyncImageLoader.cpp — v1.1 性能层
 
 #include "AsyncImageLoader.h"
 #include "ThreadPool.h"
@@ -139,25 +139,20 @@ static ImageLoadResult _loadOne(const ImageLoadRequest& req,
                 return result;
             }
 
-            // 转换为 QImage (RGBA64 获取最高精度)
-            QImage img(result.origWidth, result.origHeight, QImage::Format_RGBA64);
+            // Keep scene-linear highlights and negative RGB until the display transform.
+            QImage img(result.origWidth, result.origHeight, QImage::Format_RGBA32FPx4);
+            if (img.isNull()) {
+                result.errorMsg = "EXR image allocation failed";
+                return result;
+            }
             for (int y = 0; y < result.origHeight; ++y) {
-                quint16* scanline = reinterpret_cast<quint16*>(img.scanLine(y));
+                float* scanline = reinterpret_cast<float*>(img.scanLine(y));
                 for (int x = 0; x < result.origWidth; ++x) {
                     const auto& p = pixels[y][x];
-                    // half → float → uint16 (PQ-safe range)
-                    float rf = static_cast<float>(p.r);
-                    float gf = static_cast<float>(p.g);
-                    float bf = static_cast<float>(p.b);
-                    float af = static_cast<float>(p.a);
-                    scanline[x * 4 + 0] = static_cast<quint16>(
-                        std::max(0.f, std::min(65535.f, rf * 65535.f)));
-                    scanline[x * 4 + 1] = static_cast<quint16>(
-                        std::max(0.f, std::min(65535.f, gf * 65535.f)));
-                    scanline[x * 4 + 2] = static_cast<quint16>(
-                        std::max(0.f, std::min(65535.f, bf * 65535.f)));
-                    scanline[x * 4 + 3] = static_cast<quint16>(
-                        std::max(0.f, std::min(65535.f, af * 65535.f)));
+                    scanline[x * 4 + 0] = static_cast<float>(p.r);
+                    scanline[x * 4 + 1] = static_cast<float>(p.g);
+                    scanline[x * 4 + 2] = static_cast<float>(p.b);
+                    scanline[x * 4 + 3] = static_cast<float>(p.a);
                 }
             }
             result.image   = img;

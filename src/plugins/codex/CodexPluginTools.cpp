@@ -1,5 +1,7 @@
 #include "CodexPlugin.h"
+#include "common/core/MediaStatusUrl.h"
 #include "CodexPluginSupport.h"
+#include "common/core/SafeFileCopy.h"
 
 #include "common/jobs/JobSystem.h"
 #include "common/core/ServiceLocator.h"
@@ -41,6 +43,7 @@
 #include <QSet>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QTemporaryDir>
 #include <QThread>
 #include <QWidget>
 #include <QUrl>
@@ -216,7 +219,60 @@ QJsonObject CodexPlugin::executeDynamicTool(const QJsonObject& params)
         const QString output = resolveWorkspacePath(arguments.value(QStringLiteral("output")).toString()); if (output.isEmpty()) return response(false, QJsonObject{{QStringLiteral("error"), QStringLiteral("Output must be inside workspace.")}});
         const int count = playback->totalFrames();
         int start = arguments.value(QStringLiteral("startFrame")).toInt(playback->hasInPoint() ? playback->inPoint() : 0); int end = arguments.value(QStringLiteral("endFrame")).toInt(playback->hasOutPoint() ? playback->outPoint() : qMax(0, count - 1)); if (count > 0) { start = qBound(0, start, count - 1); end = qBound(0, end, count - 1); }
-        if (start > end) std::swap(start, end); QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg")); if (ffmpeg.isEmpty()) ffmpeg = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("ffmpeg.exe")); if (ffmpeg.isEmpty()) return response(false, QJsonObject{{QStringLiteral("error"), QStringLiteral("ffmpeg is unavailable.")}}); const double fps = playback->fps() > 0.0 ? playback->fps() : 24.0; const double begin = start / fps; const double duration = qMax(0.01, (end - start + 1) / fps); const JobOutcome exportJob = runProcessJob(this, QStringLiteral("codex.export-media"), ffmpeg, {QStringLiteral("-y"), QStringLiteral("-ss"), QString::number(begin, 'f', 3), QStringLiteral("-i"), playback->currentPath(), QStringLiteral("-t"), QString::number(duration, 'f', 3), QStringLiteral("-c"), QStringLiteral("copy"), output}, {}, 120000); if (!exportJob.succeeded() || !QFileInfo(output).isFile()) return response(false, QJsonObject{{QStringLiteral("error"), jobError(exportJob, QStringLiteral("Media export failed."))}}); appendMediaAssetRecord(QStringLiteral("exported-media"), output, QJsonObject{{QStringLiteral("startFrame"), start}, {QStringLiteral("endFrame"), end}}); return response(true, QJsonObject{{QStringLiteral("path"), output}, {QStringLiteral("startFrame"), start}, {QStringLiteral("endFrame"), end}});
+        if (start > end) std::swap(start, end);
+        const QString source = playback->currentPath();
+        const QString sourceCanonical = QFileInfo(source).canonicalFilePath();
+        if (!sourceCanonical.isEmpty() && sourceCanonical.compare(QFileInfo(output).canonicalFilePath(), Qt::CaseInsensitive) == 0)
+            return response(false, QJsonObject{{QStringLiteral("error"), QStringLiteral("Output must not replace the source media.")}});
+        QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+        if (ffmpeg.isEmpty()) ffmpeg = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("ffmpeg.exe"));
+        if (!QFileInfo(ffmpeg).isFile()) return response(false, QJsonObject{{QStringLiteral("error"), QStringLiteral("ffmpeg is unavailable.")}});
+        const double fps = playback->fps() > 0.0 ? playback->fps() : 24.0;
+        const JobOutcome exportJob = runSynchronousJob(QStringLiteral("codex.export-media"), this, 120000,
+            [source, output, ffmpeg, start, end, fps](JobContext& context) {
+                QDir directory(QFileInfo(output).absolutePath());
+                if (!directory.mkpath(QStringLiteral("."))) return JobOutcome::failure(QStringLiteral("output_directory"), QStringLiteral("Cannot create output directory."));
+                QTemporaryDir staging(directory.filePath(QStringLiteral(".cgplay-tool-export-XXXXXX")));
+                if (!staging.isValid()) return JobOutcome::failure(QStringLiteral("staging"), QStringLiteral("Cannot create export staging directory."));
+                const QString staged = QDir(staging.path()).filePath(QFileInfo(output).fileName());
+                // Decode from the beginning: n is the exact zero-based video
+                // frame index. Rebuild CFR timestamps independently of GOPs.
+                const QString videoFilter = QStringLiteral("select=between(n\\,%1\\,%2),setpts=N/(%3*TB)")
+                    .arg(start).arg(end).arg(QString::number(fps, 'g', 17));
+                const QString audioFilter = QStringLiteral("atrim=start=%1:end=%2,asetpts=PTS-STARTPTS")
+                    .arg(QString::number(start / fps, 'g', 17), QString::number((end + 1.0) / fps, 'g', 17));
+                QProcess process;
+#ifdef Q_OS_WIN
+                process.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) { args->flags |= CREATE_NO_WINDOW; });
+#endif
+                process.start(ffmpeg, {QStringLiteral("-v"), QStringLiteral("error"), QStringLiteral("-nostdin"),
+                    QStringLiteral("-progress"), QStringLiteral("pipe:1"), QStringLiteral("-nostats"),
+                    QStringLiteral("-i"), source, QStringLiteral("-map"), QStringLiteral("0:v:0"),
+                    QStringLiteral("-map"), QStringLiteral("0:a:0?"), QStringLiteral("-vf"), videoFilter,
+                    QStringLiteral("-af"), audioFilter, QStringLiteral("-r"), QString::number(fps, 'g', 17),
+                    QStringLiteral("-frames:v"), QString::number(end - start + 1),
+                    QStringLiteral("-c:v"), QStringLiteral("libx264"), QStringLiteral("-preset"), QStringLiteral("veryfast"),
+                    QStringLiteral("-crf"), QStringLiteral("18"), QStringLiteral("-pix_fmt"), QStringLiteral("yuv420p"),
+                    QStringLiteral("-c:a"), QStringLiteral("aac"), staged});
+                const ProcessOutcome result = context.waitForProcess(process);
+                if (!result.succeeded()) {
+                    auto failure = JobOutcome::failure(QStringLiteral("encode"), QString::fromLocal8Bit(result.standardError));
+                    failure.state = result.state;
+                    return failure;
+                }
+                int writtenFrames = -1;
+                for (const auto& line : result.standardOutput.split('\n'))
+                    if (line.startsWith("frame=")) writtenFrames = line.mid(6).trimmed().toInt();
+                if (writtenFrames != end - start + 1)
+                    return JobOutcome::failure(QStringLiteral("incomplete_range"), QStringLiteral("Source ended before the complete requested frame range was encoded."));
+                if (context.shouldStop()) return context.isCancellationRequested() ? JobOutcome::canceled() : JobOutcome::timedOut();
+                QString error;
+                if (!copyFileAtomically(staged, output, &error)) return JobOutcome::failure(QStringLiteral("commit"), error);
+                return JobOutcome::success();
+            });
+        if (!exportJob.succeeded()) return response(false, QJsonObject{{QStringLiteral("error"), jobError(exportJob, QStringLiteral("Media export failed."))}});
+        appendMediaAssetRecord(QStringLiteral("exported-media"), output, QJsonObject{{QStringLiteral("startFrame"), start}, {QStringLiteral("endFrame"), end}});
+        return response(true, QJsonObject{{QStringLiteral("path"), output}, {QStringLiteral("startFrame"), start}, {QStringLiteral("endFrame"), end}});
     }
     if (name == QStringLiteral("task_plan")) {
         const QString path = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath(QStringLiteral("codex_task_plan.json"));
@@ -228,7 +284,10 @@ QJsonObject CodexPlugin::executeDynamicTool(const QJsonObject& params)
         const QString path = QDir(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).filePath(QStringLiteral("codex_task_plan.json")); QFile file(path); QJsonObject plan; if (file.open(QIODevice::ReadOnly)) plan = QJsonDocument::fromJson(file.readAll()).object(); plan.insert(QStringLiteral("status"), arguments.value(QStringLiteral("status"))); if (arguments.contains(QStringLiteral("step"))) plan.insert(QStringLiteral("currentStep"), arguments.value(QStringLiteral("step"))); if (arguments.contains(QStringLiteral("detail"))) plan.insert(QStringLiteral("detail"), arguments.value(QStringLiteral("detail"))); plan.insert(QStringLiteral("updatedAt"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)); QSaveFile out(path); if (!out.open(QIODevice::WriteOnly) || out.write(QJsonDocument(plan).toJson(QJsonDocument::Indented)) < 0 || !out.commit()) return response(false, QJsonObject{{QStringLiteral("error"), QStringLiteral("Task plan update failed.")}}); return response(true, plan);
     }
     if (name == QStringLiteral("artifact_copy")) {
-        const QString source = resolveWorkspacePath(arguments.value(QStringLiteral("source")).toString()); const QString destination = resolveWorkspacePath(arguments.value(QStringLiteral("destination")).toString()); if (source.isEmpty() || destination.isEmpty() || !QFileInfo(source).isFile()) return response(false, QJsonObject{{QStringLiteral("error"), QStringLiteral("Artifact path invalid.")}}); QDir().mkpath(QFileInfo(destination).absolutePath()); QFile::remove(destination); if (!QFile::copy(source, destination)) return response(false, QJsonObject{{QStringLiteral("error"), QStringLiteral("Artifact copy failed.")}}); appendMediaAssetRecord(QStringLiteral("artifact-copy"), destination); return response(true, QJsonObject{{QStringLiteral("path"), destination}, {QStringLiteral("size"), QFileInfo(destination).size()}});
+        const QString source = resolveWorkspacePath(arguments.value(QStringLiteral("source")).toString()); const QString destination = resolveWorkspacePath(arguments.value(QStringLiteral("destination")).toString()); if (source.isEmpty() || destination.isEmpty() || !QFileInfo(source).isFile()) return response(false, QJsonObject{{QStringLiteral("error"), QStringLiteral("Artifact path invalid.")}});
+        QString copyError;
+        if (!copyFileAtomically(source, destination, &copyError)) return response(false, QJsonObject{{QStringLiteral("error"), copyError}});
+        appendMediaAssetRecord(QStringLiteral("artifact-copy"), destination); return response(true, QJsonObject{{QStringLiteral("path"), destination}, {QStringLiteral("size"), QFileInfo(destination).size()}});
     }
     if (name == QStringLiteral("software_detect")) {
         return response(true, QJsonObject{{QStringLiteral("executables"), discoverSoftwareExecutables()}});
@@ -549,12 +608,12 @@ QJsonObject CodexPlugin::executeMediaGeneration(const QString& kind, const QJson
         const QString sourcePath = _workspace ? _workspace->property("codexLatestGeneratedImage").toString() : QString();
         const QFileInfo source(sourcePath);
         if (!source.isFile()) { key.fill('\0'); return result(false, {{QStringLiteral("error"), QStringLiteral("Generate or attach a reference image before editing.")}}); }
-        QFile imageFile(source.absoluteFilePath());
-        if (!imageFile.open(QIODevice::ReadOnly)) { key.fill('\0'); return result(false, {{QStringLiteral("error"), QStringLiteral("Cannot read the reference image.")}}); }
         auto* multipart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+        auto* imageFile = new QFile(source.absoluteFilePath(), multipart);
+        if (!imageFile->open(QIODevice::ReadOnly)) { delete multipart; key.fill('\0'); return result(false, {{QStringLiteral("error"), QStringLiteral("Cannot read the reference image.")}}); }
         const auto addText = [multipart](const QByteArray& name, const QByteArray& value) { QHttpPart part; part.setHeader(QNetworkRequest::ContentDispositionHeader, QVariant(QStringLiteral("form-data; name=\"%1\"").arg(QString::fromLatin1(name)))); part.setBody(value); multipart->append(part); };
         addText("model", model.toUtf8()); addText("prompt", prompt.toUtf8()); addText("response_format", "b64_json");
-        QHttpPart imagePart; imagePart.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("image/png")); imagePart.setHeader(QNetworkRequest::ContentDispositionHeader, QVariant(QStringLiteral("form-data; name=\"image\"; filename=\"reference.png\""))); imagePart.setBodyDevice(&imageFile); imageFile.setParent(multipart); multipart->append(imagePart);
+        QHttpPart imagePart; imagePart.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("image/png")); imagePart.setHeader(QNetworkRequest::ContentDispositionHeader, QVariant(QStringLiteral("form-data; name=\"image\"; filename=\"reference.png\""))); imagePart.setBodyDevice(imageFile); multipart->append(imagePart);
         QNetworkAccessManager network; QNetworkRequest request(endpoint); request.setRawHeader("Authorization", QByteArray("Bearer ") + key); key.fill('\0'); QNetworkReply* reply = network.post(request, multipart); multipart->setParent(reply);
         const NetworkJobResult editRequest = waitForNetworkJob(reply, mediaJob, 180000);
         const QByteArray response = editRequest.body; QJsonParseError parseError; const QJsonDocument document = QJsonDocument::fromJson(response, &parseError);
@@ -631,7 +690,10 @@ QJsonObject CodexPlugin::executeMediaGeneration(const QString& kind, const QJson
     if (url.isEmpty() && !taskId.isEmpty()) {
         const QString statusTemplate = settings->value(QStringLiteral("ai/%1/statusEndpoint").arg(prefix)).toString();
         if (!statusTemplate.isEmpty()) {
-            const QUrl statusUrl(statusTemplate.arg(taskId));
+            const QUrl statusUrl = mediaStatusUrl(statusTemplate, taskId);
+            if (!statusUrl.isValid() || statusUrl.scheme() != QStringLiteral("https") || statusUrl.host().isEmpty() || !statusUrl.userInfo().isEmpty()) {
+                return result(false, {{QStringLiteral("error"), QStringLiteral("Invalid asynchronous media status URL template.")}, {QStringLiteral("taskId"), taskId}});
+            }
             QByteArray pollKey = credentials->loadSecret(credential).trimmed();
             if (pollKey.isEmpty()) pollKey = loadAiWorkspaceSecret(credentials,
                 settings->value(QStringLiteral("ai/workspace/providerId")).toString(),

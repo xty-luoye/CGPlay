@@ -279,7 +279,7 @@ def _build_cue_diagnostics(args, reference, reference_source, source, quick, enh
         source_cue = _nearest_or_at(source, ref)
         quick_cue = _nearest_or_at(quick, ref)
         enhanced_cue = _nearest_or_at(enhanced, ref)
-        final_cue = _nearest_or_at(final, ref) if final else (enhanced_cue or quick_cue)
+        final_cue = _find_at(final, ref["start"], ref["end"]) if args.final else (enhanced_cue or quick_cue)
         ocr_source_cue = _nearest_or_at(ocr_source, ref)
         ocr_translated_cue = _nearest_or_at(ocr_translated, ref)
         raw_source = _first_nonempty(source_cue and source_cue.get("text"), ref_source_cue and ref_source_cue.get("text"))
@@ -299,9 +299,9 @@ def _build_cue_diagnostics(args, reference, reference_source, source, quick, enh
         )
         visual_cue_at_time = bool(visual_cue_at_time_text)
         quick_cue_at_time = bool(quick_text)
-        if final_cue and final:
+        if args.final:
             chosen_kind = final_kind
-            fallback_reason = "final-sidecar"
+            fallback_reason = "final-sidecar" if final_cue else "missing-final-cue"
         elif enhanced_cue:
             enhanced_claims_ocr = any(token in str(enhanced_kind).lower() for token in ("ocr", "hard-sub", "vision", "visual-subtitle"))
             if enhanced_claims_ocr and not has_nearby_ocr:
@@ -329,6 +329,10 @@ def _build_cue_diagnostics(args, reference, reference_source, source, quick, enh
             fallback_reason = "visual-no-text-suppress-quick-asr"
         if visual_source_cue_at_time and not final_displayed_text:
             final_displayed_text = _first_nonempty(ocr_translated_cue and ocr_translated_cue.get("text"), quick_text, enhanced_text, final_text)
+        # An explicit final track is evidence, including its gaps. Never fill it
+        # with inferred candidates or suppress an observed erroneous display.
+        if args.final:
+            final_displayed_text = final_text
         rows.append({
             "index": index,
             "time": {
@@ -501,6 +505,9 @@ def evaluate(args):
         enhanced_polarity = _polarity_report(source_text, ref_source_text, ref["text"], enhanced_text)
         decision = _decision(quick_cue, enhanced_cue, quick_polarity, enhanced_polarity)
         final_cue = quick_cue if decision == "fallback-quick-polarity-conflict" else (enhanced_cue or quick_cue)
+        if args.final:
+            final_cue = _find_at(final, ref["start"], ref["end"])
+            decision = "accepted-final-sidecar" if final_cue else "missing-final-cue"
         final_text = final_cue["text"] if final_cue else ""
         polarity = _polarity_report(source_text, ref_source_text, ref["text"], final_text)
         chosen_kind = (
@@ -508,6 +515,8 @@ def evaluate(args):
             if decision == "fallback-quick-polarity-conflict"
             else (args.enhanced_kind if enhanced_cue else (args.quick_kind if quick_cue else "missing"))
         )
+        if args.final:
+            chosen_kind = args.final_kind if final_cue else "missing"
         source_kind_counts[chosen_kind] = source_kind_counts.get(chosen_kind, 0) + 1
         score = _similarity(ref["text"], final_text)
         errors = []
@@ -576,6 +585,7 @@ def evaluate(args):
     accuracy = matched / max(1, len(reference))
     report = {
         "version": "accuracy-v2",
+        "finalTrackMode": "actual-sidecar" if args.final else "inferred-candidates",
         "media": args.media,
         "paths": {
             "referenceSource": args.reference_source,
@@ -673,7 +683,10 @@ def main():
         "focusPassed": report.get("focusPassed"),
         "totalCues": report["totalCues"],
     }, ensure_ascii=False))
-    return 0 if report.get("focusPassed", True) and report["polarityErrorCount"] == 0 else 2
+    return 0 if (report["totalCues"] > 0
+                 and report["matchedCueCount"] == report["totalCues"]
+                 and report.get("focusPassed", True)
+                 and report["polarityErrorCount"] == 0) else 2
 
 
 if __name__ == "__main__":

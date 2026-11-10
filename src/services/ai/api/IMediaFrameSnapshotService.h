@@ -6,6 +6,14 @@
 
 namespace cgplay {
 
+// Optional capability kept separate from the existing snapshot interface ABI.
+class IMediaFrameRangePreparation
+{
+public:
+    virtual ~IMediaFrameRangePreparation() = default;
+    virtual bool prepareRangeCapture(const AIFrameCaptureRequest&, AIRequest*, QString*) const = 0;
+};
+
 class IMediaFrameSnapshotService
 {
 public:

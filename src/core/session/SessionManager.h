@@ -68,7 +68,7 @@ Q_SIGNALS:
 
 private:
     QJsonObject _serialize() const;
-    bool        _deserialize(const QJsonObject& root);
+    bool        _deserialize(const QJsonObject& root, QString* error = nullptr);
     bool        _beginRestore(const QJsonObject& root, const QString& path, bool recovery);
     void        _finishRestore(quint64 generation);
     void        _cancelRestore();

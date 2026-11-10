@@ -157,7 +157,9 @@ private:
     void forkThread(const QString& threadId);
     void archiveThread(const QString& threadId);
     void processLocalTaskQueue();
-    void updateLocalTaskStatus(const QString& taskId, const QString& status, const QString& detail = {});
+    bool updateLocalTaskStatus(const QString& taskId, const QString& status, const QString& detail = {});
+    void finishLocalTask(const QString& status, const QString& detail);
+    bool flushLocalTaskStatus();
     void startFromWorkspace(const QString& model, const QString& approvalMode);
     bool resolveRuntimeConfig(
         CodexAppServerSession::Config* config,
@@ -213,6 +215,10 @@ private:
     QJsonArray _mcpServers;
     std::unique_ptr<QProcess> _terminalProcess;
     QString _runningLocalTaskId;
+    QString _runningLocalTaskThreadId;
+    QString _runningLocalTaskTurnId;
+    QString _localTaskFinalStatus;
+    QString _localTaskFinalDetail;
     QTimer* _localTaskTimer = nullptr;
     QTimer* _terminalTimeoutTimer = nullptr;
     QFileSystemWatcher* _localFileWatcher = nullptr;

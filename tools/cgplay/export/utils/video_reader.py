@@ -12,11 +12,19 @@ class VideoReader:
     def __init__(self):
         self._container = None
         self._stream = None
+        self._path = None
+        self._read_started = False
 
     def open(self, path: str):
         """打开视频文件"""
-        self._container = av.open(path)
-        self._stream = self._container.streams.video[0]
+        self.close()
+        try:
+            self._container = av.open(path)
+            self._stream = self._container.streams.video[0]
+            self._path = path
+        except Exception:
+            self.close()
+            raise
         return self
 
     def close(self):
@@ -25,6 +33,8 @@ class VideoReader:
             self._container.close()
             self._container = None
             self._stream = None
+        self._path = None
+        self._read_started = False
 
     @property
     def fps(self) -> float:
@@ -96,7 +106,9 @@ class VideoReader:
         """
         if not self._container or not self._stream:
             raise RuntimeError("VideoReader is not open")
-        self._container.seek(0)
+        if self._read_started:
+            self.open(self._path)
+        self._read_started = True
 
         frame_idx = 0
         for packet in self._container.demux(self._stream):
@@ -108,8 +120,8 @@ class VideoReader:
                     continue
 
                 # YUV → RGB 转换
-                source_format = frame.format.name.lower() if frame.format else ""
-                if "yuva" in source_format or "rgba" in source_format or "bgra" in source_format:
+                has_alpha = frame.format and any(component.is_alpha for component in frame.format.components)
+                if has_alpha:
                     yield frame.to_ndarray(format="bgra")
                 else:
                     yield frame.to_ndarray(format="bgr24")

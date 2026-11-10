@@ -218,6 +218,7 @@ private:
     QPushButton* _refreshButton = nullptr;
     QPushButton* _clearChatButton = nullptr;
     QPushButton* _exportReportButton = nullptr;
+    QPushButton* _toolsExportReportButton = nullptr;
     QTextBrowser* _resultView = nullptr;
 
     QVector<AIProviderInfo> _providerInfos;

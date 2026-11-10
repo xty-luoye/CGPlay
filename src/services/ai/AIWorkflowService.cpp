@@ -47,6 +47,7 @@ QString AIWorkflowService::submit(const AIWorkflowRequest& request)
     aiRequest.userPrompt = request.userPrompt;
     aiRequest.chatHistory = request.chatHistory;
     aiRequest.options = request.options;
+    aiRequest.options.remove(QStringLiteral("rangeCaptureJob"));
     aiRequest.options.insert(QStringLiteral("workflow"), static_cast<int>(request.workflow));
     aiRequest.options.insert(QStringLiteral("includeAnnotations"), request.includeAnnotations);
     aiRequest.context = contextBuilder->buildContext(request.scope, aiRequest.options);
@@ -73,14 +74,30 @@ QString AIWorkflowService::submit(const AIWorkflowRequest& request)
 
         QVector<AIMediaFrameReference> frames;
         QString captureError;
-        if (frameSnapshotService->capture(captureRequest, &frames, &captureError)) {
+        const bool rangeRequest = request.scope == AIRequestScope::CurrentShot ||
+            request.scope == AIRequestScope::CurrentSequence;
+        if (rangeRequest) {
+            auto* preparation = dynamic_cast<IMediaFrameRangePreparation*>(frameSnapshotService);
+            if (!preparation || !preparation->prepareRangeCapture(captureRequest, &aiRequest, &captureError))
+                return {};
+        } else if (frameSnapshotService->capture(captureRequest, &frames, &captureError)) {
             aiRequest.frames = frames;
         } else if (!captureError.isEmpty()) {
             aiRequest.options.insert(QStringLiteral("frameCaptureError"), captureError);
         }
+        if (!rangeRequest && request.requireFrames && (aiRequest.frames.isEmpty() ||
+                                      !aiRequest.options.value(QStringLiteral("frameCaptureError")).toString().isEmpty())) {
+            // A visual workflow with mandatory frames must fail before it can
+            // reach a provider. Sending a text-only request here would make a
+            // QC/scan job appear successful without the required evidence.
+            return {};
+        }
     } else if (request.attachFrames && !frameSnapshotService) {
         aiRequest.options.insert(QStringLiteral("frameCaptureError"),
             QStringLiteral("IMediaFrameSnapshotService 不可用"));
+        if (request.requireFrames) {
+            return {};
+        }
     }
 
     const QString jobId = providerManager->submit(aiRequest);
@@ -119,21 +136,24 @@ QVector<AISearchResult> AIWorkflowService::searchAnnotations(const QString& quer
         return results;
     }
 
-    const QStringList keywords = normalizedQuery.split(
+    QStringList keywords = normalizedQuery.split(
         QRegularExpression(QStringLiteral("[\\s,，、]+")),
         Qt::SkipEmptyParts);
 
-    bool filterCritical = normalizedQuery.contains(QStringLiteral("严重")) ||
-        normalizedQuery.contains(QStringLiteral("critical"));
-    bool filterMajor = normalizedQuery.contains(QStringLiteral("主要")) ||
-        normalizedQuery.contains(QStringLiteral("major"));
-    bool filterOpen = normalizedQuery.contains(QStringLiteral("未解决")) ||
-        normalizedQuery.contains(QStringLiteral("open")) ||
-        normalizedQuery.contains(QStringLiteral("待处理"));
+    bool filterOpen = false;
+    for (auto it = keywords.begin(); it != keywords.end();) {
+        if (*it == QStringLiteral("未解决") || *it == QStringLiteral("open") ||
+            *it == QStringLiteral("待处理")) {
+            filterOpen = true;
+            it = keywords.erase(it);
+        } else {
+            ++it;
+        }
+    }
 
     const QVector<AnnotationItem> annotations = annotationService->annotations();
     for (const auto& ann : annotations) {
-        bool match = false;
+        bool match = keywords.isEmpty();
         QString snippet;
 
         const QString comment = ann.comment.toLower();
@@ -151,7 +171,7 @@ QVector<AISearchResult> AIWorkflowService::searchAnnotations(const QString& quer
             continue;
         }
 
-        if (!match && !filterCritical && !filterMajor) {
+        if (!match) {
             continue;
         }
 

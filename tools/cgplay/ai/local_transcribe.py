@@ -323,6 +323,24 @@ def _load_whisperlive_source_model(model_name):
     raise RuntimeError("failed to load whisperlive source model on any available device")
 
 
+def _collect_transcript_segments(segments):
+    # Text alone is not an identity: repeated dialogue at another time is real.
+    items = []
+    seen = set()
+    for segment in segments:
+        text = (getattr(segment, "text", "") or "").strip()
+        if not text:
+            continue
+        start = float(getattr(segment, "start", 0.0) or 0.0)
+        end = float(getattr(segment, "end", 0.0) or 0.0)
+        identity = (start, end, text)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        items.append({"start": start, "end": end, "text": text})
+    return items
+
+
 def _transcribe_with_faster_whisper(audio_path, language_hint, model_name):
     model = _load_faster_whisper_model(model_name)
     segments, info = model.transcribe(
@@ -334,23 +352,8 @@ def _transcribe_with_faster_whisper(audio_path, language_hint, model_name):
         condition_on_previous_text=False,
     )
 
-    text_parts = []
-    segment_items = []
-    last_text = ""
-    for segment in segments:
-        text = (segment.text or "").strip()
-        if text and text != last_text:
-            text_parts.append(text)
-            segment_items.append(
-                {
-                    "start": float(getattr(segment, "start", 0.0) or 0.0),
-                    "end": float(getattr(segment, "end", 0.0) or 0.0),
-                    "text": text,
-                }
-            )
-            last_text = text
-
-    text = "\n".join(text_parts).strip()
+    segment_items = _collect_transcript_segments(segments)
+    text = "\n".join(item["text"] for item in segment_items).strip()
     if not text:
         raise _NoSpeechDetected("NO_SPEECH")
 
@@ -375,23 +378,8 @@ def _transcribe_with_whisperlive_source(audio_path, language_hint, model_name):
         condition_on_previous_text=False,
     )
 
-    text_parts = []
-    segment_items = []
-    last_text = ""
-    for segment in segments:
-        text = (getattr(segment, "text", "") or "").strip()
-        if text and text != last_text:
-            text_parts.append(text)
-            segment_items.append(
-                {
-                    "start": float(getattr(segment, "start", 0.0) or 0.0),
-                    "end": float(getattr(segment, "end", 0.0) or 0.0),
-                    "text": text,
-                }
-            )
-            last_text = text
-
-    text = "\n".join(text_parts).strip()
+    segment_items = _collect_transcript_segments(segments)
+    text = "\n".join(item["text"] for item in segment_items).strip()
     if not text:
         raise _NoSpeechDetected("NO_SPEECH")
 

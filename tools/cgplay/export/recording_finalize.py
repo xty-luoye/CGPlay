@@ -97,7 +97,7 @@ def protected_inputs(paths):
         path = Path(info["path"])
         result[canonical(path)] = info
         match = re.match(r"^(.+?)[._-](\d+)\.(.+)$", path.name)
-        if match and path.suffix.lower() in (".exr", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".dpx", ".cin", ".bmp", ".webp"):
+        if match and path.parent.is_dir() and path.suffix.lower() in (".exr", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".dpx", ".cin", ".bmp", ".webp"):
             pattern = re.compile(rf"^{re.escape(match[1])}[._-]\d+\.{re.escape(match[3])}$", re.IGNORECASE if os.name == "nt" else 0)
             for member in path.parent.iterdir():
                 if pattern.match(member.name):

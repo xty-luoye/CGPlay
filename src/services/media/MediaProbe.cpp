@@ -20,6 +20,7 @@
 #include <QStandardPaths>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace cgplay {
 
@@ -92,6 +93,13 @@ QStringList collectExternalSubtitleCandidates(const QFileInfo& mediaFile)
         QDir::Files,
         QDir::Name);
     for (const QString& entry : entries) {
+        const QString subtitleBase = QFileInfo(entry).completeBaseName();
+        // episode1 must not automatically pick episode10. Language/track
+        // variants such as episode1.en and episode1_zh retain a name boundary.
+        if (subtitleBase.compare(baseName, Qt::CaseInsensitive) != 0 &&
+            !subtitleBase.startsWith(baseName + QLatin1Char('.'), Qt::CaseInsensitive) &&
+            !subtitleBase.startsWith(baseName + QLatin1Char('_'), Qt::CaseInsensitive) &&
+            !subtitleBase.startsWith(baseName + QLatin1Char('-'), Qt::CaseInsensitive)) continue;
         const QString candidate = dir.filePath(entry);
         if (fileHasSubtitleSuffix(candidate) &&
             !isCgplayGeneratedSubtitleSidecar(mediaFile, candidate)) {
@@ -341,7 +349,7 @@ static void probeVideo(const QString& path, MediaInfo& info, JobContext* job)
         QStringLiteral("-show_entries"),
         QStringLiteral("stream=index,codec_type,width,height,codec_name,pix_fmt,avg_frame_rate,r_frame_rate,nb_frames,duration,bit_rate"),
         QStringLiteral("-show_entries"),
-        QStringLiteral("format=format_name,format_long_name,bit_rate"),
+        QStringLiteral("format=format_name,format_long_name,bit_rate,duration"),
         QStringLiteral("-of"), QStringLiteral("json"),
         path
     }, QIODevice::ReadOnly);
@@ -423,8 +431,17 @@ static void probeVideo(const QString& path, MediaInfo& info, JobContext* job)
 
             bool okDuration = false;
             info.durationSeconds = stream.value(QStringLiteral("duration")).toString().toDouble(&okDuration);
-            if (!info.hasRealFrameCount && okDuration && info.durationSeconds > 0.0 && info.fps > 0.0) {
-                info.frameCount = std::max(1, static_cast<int>(std::round(info.durationSeconds * info.fps)));
+            if (!okDuration || !std::isfinite(info.durationSeconds) || info.durationSeconds <= 0.0) {
+                info.durationSeconds = format.value(QStringLiteral("duration")).toString().toDouble(&okDuration);
+            }
+            if (!okDuration || !std::isfinite(info.durationSeconds) || info.durationSeconds <= 0.0) {
+                info.durationSeconds = info.hasRealFrameCount && std::isfinite(info.fps) && info.fps > 0.0
+                    ? static_cast<double>(info.frameCount) / info.fps : 0.0;
+            }
+            const double estimatedFrames = std::round(info.durationSeconds * info.fps);
+            if (!info.hasRealFrameCount && std::isfinite(estimatedFrames) && estimatedFrames >= 1.0 &&
+                estimatedFrames <= std::numeric_limits<int>::max()) {
+                info.frameCount = static_cast<int>(estimatedFrames);
                 info.firstFrame = 0;
                 info.lastFrame = info.frameCount - 1;
                 info.hasRealFrameCount = true;

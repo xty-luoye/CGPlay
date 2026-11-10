@@ -162,10 +162,24 @@ Application::Application(int& argc, char** argv)
         previousStartupPhaseMs = elapsedMs;
     };
     setApplicationName("CGPlay");
-    setApplicationVersion("1.0.8");
+    setApplicationVersion("1.0.8.01");
     setOrganizationName("CGPlay");
     _initStyle();
     _parseArgs();
+    if (_subtitleGenerationSmokeMode || _subtitleRefinedFallbackSmokeMode) {
+        const QString reportPath = _subtitleGenerationSmokeMode
+            ? _subtitleGenerationSmokeOutput : _subtitleRefinedFallbackSmokeOutput;
+        const QString parent = reportPath.isEmpty()
+            ? QDir::current().absoluteFilePath(QStringLiteral("tests/artifacts/subtitle_automation"))
+            : QFileInfo(reportPath).absolutePath();
+        const QString cacheRoot = QDir(parent).filePath(
+            QStringLiteral("subtitle_cache_%1").arg(QCoreApplication::applicationPid()));
+        if (!QDir().mkpath(cacheRoot) ||
+            !qputenv("CGPLAY_AUTOMATION_SUBTITLE_CACHE_ROOT", cacheRoot.toUtf8())) {
+            qFatal("Cannot isolate subtitle automation cache");
+        }
+        setProperty("cgplay.automationSubtitleCacheRoot", cacheRoot);
+    }
     if (isAutomationMode() && !_automationVisibleMode) {
         _backgroundAutomationMode = true;
     }
@@ -506,10 +520,16 @@ Application::~Application()
 {
     // Emergency final exit only; ordinary close is asynchronous in MainWindow.
     RecordingService::shutdownAndDrainAll();
+    // Detach plugin UI while its hosts still exist. Destroy windows here,
+    // before _activeViewer/_activeViewId and the other members are destroyed:
+    // ViewerWidget's destructor emits viewInvalidated back into this object.
+    if (_pluginManager) _pluginManager->shutdownPlugins();
+    _annotationFallbackOverlayProvider.reset();
     for (auto* sw : _secondaryWindows) {
         delete sw;
     }
     _secondaryWindows.clear();
+    _mainWindow.reset();
     // Windows have stopped consuming samples. Final process shutdown owns the
     // only join; closing an individual window never waits on PDH collection.
     SystemPerformanceMonitor::shutdownWorkers();

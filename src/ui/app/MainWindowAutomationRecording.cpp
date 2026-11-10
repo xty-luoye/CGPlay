@@ -8,6 +8,7 @@
 #include <QDir>
 #include <QDockWidget>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -147,6 +148,40 @@ void MainWindow::runRecordingSmokeChecks(const QString& directory,std::function<
             add(QStringLiteral("multiple monitors require an explicit selection"),combo("RecordingSource")->count()==2 && combo("RecordingSource")->currentIndex()==-1);
             panel->setCatalog(catalog);
             add(QStringLiteral("audio disabled by default and explicit output required"),!checkbox("RecordingSystemEnabled")->isChecked() && !checkbox("RecordingMicEnabled")->isChecked() && !button("RecordingStart")->isEnabled());
+            panel->setProperty("cgplay.recordingOutputDialogDirectory",directory);
+            panel->setProperty("cgplay.recordingInjectedOutput",QString());button("RecordingBrowse")->click();
+            const QFileInfo initialOutput(panel->property("cgplay.recordingOutputDialogInitial").toString());
+            add(QStringLiteral("recording save picker prefills a new MP4 filename"),initialOutput.isAbsolute() &&
+                initialOutput.absolutePath()==QDir(directory).absolutePath() && initialOutput.fileName().startsWith(QStringLiteral("录屏_")) &&
+                initialOutput.suffix()==QStringLiteral("mp4") && !initialOutput.exists() && output->text().isEmpty() &&
+                panel->property("cgplay.recordingOutputDialogSuffix").toString()==QStringLiteral("mp4"),
+                {{"initialPath",initialOutput.absoluteFilePath()},{"backgroundPickerInjected",true}});
+            output->setText(directory);
+            const QString pickerImage=QDir(directory).filePath(QStringLiteral("recording_save_picker.png"));
+            panel->setProperty("cgplay.recordingOutputDialogEvidence",pickerImage);
+            const QString withoutSuffix=QDir(directory).filePath(QStringLiteral("我的录屏"));
+            panel->setProperty("cgplay.recordingInjectedOutput",withoutSuffix);button("RecordingBrowse")->click();
+            const QFileInfo folderOutput(panel->property("cgplay.recordingOutputDialogInitial").toString());
+            add(QStringLiteral("recording output directory receives a filename and MP4 suffix"),folderOutput.absolutePath()==QDir(directory).absolutePath() &&
+                !folderOutput.fileName().isEmpty() && folderOutput.suffix()==QStringLiteral("mp4") && output->text()==withoutSuffix+QStringLiteral(".mp4"));
+            add(QStringLiteral("recording save picker widget evidence"),panel->property("cgplay.recordingOutputDialogCaptured").toBool() && QFileInfo(pickerImage).isFile(),
+                {{"path",pickerImage},{"method","hidden non-native QFileDialog::grab; no platform picker or desktop capture"}});
+            panel->setProperty("cgplay.recordingOutputDialogEvidence",QString());
+            const QString customOutput=QDir(directory).filePath(QStringLiteral("自定义 名称.MP4"));
+            output->setText(customOutput);panel->setProperty("cgplay.recordingInjectedOutput",QString());button("RecordingBrowse")->click();
+            add(QStringLiteral("recording picker preserves a custom filename and cancel"),output->text()==customOutput &&
+                panel->property("cgplay.recordingOutputDialogInitial").toString()==customOutput);
+            const QString existingPath=QDir(directory).filePath(QStringLiteral("picker_existing.mp4"));
+            QFile existing(existingPath);const bool created=existing.open(QIODevice::WriteOnly) && existing.write("keep-original")==13;existing.close();
+            output->setText(existingPath);button("RecordingBrowse")->click();
+            const QFileInfo replacement(panel->property("cgplay.recordingOutputDialogInitial").toString());
+            add(QStringLiteral("recording picker suggests a new name after an existing recording"),created && replacement.isAbsolute() &&
+                replacement.absoluteFilePath()!=existingPath && replacement.absolutePath()==QDir(directory).absolutePath() &&
+                replacement.suffix()==QStringLiteral("mp4") && !replacement.exists() && output->text()==existingPath);
+            panel->setProperty("cgplay.recordingInjectedOutput",existingPath);button("RecordingBrowse")->click();
+            const bool originalReadable=existing.open(QIODevice::ReadOnly);const QByteArray original=existing.readAll();existing.close();
+            add(QStringLiteral("recording picker does not overwrite existing files"),originalReadable && original==QByteArray("keep-original") &&
+                output->text()==existingPath && !button("RecordingStart")->isEnabled());
             const QString outputPath=QDir(directory).filePath(QStringLiteral("recording_ui.mp4"));
             panel->setProperty("cgplay.recordingInjectedOutput",outputPath);button("RecordingBrowse")->click();
             combo("RecordingScope")->setCurrentIndex(combo("RecordingScope")->findData(QStringLiteral("window")));
@@ -197,6 +232,11 @@ void MainWindow::runRecordingSmokeChecks(const QString& directory,std::function<
         if (state->phase==1) {
             if (actual!=QStringLiteral("Recording") || status.value("durationNs").toVariant().toLongLong()<600000000) return;
             add(QStringLiteral("real synthetic recording started"),true,{{"status",status}});
+            const QString busyOutput=output->text();
+            panel->setProperty("cgplay.recordingInjectedOutput",QDir(directory).filePath(QStringLiteral("busy_changed.mp4")));
+            button("RecordingBrowse")->clicked();
+            add(QStringLiteral("active recording cannot reopen the output picker"),output->text()==busyOutput && !button("RecordingBrowse")->isEnabled());
+            panel->setProperty("cgplay.recordingInjectedOutput",busyOutput);
             const auto stats=status.value("stats").toObject();
             const QString statusText=panel->findChild<QLabel*>(QStringLiteral("RecordingStatus"))->text();
             add(QStringLiteral("actual recording statistics reach service and panel"),stats.value("width").toInt()==1280 &&

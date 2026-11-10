@@ -1,5 +1,6 @@
 #include "CodexPlugin.h"
 #include "CodexPluginSupport.h"
+#include "common/core/SafeFileCopy.h"
 
 #include "common/jobs/JobSystem.h"
 #include "common/core/ServiceLocator.h"
@@ -433,6 +434,17 @@ bool hasSafeIdentifier(const QString& value)
 bool copyDirectoryTree(const QString& sourcePath, const QString& targetPath, QString* error)
 {
     const QDir source(sourcePath);
+    const QString resolvedSource = resolvedCopyPath(sourcePath);
+    const QString resolvedTarget = resolvedCopyPath(targetPath);
+    const QString sourcePrefix = resolvedSource.endsWith(QLatin1Char('/')) ? resolvedSource : resolvedSource + QLatin1Char('/');
+    const QString targetPrefix = resolvedTarget.endsWith(QLatin1Char('/')) ? resolvedTarget : resolvedTarget + QLatin1Char('/');
+    const auto sensitivity = copyPathCaseSensitivity();
+    if (resolvedSource.compare(resolvedTarget, sensitivity) == 0 ||
+        resolvedSource.startsWith(targetPrefix, sensitivity) ||
+        resolvedTarget.startsWith(sourcePrefix, sensitivity)) {
+        if (error) *error = QStringLiteral("Source and target directories must not overlap.");
+        return false;
+    }
     if (!source.exists() || !QDir().mkpath(targetPath)) { if (error) *error = QStringLiteral("Cannot create target directory."); return false; }
     QDirIterator iterator(sourcePath, QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
     while (iterator.hasNext()) {
@@ -440,7 +452,7 @@ bool copyDirectoryTree(const QString& sourcePath, const QString& targetPath, QSt
         const QString relative = source.relativeFilePath(sourceItem);
         const QString targetItem = QDir(targetPath).filePath(relative);
         if (QFileInfo(sourceItem).isDir()) { if (!QDir().mkpath(targetItem)) { if (error) *error = QStringLiteral("Cannot create %1").arg(targetItem); return false; } }
-        else { QDir().mkpath(QFileInfo(targetItem).absolutePath()); QFile::remove(targetItem); if (!QFile::copy(sourceItem, targetItem)) { if (error) *error = QStringLiteral("Cannot copy %1").arg(relative); return false; } }
+        else if (!copyFileAtomically(sourceItem, targetItem, error)) return false;
     }
     return true;
 }

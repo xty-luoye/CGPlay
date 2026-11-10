@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // CGPlay OtioExporter.h
 // Exports PlaylistModel to OTIO JSON file
 

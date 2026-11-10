@@ -1,4 +1,5 @@
 #include "ThumbnailService.h"
+#include "ThumbnailDiskCache.h"
 
 #include "core/AsyncImageLoader.h"
 #include "common/jobs/JobSystem.h"
@@ -16,9 +17,15 @@
 #include <QPixmap>
 #include <QProcess>
 #include <QSemaphore>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QWaitCondition>
+#include <QSaveFile>
+#include <QTemporaryFile>
+#include <QHash>
+#include <memory>
 #include <QStandardPaths>
 #include <QTemporaryDir>
-#include <QThread>
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -26,33 +33,6 @@
 namespace cgplay {
 
 namespace {
-
-int linearToDisplay8(double value)
-{
-    value = std::clamp(value, 0.0, 1.0);
-    return static_cast<int>(value * 255.0 + 0.5);
-}
-
-QImage convertLinearImageToDisplay(const QImage& source)
-{
-    if (source.isNull()) {
-        return {};
-    }
-
-    const QImage src = source.convertToFormat(QImage::Format_RGBA64);
-    QImage working(src.size(), QImage::Format_RGB32);
-    for (int y = 0; y < src.height(); ++y) {
-        const QRgba64* srcLine = reinterpret_cast<const QRgba64*>(src.constScanLine(y));
-        QRgb* dstLine = reinterpret_cast<QRgb*>(working.scanLine(y));
-        for (int x = 0; x < src.width(); ++x) {
-            dstLine[x] = qRgb(
-                linearToDisplay8(static_cast<double>(srcLine[x].red()) / 65535.0),
-                linearToDisplay8(static_cast<double>(srcLine[x].green()) / 65535.0),
-                linearToDisplay8(static_cast<double>(srcLine[x].blue()) / 65535.0));
-        }
-    }
-    return working;
-}
 
 QImage loadStillImage(const QString& path, JobContext* job)
 {
@@ -77,7 +57,8 @@ QImage loadStillImage(const QString& path, JobContext* job)
     return job && job->shouldStop() ? QImage{} : image;
 }
 
-QString cachePathForVideoFrame(const QString& path, int frame, const QSize& size)
+QString cachePathForVideoFrame(const QString& path, int frame, const QSize& size,
+    double fps, const ThumbnailDiskCache::Policy& policy)
 {
     const QFileInfo fileInfo(path);
     const QByteArray key = QCryptographicHash::hash(
@@ -85,14 +66,44 @@ QString cachePathForVideoFrame(const QString& path, int frame, const QSize& size
             QByteArray::number(fileInfo.size()) + ':' +
             QByteArray::number(fileInfo.lastModified().toMSecsSinceEpoch()) + ':' +
             QByteArray::number(size.width()) + 'x' +
-            QByteArray::number(size.height()),
+            QByteArray::number(size.height()) + ':' +
+            QByteArray::number(fps, 'g', 17),
         QCryptographicHash::Sha1).toHex();
-    const QString dir = QDir::tempPath() + QStringLiteral("/cgplay_media_thumbs/") + QString::fromLatin1(key);
-    QDir().mkpath(dir);
-    return QStringLiteral("%1/f%2.jpg").arg(dir).arg(frame, 8, 10, QChar('0'));
+    return ThumbnailDiskCache::path(policy, key, frame);
 }
 
 QSemaphore thumbnailProcessSlots(2);
+
+struct ThumbnailFlight
+{
+    QMutex mutex;
+    QWaitCondition finished;
+    bool running = true;
+};
+QMutex thumbnailFlightsMutex;
+QHash<QString, std::shared_ptr<ThumbnailFlight>> thumbnailFlights;
+
+struct ThumbnailFlightCompletion
+{
+    QString key;
+    std::shared_ptr<ThumbnailFlight> flight;
+    ~ThumbnailFlightCompletion()
+    {
+        {
+            QMutexLocker lock(&flight->mutex);
+            flight->running = false;
+            flight->finished.wakeAll();
+        }
+        QMutexLocker lock(&thumbnailFlightsMutex);
+        if (thumbnailFlights.value(key) == flight) thumbnailFlights.remove(key);
+    }
+};
+
+struct ThumbnailProcessSlot
+{
+    bool acquired = false;
+    ~ThumbnailProcessSlot() { if (acquired) thumbnailProcessSlots.release(); }
+};
 
 bool canBatchVideoFrames(const QString& path, double fps, JobContext* job)
 {
@@ -162,7 +173,9 @@ bool buildVideoThumbnailBatch(
     const QString& path,
     const QVector<int>& frames,
     const QSize& size,
-    JobContext* job)
+    double fps,
+    JobContext* job,
+    const ThumbnailDiskCache::Policy& diskPolicy)
 {
     if (frames.size() < 2 || (job && job->shouldStop())) {
         return false;
@@ -171,6 +184,16 @@ bool buildVideoThumbnailBatch(
     const QString ffmpeg = MediaProbe::locateFfmpeg();
     if (ffmpeg.isEmpty()) {
         return false;
+    }
+
+    std::vector<std::shared_ptr<ThumbnailDiskCache::Lease>> leases;
+    QVector<QString> destinations;
+    for (const int frame : frames) {
+        const QString destination = cachePathForVideoFrame(path, frame, size, fps, diskPolicy);
+        auto lease = ThumbnailDiskCache::acquire(destination, [job] { return job && job->shouldStop(); });
+        if (!lease) return false;
+        destinations.push_back(destination);
+        leases.push_back(std::move(lease));
     }
 
     bool acquired = false;
@@ -237,7 +260,7 @@ bool buildVideoThumbnailBatch(
         if (job && job->shouldStop()) {
             return false;
         }
-        const QString destination = cachePathForVideoFrame(path, frames[i], size);
+        const QString& destination = destinations[i];
         if (QFileInfo::exists(destination)) {
             continue;
         }
@@ -245,6 +268,7 @@ bool buildVideoThumbnailBatch(
             return false;
         }
     }
+    ThumbnailDiskCache::schedulePrune(diskPolicy);
     return true;
 }
 
@@ -253,51 +277,91 @@ QImage loadVideoFrame(
     int frame,
     double fps,
     const QSize& size,
-    JobContext* job)
+    JobContext* job,
+    const ThumbnailDiskCache::Policy& diskPolicy)
 {
     const QString ffmpeg = MediaProbe::locateFfmpeg();
-    if (ffmpeg.isEmpty()) {
-        return {};
-    }
-
+    if (ffmpeg.isEmpty()) return {};
+    JobContext localJob(9000);
+    JobContext& context = job ? *job : localJob;
     const int safeFrame = std::max(0, frame);
     const double safeFps = fps > 0.0 ? fps : 24.0;
-    const QString jpg = cachePathForVideoFrame(path, safeFrame, size);
-    if (!QFileInfo::exists(jpg)) {
-        // Background thumbnails must not starve the decoder when a large
-        // playlist starts several ffmpeg processes at once.
-        bool acquired = false;
-        while (!acquired) {
-            if (job && job->shouldStop()) return {};
-            acquired = thumbnailProcessSlots.tryAcquire(1, 50);
+    const QString jpg = cachePathForVideoFrame(path, safeFrame, size, safeFps, diskPolicy);
+    auto lease = ThumbnailDiskCache::acquire(jpg, [&context] { return context.shouldStop(); });
+    if (!lease) return {};
+
+    for (;;) {
+        if (context.shouldStop()) return {};
+        QImage cached;
+        if (cached.load(jpg) && !cached.isNull()) { ThumbnailDiskCache::touch(jpg); return cached; }
+
+        std::shared_ptr<ThumbnailFlight> flight;
+        bool producer = false;
+        {
+            QMutexLocker lock(&thumbnailFlightsMutex);
+            flight = thumbnailFlights.value(jpg);
+            if (!flight) {
+                flight = std::make_shared<ThumbnailFlight>();
+                thumbnailFlights.insert(jpg, flight);
+                producer = true;
+            }
         }
-        QProcess proc;
-        proc.setProcessChannelMode(QProcess::MergedChannels);
+        if (!producer) {
+            QMutexLocker lock(&flight->mutex);
+            while (flight->running) {
+                if (context.shouldStop()) return {};
+                flight->finished.wait(&flight->mutex, 50);
+            }
+            // A canceled/failed producer must not cancel a live consumer.
+            // Recheck the cache and let one surviving request retry.
+            continue;
+        }
+
+        ThumbnailFlightCompletion completion{jpg, flight};
+        // Another process may have committed a complete thumbnail meanwhile.
+        if (cached.load(jpg) && !cached.isNull()) { ThumbnailDiskCache::touch(jpg); return cached; }
+        ThumbnailProcessSlot slot;
+        while (!slot.acquired) {
+            if (context.shouldStop()) return {};
+            slot.acquired = thumbnailProcessSlots.tryAcquire(1, 50);
+        }
+
+        QTemporaryFile temporary(QFileInfo(jpg).dir().filePath(QStringLiteral(".cgplay-thumb-XXXXXX.jpg")));
+        if (!temporary.open()) return {};
+        const QString temporaryPath = temporary.fileName();
+        temporary.close();
+        QProcess process;
+        process.setProcessChannelMode(QProcess::MergedChannels);
         const QString ss = QString::number(static_cast<double>(safeFrame) / safeFps, 'f', 3);
-        proc.start(ffmpeg, {
+        process.start(ffmpeg, {
             QStringLiteral("-hide_banner"), QStringLiteral("-loglevel"), QStringLiteral("error"),
             QStringLiteral("-y"), QStringLiteral("-ss"), ss, QStringLiteral("-i"), path,
             QStringLiteral("-frames:v"), QStringLiteral("1"),
             QStringLiteral("-vf"),
             QStringLiteral("scale=%1:%2:force_original_aspect_ratio=increase,crop=%1:%2")
-                .arg(size.width())
-                .arg(size.height()),
-            QStringLiteral("-q:v"), QStringLiteral("2"),
-            jpg
+                .arg(size.width()).arg(size.height()),
+            QStringLiteral("-q:v"), QStringLiteral("2"), temporaryPath
         }, QIODevice::ReadOnly);
-        JobContext localJob(9000);
-        JobContext& context = job ? *job : localJob;
-        const ProcessOutcome process = context.waitForProcess(proc, 25, 9000);
-        thumbnailProcessSlots.release();
-        if (!process.succeeded()) {
-            QFile::remove(jpg);
-            return {};
-        }
-    }
+        const ProcessOutcome outcome = context.waitForProcess(process, 25, 9000);
+        if (!outcome.succeeded() || context.shouldStop()) return {};
+        QImage image;
+        if (!image.load(temporaryPath) || image.isNull()) return {};
 
-    QImage image;
-    image.load(jpg);
-    return image;
+        QFile input(temporaryPath);
+        QSaveFile output(jpg);
+        output.setDirectWriteFallback(false);
+        if (!input.open(QIODevice::ReadOnly) || !output.open(QIODevice::WriteOnly)) return {};
+        while (!input.atEnd()) {
+            if (context.shouldStop()) return {};
+            const QByteArray block = input.read(64 * 1024);
+            if (block.isEmpty() && input.error() != QFileDevice::NoError) return {};
+            if (output.write(block) != block.size()) return {};
+        }
+        if (context.shouldStop()) return {};
+        if (!output.commit()) return {};
+        ThumbnailDiskCache::schedulePrune(diskPolicy);
+        return image;
+    }
 }
 
 int frameAt(int index, int count, int totalFrames)
@@ -336,14 +400,20 @@ QImage ThumbnailService::makePreviewImage(
     }
 
     QImage working = sourceIsLinear
-        ? convertLinearImageToDisplay(source)
+        ? source.convertToFormat(QImage::Format_RGBA32FPx4)
         : source.convertToFormat(QImage::Format_RGB32);
 
     if (working.isNull()) {
         return {};
     }
 
-    OcioManager::applyPreviewTransform(working, previewSettings);
+    if (previewSettings.enabled && !OcioManager::applyPreviewTransform(working, previewSettings)) {
+        qWarning() << "[ThumbnailService] Preview color transform failed";
+        return {};
+    }
+    // Disabled OCIO keeps the existing identity/clamp preview policy. Quantize
+    // only here, after any configured display mapping has processed float RGB.
+    working = working.convertToFormat(QImage::Format_RGB32);
 
     working = working.scaled(targetSize, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
     const QRect crop(
@@ -395,7 +465,7 @@ QImage ThumbnailService::makePlaylistImage(
         const MediaInfo probedInfo = mediaInfo ? MediaInfo{} : MediaProbe::probe(path, 0.0, job);
         const MediaInfo& info = mediaInfo ? *mediaInfo : probedInfo;
         const int sampleFrame = std::max(0, std::min(info.effectiveFrameCount() / 4, info.effectiveFrameCount() - 1));
-        image = loadVideoFrame(path, sampleFrame, info.fps, playlistSize, job);
+        image = loadVideoFrame(path, sampleFrame, info.fps, playlistSize, job, ThumbnailDiskCache::policy());
     }
 
     return makePreviewImage(image, linear, playlistSize, previewSettings);
@@ -438,22 +508,18 @@ QVector<ThumbnailFrame> ThumbnailService::buildTimelineThumbnails(
                 displayFrames.push_back(displayFrame);
             }
 
-            AsyncImageLoader loader;
-            auto future = loader.loadBatchAsync(requests);
-            QElapsedTimer elapsed;
-            elapsed.start();
-            while (!future.isFinished()) {
-                if ((job && job->shouldStop()) || elapsed.elapsed() >= 30000) {
-                    future.cancel();
+            // This function already runs on the thumbnail worker.  Queuing a
+            // batch back onto the same bounded pool and then waiting can
+            // deadlock when all workers are occupied by timeline requests.
+            // Decode directly on the current worker instead.
+            for (int i = 0; i < requests.size(); ++i) {
+                if (job && job->shouldStop()) {
                     return out;
                 }
-                QThread::msleep(10);
-            }
-            const auto results = future.result();
-            for (int i = 0; i < static_cast<int>(results.size()); ++i) {
+                const ImageLoadResult result = AsyncImageLoader::loadSync(requests[static_cast<size_t>(i)]);
                 const QString framePath = requests[static_cast<size_t>(i)].filePath;
                 const QImage preview = makePreviewImage(
-                    results[static_cast<size_t>(i)].image,
+                    result.image,
                     QFileInfo(framePath).suffix().compare(QStringLiteral("exr"), Qt::CaseInsensitive) == 0,
                     timelineSize,
                     previewSettings);
@@ -482,6 +548,7 @@ QVector<ThumbnailFrame> ThumbnailService::buildTimelineThumbnails(
     for (int i = 0; i < count; ++i) {
         displayFrames.push_back(frameAt(i, count, totalFrames));
     }
+    const auto diskPolicy = ThumbnailDiskCache::policy();
 
     // For short clips, one bounded ffmpeg decode is substantially cheaper than
     // starting a process for every seek. Long clips keep the seek-per-frame
@@ -490,12 +557,12 @@ QVector<ThumbnailFrame> ThumbnailService::buildTimelineThumbnails(
         QVector<int> missingFrames;
         missingFrames.reserve(displayFrames.size());
         for (const int displayFrame : displayFrames) {
-            if (!QFileInfo::exists(cachePathForVideoFrame(path, displayFrame, timelineSize))) {
+            if (!QFileInfo::exists(cachePathForVideoFrame(path, displayFrame, timelineSize, fps, diskPolicy))) {
                 missingFrames.push_back(displayFrame);
             }
         }
         if (missingFrames.size() >= 2) {
-            const bool batched = buildVideoThumbnailBatch(path, missingFrames, timelineSize, job);
+            const bool batched = buildVideoThumbnailBatch(path, missingFrames, timelineSize, fps, job, diskPolicy);
             if (job && job->shouldStop()) {
                 return out;
             }
@@ -507,7 +574,7 @@ QVector<ThumbnailFrame> ThumbnailService::buildTimelineThumbnails(
         if (job && job->shouldStop()) {
             break;
         }
-        const QImage frame = loadVideoFrame(path, displayFrame, fps, timelineSize, job);
+        const QImage frame = loadVideoFrame(path, displayFrame, fps, timelineSize, job, diskPolicy);
         const QImage preview = makePreviewImage(frame, false, timelineSize, previewSettings);
         if (!preview.isNull()) {
             out.push_back({displayFrame, preview});

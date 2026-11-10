@@ -16,6 +16,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QSaveFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -40,6 +41,17 @@ QJsonObject makeSummary(const QJsonArray& assertions);
 
 using namespace automation;
 
+namespace {
+bool subtitleAutomationCacheReady(const QString& mediaPath)
+{
+    const QString root = qEnvironmentVariable("CGPLAY_AUTOMATION_SUBTITLE_CACHE_ROOT");
+    if (root.isEmpty() || !QDir::isAbsolutePath(root)) return false;
+    const QString canonicalRoot = QFileInfo(root).canonicalFilePath();
+    const QString cache = QFileInfo(SubtitleGenerationService::defaultSourceSrtPath(mediaPath)).absoluteFilePath();
+    return !canonicalRoot.isEmpty() && cache.startsWith(canonicalRoot + QLatin1Char('/'), Qt::CaseInsensitive);
+}
+} // namespace
+
 QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
     const QString& mediaPath,
     const QString& outputPath,
@@ -63,6 +75,14 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
         item.insert(QStringLiteral("details"), details);
         assertions.append(item);
     };
+    if (!subtitleAutomationCacheReady(mediaPath)) {
+        addAssertion(QStringLiteral("Isolated subtitle cache"), false, QStringLiteral("Refusing to modify non-isolated subtitle caches."));
+        report.insert(QStringLiteral("results"), assertions);
+        report.insert(QStringLiteral("summary"), makeSummary(assertions));
+        return report;
+    }
+    report.insert(QStringLiteral("isolatedCacheRoot"), qEnvironmentVariable("CGPLAY_AUTOMATION_SUBTITLE_CACHE_ROOT"));
+
 
     qInfo() << "[SubtitleCacheDisplaySmoke] Opening media" << mediaPath;
     openFile(mediaPath);
@@ -2080,6 +2100,14 @@ QJsonObject MainWindow::runSubtitleSwitchSequenceSmokeChecks(
             : frames.value(i, frames.constLast());
         const QString stepOutputPath = QStringLiteral("%1_step_%2.json").arg(basePath).arg(i + 1);
         QJsonObject step = runSubtitleCacheDisplaySmokeChecks(mediaPath, stepOutputPath, QVector<int>{ frame });
+        const QJsonObject childSummary = step.value(QStringLiteral("summary")).toObject();
+        const bool childPassed = childSummary.contains(QStringLiteral("fail")) &&
+            childSummary.value(QStringLiteral("fail")).toInt(-1) == 0 &&
+            !step.value(QStringLiteral("frames")).toArray().isEmpty();
+        addAssertion(QStringLiteral("Subtitle switch step %1 passed").arg(i + 1),
+            childPassed, childPassed ? QStringLiteral("child display check passed")
+                                     : QStringLiteral("child display check failed or evidence is incomplete"),
+            childSummary);
         step.insert(QStringLiteral("stepIndex"), i);
         step.insert(QStringLiteral("requestedFrame"), frame);
         step.insert(QStringLiteral("media"), mediaPath);
@@ -2179,6 +2207,14 @@ QJsonObject MainWindow::runSubtitleRefinedFallbackSmokeChecks(
         item.insert(QStringLiteral("details"), details);
         assertions.append(item);
     };
+    if (!subtitleAutomationCacheReady(mediaPath)) {
+        addAssertion(QStringLiteral("Isolated subtitle cache"), false, QStringLiteral("Refusing to modify non-isolated subtitle caches."));
+        report.insert(QStringLiteral("results"), assertions);
+        report.insert(QStringLiteral("summary"), makeSummary(assertions));
+        return report;
+    }
+    report.insert(QStringLiteral("isolatedCacheRoot"), qEnvironmentVariable("CGPLAY_AUTOMATION_SUBTITLE_CACHE_ROOT"));
+
 
     const QString translatedVttPath =
         SubtitleGenerationService::defaultTranslatedVttPath(mediaPath, QStringLiteral("zh-Hans"));
@@ -2239,29 +2275,41 @@ QJsonObject MainWindow::runSubtitleRefinedFallbackSmokeChecks(
         saved.mtime = info.lastModified();
         if (saved.existed) {
             QFile file(path);
-            if (file.open(QIODevice::ReadOnly)) {
-                saved.bytes = file.readAll();
+            if (!file.open(QIODevice::ReadOnly)) {
+                addAssertion(QStringLiteral("Back up subtitle sidecars"), false, file.errorString());
+                report.insert(QStringLiteral("results"), assertions);
+                report.insert(QStringLiteral("summary"), makeSummary(assertions));
+                return report;
+            }
+            saved.bytes = file.readAll();
+            if (file.error() != QFileDevice::NoError || saved.bytes.size() != file.size()) {
+                addAssertion(QStringLiteral("Back up subtitle sidecars"), false, QStringLiteral("Incomplete subtitle backup; no sidecars changed."));
+                report.insert(QStringLiteral("results"), assertions);
+                report.insert(QStringLiteral("summary"), makeSummary(assertions));
+                return report;
             }
         }
         savedSidecars.push_back(saved);
     }
     auto restoreSidecars = [&savedSidecars]() {
+        bool restored = true;
         for (const auto& saved : savedSidecars) {
             if (saved.existed) {
-                QDir().mkpath(QFileInfo(saved.path).absolutePath());
-                QFile file(saved.path);
-                if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-                    file.write(saved.bytes);
-                    file.close();
+                QSaveFile file(saved.path);
+                if (!file.open(QIODevice::WriteOnly) || file.write(saved.bytes) != saved.bytes.size() || !file.commit()) {
+                    // Retain a recovery copy if a fixture cannot be restored.
+                    QSaveFile recovery(saved.path + QStringLiteral(".restore-backup"));
+                    if (recovery.open(QIODevice::WriteOnly) && recovery.write(saved.bytes) == saved.bytes.size()) recovery.commit();
+                    restored = false;
+                    continue;
                 }
                 QFile timeFile(saved.path);
-                if (timeFile.open(QIODevice::ReadWrite)) {
-                    timeFile.setFileTime(saved.mtime, QFileDevice::FileModificationTime);
-                }
-            } else {
-                QFile::remove(saved.path);
+                if (!timeFile.open(QIODevice::ReadWrite) || !timeFile.setFileTime(saved.mtime, QFileDevice::FileModificationTime)) restored = false;
+            } else if (QFileInfo::exists(saved.path) && !QFile::remove(saved.path)) {
+                restored = false;
             }
         }
+        return restored;
     };
     auto setMtime = [](const QString& path, const QDateTime& time) {
         QFile file(path);
@@ -2530,8 +2578,10 @@ QJsonObject MainWindow::runSubtitleRefinedFallbackSmokeChecks(
     if (_p->playbackBar) {
         _p->playbackBar->setTranslationVisible(translationWasVisible);
     }
-    restoreSidecars();
-    report.insert(QStringLiteral("restoredSidecars"), true);
+    const bool restored = restoreSidecars();
+    addAssertion(QStringLiteral("Restore isolated subtitle sidecars"), restored,
+        restored ? QStringLiteral("All sidecars restored.") : QStringLiteral("Sidecar restore failed; recovery copies retained."));
+    report.insert(QStringLiteral("restoredSidecars"), restored);
     report.insert(QStringLiteral("results"), assertions);
     report.insert(QStringLiteral("summary"), makeSummary(assertions));
     return report;
