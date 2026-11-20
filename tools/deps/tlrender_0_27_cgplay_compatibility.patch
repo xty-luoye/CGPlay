@@ -1,31 +1,24 @@
---- a/lib/tlRender/IO/SeqDecode.cpp
-+++ b/lib/tlRender/IO/SeqDecode.cpp
-@@ -10,6 +10,7 @@
- #include <ftk/Core/Path.h>
- 
- #include <algorithm>
-+#include <cmath>
- #include <filesystem>
- #include <sstream>
- #include <stdexcept>
-@@ -56,7 +57,16 @@
-         }
- 
-         _info = _probeInfo();
--        const double speed = _decode->getSpeed(_info, defaultSpeed);
-+        double speed = _decode->getSpeed(_info, defaultSpeed);
-+        // An explicit user rate overrides file metadata. DefaultSpeed remains
-+        // the fallback used when no rate was selected by the caller.
-+        if (const auto i = options.find("SeqIO/SpeedOverride"); i != options.end())
-+        {
-+            std::stringstream ss(i->second);
-+            if (!(ss >> speed) || !std::isfinite(speed) || speed <= 0.0 ||
-+                (ss >> std::ws && !ss.eof()))
-+                throw std::runtime_error("Invalid sequence speed override");
-+        }
- 
-         // The range the sequence covers, whether or not every frame in it is
-         // there. A policy that leaves frames out is settled by the timeline
+--- a/lib/tlRender/IO/FFmpeg.cpp
++++ b/lib/tlRender/IO/FFmpeg.cpp
+@@ -305,6 +305,7 @@
+                 }
+             }
+             // These extensions need to be added manually:
++            extensions[".ivf"] = FileType::Media;
+             extensions[".m4v"] = FileType::Media;
+             extensions[".mxf"] = FileType::Media;
+             extensions[".wav"] = FileType::Audio;
+@@ -330,7 +331,9 @@
+             // command line path is for.
+             for (const auto& ext : {
+                 ".avi", ".avif", ".gif", ".mkv", ".mov", ".mp4", ".mxf",
+-                ".m4v", ".webm", ".y4m" })
++                ".m4v", ".webm", ".y4m", ".asf", ".m1v", ".m2ts", ".m2v",
++                ".mpeg", ".mpg", ".mts", ".ogv", ".rm", ".rmvb", ".ts",
++                ".vob", ".wmv", ".wtv" })
+             {
+                 if (extensions.find(ext) == extensions.end())
+                 {
 --- a/lib/tlRender/IO/FFmpegRead.cpp
 +++ b/lib/tlRender/IO/FFmpegRead.cpp
 @@ -336,11 +336,28 @@
@@ -59,19 +52,50 @@
                      }
  
                      // Process.
---- a/lib/tlRender/IO/FFmpeg.cpp
-+++ b/lib/tlRender/IO/FFmpeg.cpp
-@@ -330,7 +330,9 @@
-             // command line path is for.
-             for (const auto& ext : {
-                 ".avi", ".avif", ".gif", ".mkv", ".mov", ".mp4", ".mxf",
--                ".m4v", ".webm", ".y4m" })
-+                ".m4v", ".webm", ".y4m", ".asf", ".m1v", ".m2ts", ".m2v",
-+                ".mpeg", ".mpg", ".mts", ".ogv", ".rm", ".rmvb", ".ts",
-+                ".vob", ".wmv", ".wtv" })
-             {
-                 if (extensions.find(ext) == extensions.end())
-                 {
+--- a/lib/tlRender/IO/FFmpegReadVideo.cpp
++++ b/lib/tlRender/IO/FFmpegReadVideo.cpp
+@@ -1307,6 +1307,13 @@
+                     const uint8_t* const data2 = frame->data[2];
+                     const int linesize1 = frame->linesize[1];
+                     const int linesize2 = frame->linesize[2];
++                    if (!(w % 2 || h % 2) && linesize0 == w && linesize1 == w2 && linesize2 == w2)
++                    {
++                        std::memcpy(data, data0, w * h);
++                        std::memcpy(data + w * h, data1, w2 * h2);
++                        std::memcpy(data + w * h + w2 * h2, data2, w2 * h2);
++                        break;
++                    }
+                     for (std::size_t i = 0; i < h; ++i)
+                     {
+                         std::memcpy(
+--- a/lib/tlRender/IO/SeqDecode.cpp
++++ b/lib/tlRender/IO/SeqDecode.cpp
+@@ -10,6 +10,7 @@
+ #include <ftk/Core/Path.h>
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <filesystem>
+ #include <sstream>
+ #include <stdexcept>
+@@ -56,7 +57,16 @@
+         }
+ 
+         _info = _probeInfo();
+-        const double speed = _decode->getSpeed(_info, defaultSpeed);
++        double speed = _decode->getSpeed(_info, defaultSpeed);
++        // An explicit user rate overrides file metadata. DefaultSpeed remains
++        // the fallback used when no rate was selected by the caller.
++        if (const auto i = options.find("SeqIO/SpeedOverride"); i != options.end())
++        {
++            std::stringstream ss(i->second);
++            if (!(ss >> speed) || !std::isfinite(speed) || speed <= 0.0 ||
++                (ss >> std::ws && !ss.eof()))
++                throw std::runtime_error("Invalid sequence speed override");
++        }
+ 
+         // The range the sequence covers, whether or not every frame in it is
+         // there. A policy that leaves frames out is settled by the timeline
 --- a/lib/tlRender/Timeline/Player.cpp
 +++ b/lib/tlRender/Timeline/Player.cpp
 @@ -462,10 +462,15 @@
@@ -131,6 +155,57 @@
                      if (!p.timeRange.contains(p.thread.state.currentTime))
                      {
                          std::unique_lock<std::mutex> lock(p.mutex.mutex);
+--- a/lib/tlRender/Timeline/PlayerPrivate.cpp
++++ b/lib/tlRender/Timeline/PlayerPrivate.cpp
+@@ -482,10 +482,17 @@
+                 {
+                     request(time);
+                 }
++                // Retain completed read-behind frames, but do not submit
++                // missing past frames while moving forward. At a loop the
++                // ahead requests can already target the next iteration;
++                // filling the previous tail afterwards seeks the movie
++                // reader backwards again. Paused exact-frame work keeps
++                // the original fill path.
+                 for (OTIO_NS::RationalTime time = std::max(
+                         videoCacheRange.start_time(),
+                         thread.state.inOutRange.start_time());
+-                    time < current && !full();
++                    thread.state.playback != Playback::Forward &&
++                        time < current && !full();
+                     time += inc)
+                 {
+                     request(time);
+@@ -510,11 +517,14 @@
+         if (sourceAudioInfo.isValid())
+         {
+             const ftk::Range<int64_t> audioSecondsRange = getAudioSecondsRange();
+-            for (int64_t seconds = audioCacheRange.min();
+-                seconds <= audioCacheRange.max() &&
+-                thread.audioRequests.size() < playerOptions.audioRequestMax;
+-                ++seconds)
+-            {
++            // Limit speculative decoding independently of the retention budget.
++            const auto ahead = std::min(audioCacheMax, std::max<size_t>(2, playerOptions.audioRequestMax * 2));
++            const auto requestRange = getAudioCacheRange(ahead);
++            for (int64_t offset = 0; offset <= requestRange.max() - requestRange.min() &&
++                thread.audioRequests.size() < playerOptions.audioRequestMax; ++offset)
++            {
++                const auto seconds = thread.cacheDir == CacheDir::Reverse ?
++                    requestRange.max() - offset : requestRange.min() + offset;
+                 const int64_t secondsLooped = tl::loop(
+                     seconds + thread.state.audioOffset,
+                     audioSecondsRange);
+--- a/lib/tlRender/Timeline/TimelinePrivate.h
++++ b/lib/tlRender/Timeline/TimelinePrivate.h
+@@ -298,6 +298,7 @@
+         // handoff.
+         struct Thread
+         {
++            std::optional<bool> prioritizeVideo;
+             std::list<std::shared_ptr<PendingVideoRequest> > videoRequestsInProgress;
+             std::list<std::shared_ptr<PendingAudioRequest> > audioRequestsInProgress;
+             std::condition_variable cv;
 --- a/lib/tlRender/Timeline/TimelineRequests.cpp
 +++ b/lib/tlRender/Timeline/TimelineRequests.cpp
 @@ -481,6 +481,17 @@
@@ -164,34 +239,32 @@
              {
                  const OTIO_NS::RationalTime priorityTime = p.mutex.requestPriority->time;
                  const bool reverse = p.mutex.requestPriority->reverse;
---- a/lib/tlRender/Timeline/TimelinePrivate.h
-+++ b/lib/tlRender/Timeline/TimelinePrivate.h
-@@ -298,6 +298,7 @@
-         // handoff.
-         struct Thread
-         {
-+            std::optional<bool> prioritizeVideo;
-             std::list<std::shared_ptr<PendingVideoRequest> > videoRequestsInProgress;
-             std::list<std::shared_ptr<PendingAudioRequest> > audioRequestsInProgress;
-             std::condition_variable cv;
---- a/lib/tlRender/Timeline/PlayerPrivate.cpp
-+++ b/lib/tlRender/Timeline/PlayerPrivate.cpp
-@@ -482,10 +482,17 @@
-                 {
-                     request(time);
-                 }
-+                // Retain completed read-behind frames, but do not submit
-+                // missing past frames while moving forward. At a loop the
-+                // ahead requests can already target the next iteration;
-+                // filling the previous tail afterwards seeks the movie
-+                // reader backwards again. Paused exact-frame work keeps
-+                // the original fill path.
-                 for (OTIO_NS::RationalTime time = std::max(
-                         videoCacheRange.start_time(),
-                         thread.state.inOutRange.start_time());
--                    time < current && !full();
-+                    thread.state.playback != Playback::Forward &&
-+                        time < current && !full();
-                     time += inc)
-                 {
-                     request(time);
+--- a/lib/tlRender/UI/Viewport.cpp
++++ b/lib/tlRender/UI/Viewport.cpp
+@@ -60,6 +60,7 @@
+             std::shared_ptr<ftk::Observable<ftk::ImageType> > colorBuffer;
+             std::shared_ptr<Player> player;
+             std::vector<VideoFrame> videoFrame;
++            ftk::Size2I lastFitSize;
+             std::shared_ptr<ftk::Observable<ftk::V2I> > viewPos;
+             std::shared_ptr<ftk::Observable<double> > zoom;
+             ftk::RangeD zoomRange = ftk::RangeD(0.01, 512.0);
+@@ -394,6 +395,7 @@
+             p.videoFrameObserver.reset();
+             p.droppedFramesObserver.reset();
+ 
++            if (p.player != value) p.lastFitSize = ftk::Size2I();
+             p.player = value;
+ 
+             if (p.player)
+@@ -1522,7 +1524,9 @@
+             FTK_P();
+             ftk::V2I viewPos;
+             double zoom = 1.0;
+-            const ftk::Size2I renderSize = _getRenderSize();
++            const auto currentSize = _getRenderSize();
++            if (currentSize.isValid()) p.lastFitSize = currentSize;
++            const auto& renderSize = p.lastFitSize;
+             if (renderSize.isValid())
+             {
+                 const ftk::Box2I& g = getGeometry();

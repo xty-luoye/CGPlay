@@ -1,0 +1,41 @@
+--- a/lib/tlRender/IO/FFmpeg.cpp
++++ b/lib/tlRender/IO/FFmpeg.cpp
+@@ -200,7 +200,7 @@
+             }
+ 
+             // Get formats.
+-            std::map<std::string, FileType> extensions;
++            std::map<std::string, FileType> extensions{{".ivf", FileType::Media}};
+             const AVInputFormat* avInputFormat = nullptr;
+             void* avInputFormatIterate = nullptr;
+             std::vector<std::string> formatLog;
+--- a/lib/tlRender/UI/Viewport.cpp
++++ b/lib/tlRender/UI/Viewport.cpp
+@@ -31,6 +31,7 @@
+             std::shared_ptr<ftk::Observable<ftk::gl::TextureType> > colorBuffer;
+             std::shared_ptr<Player> player;
+             std::vector<VideoFrame> videoFrame;
++            ftk::Size2I lastFitSize;
+             std::shared_ptr<ftk::Observable<ftk::V2I> > viewPos;
+             std::shared_ptr<ftk::Observable<double> > zoom;
+             ftk::RangeD zoomRange = ftk::RangeD(0.01, 100.0);
+@@ -312,6 +313,7 @@
+             p.playbackObserver.reset();
+             p.videoFrameObserver.reset();
+ 
++            if (p.player != value) p.lastFitSize = ftk::Size2I();
+             p.player = value;
+ 
+             if (p.player)
+@@ -991,7 +993,10 @@
+             double zoom = 1.0;
+             const ftk::Box2I& g = getGeometry();
+             const ftk::Size2I viewportSize = g.size();
+-            const ftk::Size2I renderSize = _getRenderSize();
++            // Refit on resize even between decoded frames of the same player.
++            const auto currentSize = _getRenderSize();
++            if (currentSize.w > 0 && currentSize.h > 0) p.lastFitSize = currentSize;
++            const auto& renderSize = p.lastFitSize;
+             if (renderSize.w > 0 && renderSize.h > 0)
+             {
+                 zoom = viewportSize.w / static_cast<double>(renderSize.w);

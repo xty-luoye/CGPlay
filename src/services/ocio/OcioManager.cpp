@@ -54,7 +54,10 @@ struct OcioManager::Private
     bool    userEnabled = false;  // Default off for standard video playback
     bool    exrOverrideActive = false;
     bool    exrOverrideSuppressed = false;
-    bool    exrPreviousUserEnabled = false;
+    PreviewTransformSettings previousTransform;
+#ifdef CGPLAY_OCIO_ENABLED
+    OCIO::ConstConfigRcPtr previousConfig;
+#endif
 };
 
 // ─── Constructor / Destructor ────────────────────────────────────────────────
@@ -375,7 +378,10 @@ void OcioManager::applyExrSceneLinearDefaults()
     // applied even though the UI still shows the previous view name.
     if (!_p->exrOverrideActive) {
         _p->exrOverrideActive = true;
-        _p->exrPreviousUserEnabled = _p->userEnabled;
+        _p->previousTransform = previewTransformSettings();
+#ifdef CGPLAY_OCIO_ENABLED
+        _p->previousConfig = _p->config;
+#endif
     }
     const bool wasUserEnabled = _p->userEnabled;
     if (!wasUserEnabled) {
@@ -459,15 +465,22 @@ void OcioManager::clearExrSceneLinearDefaults()
     }
 
     _p->exrOverrideActive = false;
-    const bool restoreEnabled = _p->exrPreviousUserEnabled;
-    _p->exrPreviousUserEnabled = false;
-    if (_p->userEnabled == restoreEnabled) {
-        return;
-    }
-
-    _p->userEnabled = restoreEnabled;
+    const auto previous = _p->previousTransform;
+    const bool enabledChangedValue = previous.enabled != _p->userEnabled;
+    const bool configChanged = previous.configPath != _p->configPath;
+    const bool displayChangedValue = previous.display != _p->display;
+#ifdef CGPLAY_OCIO_ENABLED
+    _p->config = std::move(_p->previousConfig);
+#endif
+    _p->configPath = previous.configPath;
+    _p->input = previous.input;
+    _p->display = previous.display;
+    _p->view = previous.view;
+    _p->userEnabled = previous.enabled;
+    if (configChanged) Q_EMIT configLoaded(previous.configPath);
     _rebuildOptions();
-    Q_EMIT enabledChanged(restoreEnabled);
+    if (displayChangedValue) Q_EMIT displayChanged(previous.display);
+    if (enabledChangedValue) Q_EMIT enabledChanged(previous.enabled);
 }
 
 void OcioManager::_rebuildOptions()

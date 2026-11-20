@@ -1,4 +1,5 @@
 #include "MediaProbe.h"
+#include "PlaybackVideoStream.h"
 #include "annotation/ReviewExport.h"
 #include "component/ComponentManager.h"
 #include "core/AsyncImageLoader.h"
@@ -80,16 +81,20 @@ QStringList collectExternalSubtitleCandidates(const QFileInfo& mediaFile)
     };
     for (const QString& suffix : suffixes) {
         const QString candidate = dir.filePath(baseName + suffix);
-        if (QFileInfo::exists(candidate)) {
-            candidates.push_back(QFileInfo(candidate).absoluteFilePath());
+        const QFileInfo subtitleFile(candidate);
+        if (subtitleFile.isFile()) {
+            candidates.push_back(subtitleFile.absoluteFilePath());
         }
     }
 
+    // A literal '[' opens a wildcard character class in QDir name filters.
+    // Narrow by the literal prefix, then compare the full base name below.
+    const QString filterPrefix = baseName.section(QLatin1Char('['), 0, 0);
     const QStringList entries = dir.entryList(
-        {baseName + QStringLiteral("*.srt"),
-         baseName + QStringLiteral("*.vtt"),
-         baseName + QStringLiteral("*.ass"),
-         baseName + QStringLiteral("*.ssa")},
+        {filterPrefix + QStringLiteral("*.srt"),
+         filterPrefix + QStringLiteral("*.vtt"),
+         filterPrefix + QStringLiteral("*.ass"),
+         filterPrefix + QStringLiteral("*.ssa")},
         QDir::Files,
         QDir::Name);
     for (const QString& entry : entries) {
@@ -259,7 +264,8 @@ QVector<SequenceFrame> MediaProbe::collectSequenceFiles(const QString& path)
             .arg(QRegularExpression::escape(suffix)));
 
     const QDir dir = info.dir();
-    const QStringList names = dir.entryList({prefix + "*" + suffix}, QDir::Files, QDir::Name);
+    const QString filterPrefix = prefix.section(QLatin1Char('['), 0, 0);
+    const QStringList names = dir.entryList({filterPrefix + "*" + suffix}, QDir::Files, QDir::Unsorted);
     QVector<SequenceFrame> frames;
     frames.reserve(names.size());
     for (const QString& name : names) {
@@ -347,7 +353,7 @@ static void probeVideo(const QString& path, MediaInfo& info, JobContext* job)
     proc.start(ffprobe, {
         QStringLiteral("-v"), QStringLiteral("error"),
         QStringLiteral("-show_entries"),
-        QStringLiteral("stream=index,codec_type,width,height,codec_name,pix_fmt,avg_frame_rate,r_frame_rate,nb_frames,duration,bit_rate"),
+        QStringLiteral("stream=index,codec_type,width,height,codec_name,pix_fmt,avg_frame_rate,r_frame_rate,nb_frames,duration,bit_rate:stream_disposition"),
         QStringLiteral("-show_entries"),
         QStringLiteral("format=format_name,format_long_name,bit_rate,duration"),
         QStringLiteral("-of"), QStringLiteral("json"),
@@ -398,10 +404,11 @@ static void probeVideo(const QString& path, MediaInfo& info, JobContext* job)
         return;
     }
 
-    for (const QJsonValue& streamValue : streams) {
-        const QJsonObject stream = streamValue.toObject();
+    const int videoPosition = playbackVideoStreamPosition(streams);
+    for (qsizetype i = 0; i < streams.size(); ++i) {
+        const QJsonObject stream = streams[i].toObject();
         const QString codecType = stream.value(QStringLiteral("codec_type")).toString().trimmed().toLower();
-        if (codecType == QStringLiteral("video") && info.width <= 0 && info.height <= 0) {
+        if (i == videoPosition) {
             info.width = stream.value(QStringLiteral("width")).toInt(0);
             info.height = stream.value(QStringLiteral("height")).toInt(0);
             info.hasRealDimensions = info.width > 0 && info.height > 0;

@@ -99,11 +99,7 @@ void MainWindow::_saveState()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    // Keep the window/player alive until recorder flush, remux and process
-    // cleanup finish. This precedes the existing subtitle close watchdog.
     if (_deferCloseForRecording()) { event->ignore(); return; }
-    // The legacy subtitle-close path below quits the whole process. It must
-    // not interrupt a recording/finalizer owned by another player window.
     if (_p->subtitleSession.state().subtitleGenerationBusy && RecordingService::hasActiveSessions()) {
         if (statusBar()) statusBar()->showMessage(
             QStringLiteral("其他窗口仍在录屏或保存录像，请先停止并保存后再退出。"), 6000);
@@ -119,19 +115,13 @@ void MainWindow::closeEvent(QCloseEvent* event)
     }
     _p->subtitleSession.cancelTasks();
     if (_p->subtitleSession.state().subtitleGenerationBusy) {
-        if (_p->subtitleSession.state().subtitleGenerationCancelRequested) {
-            _p->subtitleSession.state().subtitleGenerationCancelRequested->store(true);
+        if (auto* watcher = _p->subtitleSession.state().subtitleGenerationWatcher.data()) {
+            connect(watcher, &QFutureWatcherBase::finished, this, &QWidget::close,
+                    Qt::ConnectionType(Qt::QueuedConnection | Qt::UniqueConnection));
         }
-        if (_p->subtitleGenerationProgress) {
-            _p->subtitleGenerationProgress->close();
-        }
-        if (statusBar()) {
-            statusBar()->showMessage(QStringLiteral("已取消后台字幕任务，正在关闭。"), 1500);
-        }
-        QTimer::singleShot(0, qApp, &QCoreApplication::quit);
-        QTimer::singleShot(1500, []() {
-            std::_Exit(0);
-        });
+        if (statusBar()) statusBar()->showMessage(QStringLiteral("正在取消后台字幕任务，完成后关闭。"));
+        event->ignore();
+        return;
     }
     // Close the active media while the main window and its services are
     // still alive.  This releases tlRender and cancels timeline thumbnails

@@ -6,7 +6,9 @@
 #include "viewer/TlViewport.h"
 
 #include <tlRender/Timeline/Timeline.h>
+#if __has_include(<tlRender/Core/Version.h>)
 #include <tlRender/Core/Version.h>
+#endif
 #include <tlRender/IO/IO.h>
 #include <nlohmann/json.hpp>
 

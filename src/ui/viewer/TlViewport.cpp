@@ -363,6 +363,7 @@ QJsonObject TlViewport::benchmarkDiagnostics() const
     out["paint_cpu_total_ms"] = _p->paintCpuNs / 1.e6;
     out["draw_cpu_total_ms"] = _p->drawCpuNs / 1.e6;
     out["paint_cpu_max_ms"] = _p->maxPaintCpuNs / 1.e6;
+    out["last_drawn_source_seconds"] = std::isfinite(_p->lastDrawnSourceTime) ? _p->lastDrawnSourceTime : -1.;
     out["drawn_source_frame_changes"] = static_cast<double>(_p->drawnSourceFrameChanges);
     out["drawn_source_gap_max_ms"] = _p->maxDrawnSourceGapNs / 1.e6;
     out["drawn_source_gap_from_seconds"] = _p->maxDrawnSourceGapFrom;

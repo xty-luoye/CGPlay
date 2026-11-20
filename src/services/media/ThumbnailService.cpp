@@ -1,4 +1,5 @@
 #include "ThumbnailService.h"
+#include "PlaybackVideoStream.h"
 #include "ThumbnailDiskCache.h"
 
 #include "core/AsyncImageLoader.h"
@@ -16,6 +17,9 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 #include <QSemaphore>
 #include <QMutex>
 #include <QMutexLocker>
@@ -24,6 +28,7 @@
 #include <QTemporaryFile>
 #include <QHash>
 #include <memory>
+#include <optional>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <algorithm>
@@ -33,6 +38,16 @@
 namespace cgplay {
 
 namespace {
+
+void configureThumbnailProcess(QProcess& process)
+{
+    process.setProcessChannelMode(QProcess::MergedChannels);
+#ifdef Q_OS_WIN
+    process.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) {
+        args->flags |= BELOW_NORMAL_PRIORITY_CLASS | CREATE_NO_WINDOW;
+    });
+#endif
+}
 
 QImage loadStillImage(const QString& path, JobContext* job)
 {
@@ -67,7 +82,7 @@ QString cachePathForVideoFrame(const QString& path, int frame, const QSize& size
             QByteArray::number(fileInfo.lastModified().toMSecsSinceEpoch()) + ':' +
             QByteArray::number(size.width()) + 'x' +
             QByteArray::number(size.height()) + ':' +
-            QByteArray::number(fps, 'g', 17),
+            QByteArray::number(fps, 'g', 17) + ":playback-track-v2",
         QCryptographicHash::Sha1).toHex();
     return ThumbnailDiskCache::path(policy, key, frame);
 }
@@ -105,7 +120,7 @@ struct ThumbnailProcessSlot
     ~ThumbnailProcessSlot() { if (acquired) thumbnailProcessSlots.release(); }
 };
 
-bool canBatchVideoFrames(const QString& path, double fps, JobContext* job)
+QJsonObject thumbnailVideoStream(const QString& path, JobContext* job)
 {
     QString ffprobe = qEnvironmentVariable("CGPLAY_TEST_FFPROBE");
     if (ffprobe.isEmpty()) {
@@ -121,30 +136,52 @@ bool canBatchVideoFrames(const QString& path, double fps, JobContext* job)
         ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
     }
     if (ffprobe.isEmpty() || (job && job->shouldStop())) {
-        return false;
+        return {};
     }
 
     QProcess probe;
     probe.setProcessChannelMode(QProcess::MergedChannels);
     probe.start(ffprobe, {
         QStringLiteral("-v"), QStringLiteral("error"),
-        QStringLiteral("-select_streams"), QStringLiteral("v:0"),
-        QStringLiteral("-show_entries"), QStringLiteral("stream=avg_frame_rate,r_frame_rate,nb_frames"),
+        QStringLiteral("-select_streams"), QStringLiteral("v"),
+        QStringLiteral("-show_entries"), QStringLiteral("stream=index,codec_type,avg_frame_rate,r_frame_rate,nb_frames,width,codec_name,pix_fmt:stream_disposition"),
         QStringLiteral("-of"), QStringLiteral("json"), path
     }, QIODevice::ReadOnly);
     JobContext localJob(5000);
     JobContext& context = job ? *job : localJob;
     const ProcessOutcome outcome = context.waitForProcess(probe, 25, 5000);
     if (!outcome.succeeded() || (job && job->shouldStop())) {
-        return false;
+        return {};
     }
 
     const QJsonArray streams = QJsonDocument::fromJson(outcome.standardOutput)
         .object().value(QStringLiteral("streams")).toArray();
-    if (streams.isEmpty()) {
-        return false;
+    const int position = playbackVideoStreamPosition(streams);
+    return position >= 0 ? streams[position].toObject() : QJsonObject{};
+}
+
+QString thumbnailStreamMap(const QJsonObject& stream)
+{
+    const int index = stream.value(QStringLiteral("index")).toInt(-1);
+    return index >= 0 ? QStringLiteral("0:%1").arg(index) : QStringLiteral("0:v:0");
+}
+
+QString thumbnailHardwareFormat(const QJsonObject& stream, double fps)
+{
+    const int width = stream.value(QStringLiteral("width")).toInt();
+    const QString pixelFormat = stream.value(QStringLiteral("pix_fmt")).toString();
+    if (stream.value(QStringLiteral("codec_name")).toString() == QStringLiteral("hevc")) {
+        if (width >= 7680 && pixelFormat == QStringLiteral("yuv420p"))
+            return QStringLiteral("nv12");
+        else if (width >= 3840 && fps >= 50 && pixelFormat == QStringLiteral("yuv420p10le"))
+            return QStringLiteral("p010le");
     }
-    const QJsonObject stream = streams.first().toObject();
+    return {};
+}
+
+bool canBatchVideoFrames(const QJsonObject& stream, double fps, QString& hardwareFormat)
+{
+    hardwareFormat = thumbnailHardwareFormat(stream, fps);
     bool okFrames = false;
     const int frameCount = stream.value(QStringLiteral("nb_frames")).toString().toInt(&okFrames);
     const auto parseRatio = [](const QString& value) {
@@ -175,7 +212,8 @@ bool buildVideoThumbnailBatch(
     const QSize& size,
     double fps,
     JobContext* job,
-    const ThumbnailDiskCache::Policy& diskPolicy)
+    const ThumbnailDiskCache::Policy& diskPolicy,
+    const QString& hardwareFormat, const QString& streamMap)
 {
     if (frames.size() < 2 || (job && job->shouldStop())) {
         return false;
@@ -215,20 +253,32 @@ bool buildVideoThumbnailBatch(
         // ffmpeg expression parser, not for a shell.
         selection.push_back(QStringLiteral("eq(n\\,%1)").arg(std::max(0, frame)));
     }
-    const QString filter = QStringLiteral("select=%1,scale=%2:%3:force_original_aspect_ratio=increase,crop=%2:%3")
+    // Select by the original frame number before downloading the few requested GPU frames.
+    const bool tryHardwareDecode = !hardwareFormat.isEmpty();
+    const QString download = tryHardwareDecode ? QStringLiteral(",hwdownload,format=") + hardwareFormat : QString();
+    const QString filter = QStringLiteral("select=%1%4,scale=%2:%3:force_original_aspect_ratio=increase,crop=%2:%3")
         .arg(selection.join(QLatin1Char('+')))
         .arg(size.width())
-        .arg(size.height());
+        .arg(size.height()).arg(download);
     const QString outputPattern = QDir(tempDir.path()).filePath(QStringLiteral("thumb_%08d.jpg"));
 
     QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    process.start(ffmpeg, {
+    configureThumbnailProcess(process);
+    QStringList inputOptions;
+    if (tryHardwareDecode) {
+        inputOptions << QStringLiteral("-hwaccel") << QStringLiteral("cuda")
+                     << QStringLiteral("-hwaccel_output_format") << QStringLiteral("cuda");
+    }
+    process.start(ffmpeg, inputOptions + QStringList{
+        QStringLiteral("-threads"), tryHardwareDecode ? QStringLiteral("1") : QStringLiteral("2"),
+        QStringLiteral("-filter_threads"), QStringLiteral("1"),
         QStringLiteral("-hide_banner"), QStringLiteral("-loglevel"), QStringLiteral("error"),
         QStringLiteral("-y"), QStringLiteral("-i"), path,
+        QStringLiteral("-map"), streamMap,
         QStringLiteral("-vf"), filter,
         QStringLiteral("-vsync"), QStringLiteral("0"),
         QStringLiteral("-frames:v"), QString::number(frames.size()),
+        QStringLiteral("-threads:v"), QStringLiteral("1"),
         QStringLiteral("-q:v"), QStringLiteral("2"), outputPattern
     }, QIODevice::ReadOnly);
     JobContext localJob(30000);
@@ -278,10 +328,8 @@ QImage loadVideoFrame(
     double fps,
     const QSize& size,
     JobContext* job,
-    const ThumbnailDiskCache::Policy& diskPolicy)
+    const ThumbnailDiskCache::Policy& diskPolicy, std::optional<QJsonObject>& stream, bool& allowHardwareSeek)
 {
-    const QString ffmpeg = MediaProbe::locateFfmpeg();
-    if (ffmpeg.isEmpty()) return {};
     JobContext localJob(9000);
     JobContext& context = job ? *job : localJob;
     const int safeFrame = std::max(0, frame);
@@ -320,6 +368,10 @@ QImage loadVideoFrame(
         ThumbnailFlightCompletion completion{jpg, flight};
         // Another process may have committed a complete thumbnail meanwhile.
         if (cached.load(jpg) && !cached.isNull()) { ThumbnailDiskCache::touch(jpg); return cached; }
+        const QString ffmpeg = MediaProbe::locateFfmpeg();
+        if (ffmpeg.isEmpty()) return {};
+        if (!stream) stream = thumbnailVideoStream(path, &context);
+        if (context.shouldStop()) return {};
         ThumbnailProcessSlot slot;
         while (!slot.acquired) {
             if (context.shouldStop()) return {};
@@ -330,20 +382,33 @@ QImage loadVideoFrame(
         if (!temporary.open()) return {};
         const QString temporaryPath = temporary.fileName();
         temporary.close();
-        QProcess process;
-        process.setProcessChannelMode(QProcess::MergedChannels);
-        const QString ss = QString::number(static_cast<double>(safeFrame) / safeFps, 'f', 3);
-        process.start(ffmpeg, {
-            QStringLiteral("-hide_banner"), QStringLiteral("-loglevel"), QStringLiteral("error"),
-            QStringLiteral("-y"), QStringLiteral("-ss"), ss, QStringLiteral("-i"), path,
-            QStringLiteral("-frames:v"), QStringLiteral("1"),
-            QStringLiteral("-vf"),
-            QStringLiteral("scale=%1:%2:force_original_aspect_ratio=increase,crop=%1:%2")
-                .arg(size.width()).arg(size.height()),
-            QStringLiteral("-q:v"), QStringLiteral("2"), temporaryPath
-        }, QIODevice::ReadOnly);
-        const ProcessOutcome outcome = context.waitForProcess(process, 25, 9000);
-        if (!outcome.succeeded() || context.shouldStop()) return {};
+        const QString ss = QString::number(static_cast<double>(safeFrame) / safeFps, 'f', 6);
+        const QString scale = QStringLiteral("scale=%1:%2:force_original_aspect_ratio=increase,crop=%1:%2")
+            .arg(size.width()).arg(size.height());
+        const auto extract = [&](const QString& hardwareFormat) {
+            QStringList options;
+            QString filter = scale;
+            if (!hardwareFormat.isEmpty()) {
+                options << "-hwaccel" << "cuda" << "-hwaccel_output_format" << "cuda";
+                filter.prepend(QStringLiteral("hwdownload,format=%1,").arg(hardwareFormat));
+            }
+            QProcess process;
+            configureThumbnailProcess(process);
+            process.start(ffmpeg, options + QStringList{
+                "-threads", "2", "-filter_threads", "1", "-hide_banner", "-loglevel", "error",
+                "-y", "-ss", ss, "-i", path, "-map", thumbnailStreamMap(*stream),
+                "-frames:v", "1", "-vf", filter, "-q:v", "2", temporaryPath
+            }, QIODevice::ReadOnly);
+            return context.waitForProcess(process, 25, 9000).succeeded();
+        };
+        const QString hardwareFormat = allowHardwareSeek ? thumbnailHardwareFormat(*stream, safeFps) : QString();
+        bool extracted = false;
+        if (!hardwareFormat.isEmpty()) {
+            extracted = extract(hardwareFormat);
+            if (!extracted) allowHardwareSeek = false;
+        }
+        if (!extracted && !context.shouldStop()) extracted = extract({});
+        if (!extracted || context.shouldStop()) return {};
         QImage image;
         if (!image.load(temporaryPath) || image.isNull()) return {};
 
@@ -465,7 +530,9 @@ QImage ThumbnailService::makePlaylistImage(
         const MediaInfo probedInfo = mediaInfo ? MediaInfo{} : MediaProbe::probe(path, 0.0, job);
         const MediaInfo& info = mediaInfo ? *mediaInfo : probedInfo;
         const int sampleFrame = std::max(0, std::min(info.effectiveFrameCount() / 4, info.effectiveFrameCount() - 1));
-        image = loadVideoFrame(path, sampleFrame, info.fps, playlistSize, job, ThumbnailDiskCache::policy());
+        std::optional<QJsonObject> stream;
+        bool allowHardwareSeek = info.effectiveFrameCount() > 1800;
+        image = loadVideoFrame(path, sampleFrame, info.fps, playlistSize, job, ThumbnailDiskCache::policy(), stream, allowHardwareSeek);
     }
 
     return makePreviewImage(image, linear, playlistSize, previewSettings);
@@ -550,10 +617,11 @@ QVector<ThumbnailFrame> ThumbnailService::buildTimelineThumbnails(
     }
     const auto diskPolicy = ThumbnailDiskCache::policy();
 
+    std::optional<QJsonObject> stream;
     // For short clips, one bounded ffmpeg decode is substantially cheaper than
     // starting a process for every seek. Long clips keep the seek-per-frame
     // path so a 2-hour file is never decoded from frame zero just for thumbs.
-    if (totalFrames <= 1800 && displayFrames.size() >= 2 && canBatchVideoFrames(path, fps, job)) {
+    if (totalFrames <= 1800 && displayFrames.size() >= 2) {
         QVector<int> missingFrames;
         missingFrames.reserve(displayFrames.size());
         for (const int displayFrame : displayFrames) {
@@ -561,20 +629,27 @@ QVector<ThumbnailFrame> ThumbnailService::buildTimelineThumbnails(
                 missingFrames.push_back(displayFrame);
             }
         }
-        if (missingFrames.size() >= 2) {
-            const bool batched = buildVideoThumbnailBatch(path, missingFrames, timelineSize, fps, job, diskPolicy);
+        QString hardwareFormat;
+        if (missingFrames.size() >= 2) stream = thumbnailVideoStream(path, job);
+        if (stream && canBatchVideoFrames(*stream, fps, hardwareFormat)) {
+            const QString streamMap = thumbnailStreamMap(*stream);
+            const bool batched = buildVideoThumbnailBatch(path, missingFrames, timelineSize, fps, job,
+                diskPolicy, hardwareFormat, streamMap);
+            if (!batched && !hardwareFormat.isEmpty() && !(job && job->shouldStop())) {
+                buildVideoThumbnailBatch(path, missingFrames, timelineSize, fps, job, diskPolicy, {}, streamMap);
+            }
             if (job && job->shouldStop()) {
                 return out;
             }
-            Q_UNUSED(batched);
         }
     }
 
+    bool allowHardwareSeek = totalFrames > 1800;
     for (const int displayFrame : displayFrames) {
         if (job && job->shouldStop()) {
             break;
         }
-        const QImage frame = loadVideoFrame(path, displayFrame, fps, timelineSize, job, diskPolicy);
+        const QImage frame = loadVideoFrame(path, displayFrame, fps, timelineSize, job, diskPolicy, stream, allowHardwareSeek);
         const QImage preview = makePreviewImage(frame, false, timelineSize, previewSettings);
         if (!preview.isNull()) {
             out.push_back({displayFrame, preview});

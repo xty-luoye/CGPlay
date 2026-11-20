@@ -150,6 +150,7 @@ struct MainWindow::Private
     quint64 mediaProbeGeneration = 0;
     QPointer<JobHandle> mediaProbeJob;
     bool autoPlayPending = false;
+    QMetaObject::Connection playlistOpenConnection;
     QString pendingComparePath;
     QString remoteUpdateVersion;
     bool updateAvailable = false;

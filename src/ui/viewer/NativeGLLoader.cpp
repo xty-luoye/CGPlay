@@ -1,7 +1,9 @@
 #include "NativeGLLoader.h"
 
 // Define the version before selecting the native context loader.
+#if __has_include(<tlRender/Core/Version.h>)
 #include <tlRender/Core/Version.h>
+#endif
 #include <ftk/GL/GL.h>
 #include <ftk/GL/Init.h>
 

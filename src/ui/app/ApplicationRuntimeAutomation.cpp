@@ -564,6 +564,8 @@ int Application::_runPlaybackBenchmark()
 
     _mainWindow->resize(1500, 840);
     _mainWindow->show();
+    QElapsedTimer openToDraw;
+    openToDraw.start();
     _mainWindow->openFile(mediaInfo.absoluteFilePath());
 
     auto* playback = _mainWindow->playbackController();
@@ -582,6 +584,40 @@ int Application::_runPlaybackBenchmark()
     }
     auto* playbackController = dynamic_cast<PlaybackController*>(playback);
     auto* viewport = _mainWindow->viewerWidget() ? _mainWindow->viewerWidget()->viewport() : nullptr;
+
+    bool seekRequested = false;
+    const int seekFrame = qEnvironmentVariableIntValue("CGPLAY_BENCHMARK_SEEK_FRAME", &seekRequested);
+    qint64 openToDrawMs = -1;
+    qint64 seekToDrawMs = -1;
+    if (seekRequested) {
+        if (!viewport || seekFrame < 0 || seekFrame >= playback->totalFrames() || playback->fps() <= 0)
+            return 3;
+        const auto drawnSeconds = [&] {
+            return viewport->benchmarkDiagnostics().value("last_drawn_source_seconds").toDouble(-1.);
+        };
+        QElapsedTimer wait;
+        wait.start();
+        while (drawnSeconds() < 0. && wait.elapsed() < 15000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            QThread::msleep(2);
+        }
+        if (drawnSeconds() < 0.) return 3;
+        openToDrawMs = openToDraw.elapsed();
+        double targetFrame = seekFrame;
+#if CGPLAY_HAS_TLRENDER
+        if (playbackController && playbackController->player())
+            targetFrame += playbackController->player()->getTimeRange().start_time().value_rescaled_to(playback->fps());
+#endif
+        playback->pause();
+        wait.restart();
+        playback->seekToFrame(seekFrame);
+        while (std::abs(drawnSeconds() * playback->fps() - targetFrame) >= .5 && wait.elapsed() < 15000) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            QThread::msleep(2);
+        }
+        if (std::abs(drawnSeconds() * playback->fps() - targetFrame) < .5) seekToDrawMs = wait.elapsed();
+        playback->forward();
+    }
 
     auto* stats = playback->playbackStats();
     if (stats) {
@@ -814,7 +850,12 @@ int Application::_runPlaybackBenchmark()
             report["playbackRateTarget"] = 1.0;
             report["playbackRatePass"] = playbackRatePassed;
             report["videoOutputPass"] = videoOutputPassed;
-            report["passed"] = playbackRatePassed && videoOutputPassed;
+            if (seekRequested) {
+                report["open_to_draw_ms"] = openToDrawMs;
+                report["seek_frame"] = seekFrame;
+                report["seek_to_draw_ms"] = seekToDrawMs;
+            }
+            report["passed"] = playbackRatePassed && videoOutputPassed && (!seekRequested || seekToDrawMs >= 0);
             report["frame_events"] = frameEvents;
             report["frame_event_fps"] = eventFps;
             report["expected_frames_at_media_fps"] = expectedFrames;
@@ -870,7 +911,7 @@ int Application::_runPlaybackBenchmark()
                         << "renderFPS=" << renderFps
                         << "frames=" << frameEvents
                         << "skipped=" << skippedFrames;
-                if (!playbackRatePassed || !videoOutputPassed) {
+                if (!report["passed"].toBool()) {
                     exitCode = 5;
                 }
             }

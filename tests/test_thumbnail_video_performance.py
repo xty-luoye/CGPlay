@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import textwrap
+import tempfile
 import unittest
 from tests.native_probe_runtime import deploy_runtime
 
@@ -33,6 +34,11 @@ int wmain(int argc, wchar_t** argv)
     {
         std::ofstream count("proxy_count.txt", std::ios::app);
         count << "1\n";
+    }
+    if (GetEnvironmentVariableW(L"CGPLAY_TEST_REJECT_CUDA", nullptr, 0)) {
+        for (int i = 1; i < argc; ++i) {
+            if (std::wstring(argv[i]) == L"-hwaccel") return 1;
+        }
     }
     wchar_t realPath[32768]{};
     const DWORD length = GetEnvironmentVariableW(L"CGPLAY_REAL_FFMPEG", realPath, 32768);
@@ -140,13 +146,13 @@ static bool commonChecks()
     return report["background"].toBool() && visible == 0;
 }
 
-static bool batch(const QString& path)
+static bool batch(const QString& path, double fps = 24.0, int expectedStarts = 1)
 {
     QFile::remove(proxyCountPath);
     QElapsedTimer timer;
     timer.start();
     const auto frames = ThumbnailService::buildTimelineThumbnails(
-        path, 48, 24.0, 6, {}, nullptr);
+        path, 48, fps, 6, {}, nullptr);
     report["elapsedMs"] = timer.elapsed();
     report["frameCount"] = frames.size();
     report["ffmpegStarts"] = ffmpegStarts();
@@ -154,7 +160,23 @@ static bool batch(const QString& path)
     for (const auto& frame : frames) {
         valid = valid && frame.image.size() == QSize(112, 64) && !frame.image.isNull();
     }
-    return valid && report["ffmpegStarts"].toInt() == 1;
+    return valid && report["ffmpegStarts"].toInt() == expectedStarts;
+}
+
+static bool trackColors(const QString& path, bool expectRed)
+{
+    const auto matches = [expectRed](const QImage& image) {
+        if (image.isNull()) return false;
+        const QColor pixel = image.pixelColor(image.width() / 2, image.height() / 2);
+        return expectRed ? pixel.red() > 200 && pixel.blue() < 40 :
+                           pixel.blue() > 200 && pixel.red() < 40;
+    };
+    const auto frames = ThumbnailService::buildTimelineThumbnails(path, 48, 24, 6, {}, nullptr);
+    if (frames.size() != 6 || !matches(ThumbnailService::makePlaylistImage(path, {}))) return false;
+    for (const auto& frame : frames) {
+        if (!matches(frame.image)) return false;
+    }
+    return true;
 }
 
 static bool cacheReuse(const QString& path)
@@ -169,7 +191,20 @@ static bool cacheReuse(const QString& path)
     report["secondFrameCount"] = second.size();
     report["firstFfmpegStarts"] = firstStarts;
     report["secondFfmpegStarts"] = secondStarts;
-    return first.size() == 6 && second.size() == 6 && firstStarts == 1 && secondStarts == 0;
+    // A fully cached request must work even if the external tools disappear.
+    // Route an unexpected probe to the counting proxy as well.
+    qputenv("CGPLAY_TEST_FFPROBE", qgetenv("CGPLAY_TEST_FFMPEG"));
+    qunsetenv("CGPLAY_TEST_FFMPEG");
+    QFile::remove(proxyCountPath);
+    const auto offline = ThumbnailService::buildTimelineThumbnails(path, 48, 24.0, 6, {}, nullptr);
+    report["cachedFramesWithoutTools"] = offline.size();
+    report["warmToolStarts"] = ffmpegStarts();
+    bool identical = first.size() == offline.size();
+    for (int i = 0; identical && i < first.size(); ++i) {
+        identical = first[i].image == offline[i].image;
+    }
+    return first.size() == 6 && second.size() == 6 && firstStarts == 1 &&
+        secondStarts == 0 && identical && ffmpegStarts() == 0;
 }
 
 static bool canceled(const QString& path)
@@ -188,15 +223,18 @@ static bool canceled(const QString& path)
     return frames.isEmpty() && before == after;
 }
 
-static bool longClipFallsBack(const QString& path)
+static bool longClipFallsBack(const QString& path, bool rejectHardware = false)
 {
     QFile::remove(proxyCountPath);
-    const auto frames = ThumbnailService::buildTimelineThumbnails(path, 1900, 24.0, 3, {}, nullptr);
+    const auto frames = ThumbnailService::buildTimelineThumbnails(path, 1900, rejectHardware ? 60.0 : 24.0, 3, {}, nullptr);
     const int starts = ffmpegStarts();
     report["frameCount"] = frames.size();
     report["ffmpegStarts"] = starts;
     // totalFrames > the bounded batch threshold must use the legacy seek path.
-    return starts == 3 && frames.size() == 3;
+    for (const auto& frame : frames) {
+        if (frame.image.size() != QSize(112, 64)) return false;
+    }
+    return starts == (rejectHardware ? 4 : 3) && frames.size() == 3;
 }
 
 int main(int argc, char** argv)
@@ -216,8 +254,12 @@ int main(int argc, char** argv)
     const QString scenario = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString();
     const QString path = argc > 2 ? QString::fromLocal8Bit(argv[2]) : QString();
     const bool ok = scenario == "batch" ? batch(path) :
+        scenario == "cuda-fallback" ? batch(path, 60.0, 2) :
+        scenario == "track-first" ? trackColors(path, true) :
+        scenario == "track-default" ? trackColors(path, false) :
         scenario == "cache" ? cacheReuse(path) :
         scenario == "cancel" ? canceled(path) :
+        scenario == "long-cuda-fallback" ? longClipFallsBack(path, true) :
         scenario == "long" ? longClipFallsBack(path) : false;
     report["scenario"] = scenario;
     report["passed"] = ok && commonChecks();
@@ -294,7 +336,7 @@ class ThumbnailVideoPerformance(unittest.TestCase):
             raise AssertionError(f"long fixture ffmpeg failed: {result.stderr}")
         shutil.copy2(cls.short, cls.cache)
 
-    def run_scenario(self, scenario, path):
+    def run_scenario(self, scenario, path, cache_root=None):
         deploy_runtime(self.runner, QT, (TL / "bin", ROOT / "build_win_full" / "bin" / "Release"))
         env = os.environ.copy()
         env["PATH"] = os.pathsep.join([str(QT / "bin"), str(TL / "bin"), env.get("PATH", "")])
@@ -304,7 +346,9 @@ class ThumbnailVideoPerformance(unittest.TestCase):
         env["CGPLAY_TEST_FFMPEG"] = str(self.proxy)
         env["CGPLAY_TEST_FFPROBE"] = str(FFMPEG.with_name("ffprobe.exe"))
         env["CGPLAY_REAL_FFMPEG"] = str(FFMPEG)
-        env["CGPLAY_TEST_CACHE_ROOT"] = str(ARTIFACT / ("cache_root_" + scenario))
+        if scenario in ("cuda-fallback", "long-cuda-fallback"):
+            env["CGPLAY_TEST_REJECT_CUDA"] = "1"
+        env["CGPLAY_TEST_CACHE_ROOT"] = str(cache_root or ARTIFACT / ("cache_root_" + scenario))
         result = subprocess.run([str(self.runner), scenario, str(path)], cwd=ARTIFACT, env=env,
                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
                                 creationflags=NO_WINDOW, timeout=60)
@@ -320,6 +364,38 @@ class ThumbnailVideoPerformance(unittest.TestCase):
 
     def test_short_video_uses_one_bounded_ffmpeg_batch(self):
         self.run_scenario("batch", self.short)
+
+    def test_8k_hevc_falls_back_to_software_when_cuda_is_unavailable(self):
+        with tempfile.TemporaryDirectory(dir=ARTIFACT) as cache_root:
+            self.run_scenario("cuda-fallback", ROOT / "tests/media/8k_60fps.mp4", cache_root)
+
+    def test_4k_10bit_hevc_falls_back_when_cuda_is_unavailable(self):
+        with tempfile.TemporaryDirectory(dir=ARTIFACT) as cache_root:
+            self.run_scenario("cuda-fallback", ROOT / "tests/media/4k_60fps.mp4", cache_root)
+
+    def test_long_hevc_retries_failed_hardware_once_per_job(self):
+        with tempfile.TemporaryDirectory(dir=ARTIFACT) as folder:
+            movie = Path(folder) / "long-hevc.mp4"
+            subprocess.run([
+                str(FFMPEG), "-v", "error", "-stream_loop", "3", "-i",
+                str(ROOT / "tests/media/4k_60fps.mp4"), "-map", "0:v:0",
+                "-c", "copy", str(movie),
+            ], check=True, creationflags=NO_WINDOW, timeout=60)
+            self.run_scenario("long-cuda-fallback", movie, Path(folder) / "cache")
+
+    def test_multitrack_poster_and_timeline_follow_playback(self):
+        for scenario, extension, disposition in (
+            ("track-first", "mkv", "0"), ("track-default", "mp4", "default")
+        ):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory(dir=ARTIFACT) as folder:
+                path = Path(folder) / ("dual." + extension)
+                subprocess.run([
+                    str(FFMPEG), "-v", "error", "-f", "lavfi", "-i", "color=red:s=160x90:r=24",
+                    "-f", "lavfi", "-i", "color=blue:s=320x180:r=24", "-t", "2",
+                    "-map", "0:v", "-map", "1:v", "-c:v", "mpeg4",
+                    "-disposition:v:0", "0", "-disposition:v:1", disposition, str(path),
+                ], check=True, creationflags=NO_WINDOW, timeout=45)
+                self.run_scenario(scenario, path, Path(folder) / "cache")
 
     def test_video_thumbnail_cache_reuses_batch_outputs(self):
         self.run_scenario("cache", self.cache)

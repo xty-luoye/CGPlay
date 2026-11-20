@@ -1,0 +1,125 @@
+--- a/lib/tlRender/IO/FFmpegRead.cpp
++++ b/lib/tlRender/IO/FFmpegRead.cpp
+@@ -140,38 +140,51 @@
+                             p.info.tags = p.readVideo->getTags();
+                         }
+ 
+-                        p.readAudio = std::make_shared<ReadAudio>(
+-                            path.hasProtocol() ? path.get() : path.getFileName(true),
+-                            _mem,
+-                            p.info.videoTime.duration().rate(),
+-                            p.options);
+-                        p.info.audio = p.readAudio->getInfo();
+-                        p.info.audioTime = p.readAudio->getTimeRange();
+-                        for (const auto& tag : p.readAudio->getTags())
+-                        {
+-                            p.info.tags[tag.first] = tag.second;
+-                        }
+-
+-                        p.audioThread.thread = std::thread(
+-                            [this, path]
++                        if (p.readVideo->hasAudioStream())
++                        {
++                            p.readAudio = std::make_shared<ReadAudio>(
++                                path.hasProtocol() ? path.get() : path.getFileName(true),
++                                _mem,
++                                p.info.videoTime.duration().rate(),
++                                p.options);
++                            p.info.audio = p.readAudio->getInfo();
++                            p.info.audioTime = p.readAudio->getTimeRange();
++                            for (const auto& tag : p.readAudio->getTags())
+                             {
+-                                FTK_P();
+-                                try
++                                p.info.tags[tag.first] = tag.second;
++                            }
++
++                            p.audioThread.thread = std::thread(
++                                [this, path]
+                                 {
+-                                    _audioThread();
+-                                }
+-                                catch (const std::exception& e)
+-                                {
+-                                    if (auto logSystem = _logSystem.lock())
++                                    FTK_P();
++                                    try
+                                     {
+-                                        //! \todo How should this be handled?
+-                                        logSystem->print(
+-                                            "tl::ffmpeg::Read",
+-                                            e.what(),
+-                                            ftk::LogType::Error);
++                                        _audioThread();
+                                     }
+-                                }
+-                            });
++                                    catch (const std::exception& e)
++                                    {
++                                        if (auto logSystem = _logSystem.lock())
++                                        {
++                                            //! \todo How should this be handled?
++                                            logSystem->print(
++                                                "tl::ffmpeg::Read",
++                                                e.what(),
++                                                ftk::LogType::Error);
++                                        }
++                                    }
++                                });
++                        }
++                        else
++                        {
++                            // The video demuxer already inspected all streams.
++                            // Complete audio requests queued before discovery.
++                            {
++                                std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
++                                p.audioMutex.stopped = true;
++                            }
++                            _cancelAudioRequests();
++                        }
+ 
+                         _videoThread();
+                     }
+--- a/lib/tlRender/IO/FFmpegReadPrivate.h
++++ b/lib/tlRender/IO/FFmpegReadPrivate.h
+@@ -58,6 +58,7 @@
+             ~ReadVideo();
+ 
+             bool isValid() const;
++            bool hasAudioStream() const;
+             const ftk::ImageInfo& getInfo() const;
+             const OTIO_NS::TimeRange& getTimeRange() const;
+             const ftk::ImageTags& getTags() const;
+--- a/lib/tlRender/IO/FFmpegReadVideo.cpp
++++ b/lib/tlRender/IO/FFmpegReadVideo.cpp
+@@ -495,6 +495,16 @@
+         bool ReadVideo::isValid() const
+         {
+             return _avStream != -1;
++        }
++
++        bool ReadVideo::hasAudioStream() const
++        {
++            for (unsigned int i = 0; i < _avFormatContext->nb_streams; ++i)
++            {
++                if (_avFormatContext->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
++                    return true;
++            }
++            return false;
+         }
+ 
+         const ftk::ImageInfo& ReadVideo::getInfo() const
+--- a/lib/tlRender/Timeline/PlayerPrivate.cpp
++++ b/lib/tlRender/Timeline/PlayerPrivate.cpp
+@@ -209,7 +209,10 @@
+         {
+         case CacheDir::Forward:
+             out = OTIO_NS::TimeRange::range_from_start_end_time_inclusive(
+-                (thread.state.currentTime - readBehind).round(),
++                // A forward open near the in-point must not wrap speculative
++                // history to the last GOP before decoding the displayed frame.
++                std::max(thread.state.inOutRange.start_time(),
++                    (thread.state.currentTime - readBehind).round()),
+                 (thread.state.currentTime + readAhead).round());
+             break;
+         case CacheDir::Reverse:

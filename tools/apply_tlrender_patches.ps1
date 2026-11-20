@@ -8,7 +8,7 @@ if ([string]::IsNullOrWhiteSpace($TlRenderSourceDir)) {
     if (-not [string]::IsNullOrWhiteSpace($env:TLRENDER_SOURCE_DIR)) {
         $TlRenderSourceDir = $env:TLRENDER_SOURCE_DIR
     } else {
-        $TlRenderSourceDir = "C:\Users\1\Desktop\CGV\tlRender-main"
+        $TlRenderSourceDir = "E:\rj\CGV\tlRender-main"
     }
 }
 $source = [IO.Path]::GetFullPath($TlRenderSourceDir)
@@ -18,7 +18,11 @@ if (-not (Test-Path -LiteralPath (Join-Path $source "CMakeLists.txt"))) {
 
 $patches = @(
     (Join-Path $root "cmake\patches\tlrender_vp_slice_threading.patch"),
-    (Join-Path $root "cmake\patches\tlrender_ffmpeg_common_extensions.patch")
+    (Join-Path $root "cmake\patches\tlrender_ffmpeg_common_extensions.patch"),
+    (Join-Path $root "cmake\patches\tlrender_ivf_fit.patch"),
+    (Join-Path $root "cmake\patches\tlrender_high_rate_preroll.patch"),
+    (Join-Path $root "cmake\patches\tlrender_forward_start.patch"),
+    (Join-Path $root "cmake\patches\tlrender_long_playback.patch")
 )
 
 function Invoke-GitApply([string[]]$Arguments) {
@@ -39,6 +43,17 @@ try {
 
         $reverseCode = Invoke-GitApply @("apply", "--reverse", "--check", "--unsafe-paths", $patch)
         if ($reverseCode -ne 0) {
+            # Existing folder builds may already carry the original 8K preroll patch.
+            if ([IO.Path]::GetFileName($patch) -eq "tlrender_high_rate_preroll.patch") {
+                $upgrade = Join-Path $root "cmake\patches\tlrender_high_rate_preroll_upgrade.patch"
+                if ((Invoke-GitApply @("apply", "--check", "--unsafe-paths", $upgrade)) -eq 0) {
+                    if ((Invoke-GitApply @("apply", "--unsafe-paths", $upgrade)) -ne 0) {
+                        throw "Could not upgrade the tlRender preroll patch."
+                    }
+                    Write-Host "Upgraded tlRender preroll patch."
+                    continue
+                }
+            }
             throw "tlRender source does not match patch baseline: $patch"
         }
         Write-Host "tlRender patch already applied: $([IO.Path]::GetFileName($patch))"

@@ -14,6 +14,7 @@ void MainWindow::openFile(const QString& path)
     if (path.isEmpty()) return;
 
     _p->pendingComparePath.clear();
+    disconnect(_p->playlistOpenConnection);
     Q_EMIT mediaOpenRequested(path);
 
     _p->autoPlayPending = false;
@@ -106,26 +107,32 @@ void MainWindow::_openFileWithMediaInfo(
         annotationService->clearAnnotations();
         annotationService->selectAnnotation(QString());
     }
-    if (_p->playlist && _p->playlist->model()) {
-        auto* playlistModel = _p->playlist->model();
-        int existingIndex = -1;
-        for (int i = 0; i < playlistModel->shotCount(); ++i) {
-            if (playlistModel->shotAt(i).path == path) {
-                existingIndex = i;
-                break;
-            }
-        }
-        if (existingIndex < 0) {
-            playlistModel->addPath(path, mediaInfo, sequenceFpsOverride);
-            existingIndex = playlistModel->shotCount() - 1;
-        } else if (existingIndex >= 0) {
-            // Confirmed open metadata supersedes any older playlist probe for
-            // this row, including a sequence FPS chosen by the user.
-            playlistModel->updateMetadata(existingIndex, mediaInfo, sequenceFpsOverride);
-        }
-        if (existingIndex >= 0) {
-            playlistModel->setCurrentIndex(existingIndex);
-        }
+    if (auto* events = _p->playbackCtrl->signalProxy()) {
+        _p->playlistOpenConnection = connect(events, &PlaybackServiceSignals::fileOpened, this,
+            [this, path, mediaInfo, sequenceFpsOverride](const QString& openedPath) {
+                if (openedPath != path) return;
+                if (_p->playlist && _p->playlist->model()) {
+                    auto* playlistModel = _p->playlist->model();
+                    int existingIndex = -1;
+                    for (int i = 0; i < playlistModel->shotCount(); ++i) {
+                        if (playlistModel->shotAt(i).path == path) {
+                            existingIndex = i;
+                            break;
+                        }
+                    }
+                    if (existingIndex < 0) {
+                        playlistModel->addPath(path, mediaInfo, sequenceFpsOverride);
+                        existingIndex = playlistModel->shotCount() - 1;
+                    } else if (existingIndex >= 0) {
+                        // Confirmed open metadata supersedes any older playlist probe for
+                        // this row, including a sequence FPS chosen by the user.
+                        playlistModel->updateMetadata(existingIndex, mediaInfo, sequenceFpsOverride);
+                    }
+                    if (existingIndex >= 0) {
+                        playlistModel->setCurrentIndex(existingIndex);
+                    }
+                }
+            });
     }
     if (auto* s = _p->playbackCtrl->playbackStats()) s->reset();
     if (_p->timeline) _p->timeline->setMediaPath(path);
@@ -214,6 +221,7 @@ void MainWindow::_resetMediaSession(const QString& path, const QString& fingerpr
 
 void MainWindow::_closeCurrentMedia()
 {
+    disconnect(_p->playlistOpenConnection);
     Q_EMIT mediaOpenRequested({});
     _p->autoPlayPending = false;
     _p->pendingComparePath.clear();

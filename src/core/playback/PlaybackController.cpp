@@ -35,7 +35,9 @@
 #include <cmath>
 
 #if CGPLAY_HAS_TLRENDER
-  #include <tlRender/Core/Version.h>
+  #if __has_include(<tlRender/Core/Version.h>)
+    #include <tlRender/Core/Version.h>
+  #endif
   #include <tlRender/Timeline/Timeline.h>
   #include <tlRender/Timeline/Player.h>
   #include <tlRender/Timeline/PlayerOptions.h>

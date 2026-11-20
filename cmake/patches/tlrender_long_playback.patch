@@ -1,0 +1,24 @@
+--- a/lib/tlRender/Timeline/PlayerPrivate.cpp
++++ b/lib/tlRender/Timeline/PlayerPrivate.cpp
+@@ -388,11 +388,16 @@
+         // Fill the audio cache.
+         if (ioInfo.audio.isValid())
+         {
+-            for (int64_t seconds = audioCacheRange.min();
+-                seconds <= audioCacheRange.max() &&
+-                thread.audioRequests.size() < playerOptions.audioRequestMax;
+-                ++seconds)
+-            {
++            // audioGB controls retention, but decoding that many seconds ahead
++            // on a feature-length film competes with video and random seeks.
++            // Keep two request batches available around the current playhead.
++            const auto ahead = std::min(audioCacheMax, std::max<size_t>(2, playerOptions.audioRequestMax * 2));
++            const auto requestRange = getAudioCacheRange(ahead);
++            for (int64_t offset = 0; offset <= requestRange.max() - requestRange.min() &&
++                thread.audioRequests.size() < playerOptions.audioRequestMax; ++offset)
++            {
++                const auto seconds = thread.cacheDir == CacheDir::Reverse ?
++                    requestRange.max() - offset : requestRange.min() + offset;
+                 const int64_t secondsLooped = tl::loop(seconds + thread.state.audioOffset, thread.state.inOutRange);
+                 bool found = false;
+                 {

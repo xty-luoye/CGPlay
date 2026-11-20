@@ -242,16 +242,19 @@ QJsonObject MainWindow::runSubtitleGenerationSmokeChecks(
         const bool generationStarted = pumpUntil([this] {
             return _p->subtitleSession.state().subtitleGenerationBusy;
         }, 10000);
+        bool closeIgnoredWhileBusy = false;
         if (generationStarted) {
             QThread::msleep(cancelAfterMs);
-            QCoreApplication::processEvents(QEventLoop::AllEvents, 250);
-            close();
+            closeIgnoredWhileBusy = _p->subtitleSession.state().subtitleGenerationBusy && !close();
             QCoreApplication::processEvents(QEventLoop::AllEvents, 250);
         }
-        const bool closeIgnoredWhileBusy = generationStarted && isVisible();
+
         const bool cancelFinished = pumpUntil([this] {
             return !_p->subtitleSession.state().subtitleGenerationBusy;
         }, mockWithoutApi ? 10000 : 120000);
+        const bool closedAfterCancel = cancelFinished && pumpUntil([this] { return _p->currentPath.isEmpty(); }, 2000);
+        addAssertion(QStringLiteral("Deferred close completes"), closedAfterCancel,
+            closedAfterCancel ? QStringLiteral("active media released on close") : QStringLiteral("window did not finish closing"));
         addAssertion(
             QStringLiteral("Subtitle generation started before cancel"),
             generationStarted,

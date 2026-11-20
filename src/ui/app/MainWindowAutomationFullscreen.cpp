@@ -578,7 +578,7 @@ QJsonArray MainWindow::_runFullscreenSmokeChecks()
         settleFullscreen(200);
         add(QStringLiteral("Fullscreen Space pauses and resumes playback"), keptPlaying && paused && resumed &&
             repeatIgnored && _p->playbackCtrl->currentFrame() != frameBefore,
-            {{"keptPlayingOnEntry", keptPlaying}, {"paused", paused}, {"resumed", resumed}, {"repeatIgnored", repeatIgnored}});
+            {{"keptPlayingOnEntry", keptPlaying}, {"paused", paused}, {"resumed", resumed}, {"frameBefore", frameBefore}, {"frameAfter", _p->playbackCtrl->currentFrame()}, {"repeatIgnored", repeatIgnored}});
         QLineEdit editor(centralWidget());
         editor.show();
         fullscreenKey(&editor, Qt::Key_Space);

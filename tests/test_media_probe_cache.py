@@ -24,6 +24,10 @@ int main(int argc, char** argv) {
  QFile file(app.arguments().last()); file.open(QIODevice::ReadOnly); const auto data=file.readAll();
  if(data.startsWith('S')) QThread::msleep(200);
  if(data.startsWith('!')) return 2;
+ if(data.startsWith('M')) {
+  puts(R"({"streams":[{"codec_type":"audio"},{"codec_type":"video","width":320,"height":180,"avg_frame_rate":"24/1"},{"codec_type":"video","width":640,"height":360,"avg_frame_rate":"30/1","nb_frames":"120","disposition":{"default":1}},{"codec_type":"subtitle"}]})");
+  return 0;
+ }
  const int width=data.startsWith('B')?640:320;
  printf("{\"format\":{\"format_name\":\"mov,mp4\",\"bit_rate\":\"1234567\"},\"streams\":[{\"codec_type\":\"video\",\"codec_name\":\"h264\",\"pix_fmt\":\"yuv420p\",\"width\":%d,\"height\":180,\"avg_frame_rate\":\"24/1\",\"nb_frames\":\"48\",\"duration\":\"2.0\",\"bit_rate\":\"1200000\"},{\"codec_type\":\"audio\"},{\"codec_type\":\"subtitle\"}]}\n",width);
 }
@@ -33,6 +37,7 @@ RUNNER = r'''
 #include "common/jobs/JobSystem.h"
 #include <QApplication>
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
 #include <QImage>
 #include <QJsonDocument>
@@ -61,6 +66,11 @@ static bool run(const QString& scenario, bool baseline) {
   if(scenario=="repeat")CHECK(b.bitrateBitsPerSecond==1234567&&b.bitrateText()=="1.23 Mbps"&&b.bitrateText("mbps")=="1.23 Mbps"&&b.bitrateText("kbps")=="1235 kbps");
   if(scenario=="real")CHECK(b.bitrateBitsPerSecond>0&&b.bitrateText()!="--");
   if(scenario=="repeat")CHECK(calls()==(baseline?2:1));
+ }else if(scenario=="default-track"){
+  write(path,"M");const auto info=MediaProbe::probe(path);
+  report["width"]=info.width;report["height"]=info.height;report["fps"]=info.fps;
+  CHECK(info.width==640&&info.height==360&&info.fps==30&&info.frameCount==120);
+  CHECK(info.audioStreamCount==1&&info.subtitleStreamCount==1);
  }else if(scenario=="invalidation"){
   CHECK(MediaProbe::probe(path).width==320);write(path,"BBBB");CHECK(MediaProbe::probe(path).width==640);
   write(path,"AAAA");QFile f(path);CHECK(f.open(QIODevice::ReadWrite));
@@ -68,10 +78,23 @@ static bool run(const QString& scenario, bool baseline) {
   CHECK(MediaProbe::probe(path).width==320);CHECK(calls()==3);
   CHECK(QFile::remove(path));CHECK(!MediaProbe::probe(path).exists);CHECK(calls()==3);
  }else if(scenario=="sidecars"){
-  CHECK(!MediaProbe::probe(path).hasExternalSubtitles);write("fixture.en.srt","subtitle");
+  QDir().mkpath("fixture.srt");
+  const auto directoriesOnly=MediaProbe::probe(path);
+  report["subtitleDirectoryAccepted"]=directoriesOnly.hasExternalSubtitles;
+  CHECK(QDir().rmdir("fixture.srt"));
+  CHECK(!directoriesOnly.hasExternalSubtitles);write("fixture.en.srt","subtitle");
   const auto with=MediaProbe::probe(path);CHECK(with.hasExternalSubtitles&&with.externalSubtitlePaths.size()==1);
   CHECK(QFile::remove("fixture.en.srt"));CHECK(!MediaProbe::probe(path).hasExternalSubtitles);
   write("fixture.source.srt","generated");CHECK(!MediaProbe::probe(path).hasExternalSubtitles);CHECK(calls()==1);
+ }else if(scenario=="literal-names"){
+  const QString bracketed="clip[07].mp4";
+  write(bracketed,"A");write("clip[07].en.srt","subtitle");write("clip0.en.srt","unrelated");
+  const auto subtitles=MediaProbe::probe(bracketed).externalSubtitlePaths;
+  write("shot[07].0001.png","A");write("shot[07].0002.png","B");write("shot0.0003.png","C");
+  const auto sequence=MediaProbe::collectSequenceFiles("shot[07].0001.png");
+  report["subtitleCount"]=subtitles.size();report["sequenceCount"]=sequence.size();
+  CHECK(subtitles.size()==1&&subtitles.front().endsWith("clip[07].en.srt"));
+  CHECK(sequence.size()==2&&sequence.front().frameNumber==1&&sequence.back().frameNumber==2);
  }else if(scenario=="fps"){
   const auto a=MediaProbe::probe(path,30);const auto b=MediaProbe::probe(path);const auto c=MediaProbe::probe(path,60);
   CHECK(a.fps==30&&b.fps==24&&c.fps==60&&b.audioStreamCount==1&&b.subtitleStreamCount==1);CHECK(calls()==1);
@@ -172,9 +195,11 @@ class MediaProbeCacheTests(unittest.TestCase):
         self.assertTrue(data["background"])
         self.assertEqual(0, data["visiblePlatformWindows"])
 
+    def test_default_video_track(self): self.scenario("default-track")
     def test_repeat(self): self.scenario("repeat")
     def test_real_video(self): self.scenario("real")
     def test_file_invalidation(self): self.scenario("invalidation")
+    def test_literal_names(self): self.scenario("literal-names")
     def test_sidecars(self): self.scenario("sidecars")
     def test_fps_override(self): self.scenario("fps")
     def test_failed_probe_retry(self): self.scenario("failure")

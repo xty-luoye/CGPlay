@@ -1,0 +1,178 @@
+--- a/lib/tlRender/Timeline/PlayerPrivate.cpp
++++ b/lib/tlRender/Timeline/PlayerPrivate.cpp
+@@ -253,7 +253,15 @@
+ 
+         const size_t videoCacheMax = getVideoCacheMax();
+         const size_t audioCacheMax = getAudioCacheMax();
+-        const OTIO_NS::TimeRange videoCacheRange = getVideoCacheRange(videoCacheMax);
++        // Keep a short decoded lead at the in-point of very large silent
++        // movies. Replay and loop can then draw immediately while the reader
++        // seeks away from its previous GOP. Reserve it inside the RAM budget.
++        const bool largeSilent = !ioInfo.audio.isValid() && !ioInfo.video.empty() &&
++            ioInfo.video.front().size.w >= 7680;
++        const size_t startCount = largeSilent ? std::min<size_t>(videoCacheMax / 2, std::ceil(thread.state.currentTime.rate() * .8)) : 0;
++        const auto startFrames = OTIO_NS::TimeRange(thread.state.inOutRange.start_time(),
++            OTIO_NS::RationalTime(startCount, thread.state.currentTime.rate()));
++        const OTIO_NS::TimeRange videoCacheRange = getVideoCacheRange(videoCacheMax - startCount);
+         const ftk::Range<int64_t> audioCacheRange = getAudioCacheRange(audioCacheMax);
+ 
+         // Remove frames from the video cache.
+@@ -275,7 +283,7 @@
+                         break;
+                     }
+                 }
+-                if (!found)
++                if (!found && !startFrames.contains(t))
+                 {
+                     i = thread.videoCache.erase(i);
+                     videoCacheChanged = true;
+@@ -325,12 +333,23 @@
+         if (!ioInfo.video.empty())
+         {
+             const OTIO_NS::RationalTime inc(1.0, thread.state.currentTime.rate());
+-            for (OTIO_NS::RationalTime time = videoCacheRange.start_time();
+-                time <= videoCacheRange.end_time_inclusive() &&
++            // Request the displayed frame first on forward opens and seeks. Starting
++            // at read-behind can seek to the end of a long-GOP clip before frame zero.
++            const bool highRateVideo = ioInfo.video.front().size.w >= 7680 && inc.rate() >= 50.;
++            const auto first = highRateVideo && thread.cacheDir == CacheDir::Forward ?
++                thread.state.currentTime : videoCacheRange.start_time();
++            for (auto offset = OTIO_NS::RationalTime(0, inc.rate());
++                offset < videoCacheRange.duration() &&
+                 thread.videoRequests.size() < playerOptions.videoRequestMax;
+-                time += inc)
+-            {
+-                const OTIO_NS::RationalTime timeLooped = tl::loop(time, thread.state.inOutRange);
++                offset += inc)
++            {
++                auto time = first + offset;
++                if (time > videoCacheRange.end_time_inclusive())
++                {
++                    if (highRateVideo && thread.state.playback == Playback::Forward) break;
++                    time -= videoCacheRange.duration();
++                }
++                const auto timeLooped = tl::loop(time, thread.state.inOutRange);
+                 const auto j = thread.videoCache.find(timeLooped);
+                 if (j == thread.videoCache.end())
+                 {
+--- a/lib/tlRender/Timeline/PlayerPrivate.h
++++ b/lib/tlRender/Timeline/PlayerPrivate.h
+@@ -115,6 +115,7 @@
+             PlaybackState state;
+             bool clearRequests = false;
+             bool clearCache = false;
++            bool waitingForVideoLead = false;
+             CacheDir cacheDir = CacheDir::Forward;
+             std::vector<VideoFrame> currentVideoFrame;
+             std::vector<AudioFrame> currentAudioFrame;
+@@ -178,5 +179,6 @@
+             OTIO_NS::RationalTime start = invalidTime;
+         };
+         NoAudio noAudio;
++        std::chrono::steady_clock::time_point prerollDeadline;
+     };
+ }
+--- a/lib/tlRender/Timeline/Player.cpp
++++ b/lib/tlRender/Timeline/Player.cpp
+@@ -345,6 +345,8 @@
+     {
+         FTK_P();
+ 
++        const bool largeSilentVideo = !p.ioInfo.audio.isValid() && !p.ioInfo.video.empty() &&
++            p.ioInfo.video.front().size.w >= 7680;
+         // Update the frame for loop modes.
+         switch (p.loop->get())
+         {
+@@ -402,14 +404,19 @@
+             if (value != Playback::Stop)
+             {
+                 p.toggle = value;
++                const bool needsPreroll = value == Playback::Forward && largeSilentVideo;
++                p.prerollDeadline = needsPreroll ?
++                    std::chrono::steady_clock::now() + std::chrono::seconds(2) :
++                    std::chrono::steady_clock::time_point{};
+                 {
+                     std::unique_lock<std::mutex> lock(p.mutex.mutex);
++                    p.mutex.waitingForVideoLead = needsPreroll;
+                     p.mutex.state.playback = value;
+                     p.mutex.state.currentTime = p.currentTime->get();
+-                    p.mutex.clearRequests = true;
+-                    p.mutex.cacheDir = Playback::Forward == value ?
+-                        CacheDir::Forward :
+-                        CacheDir::Reverse;
++                    const auto direction = Playback::Forward == value ? CacheDir::Forward : CacheDir::Reverse;
++                    if (!largeSilentVideo || p.mutex.cacheDir != direction)
++                        p.mutex.clearRequests = true;
++                    p.mutex.cacheDir = direction;
+                 }
+                 {
+                     std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
+@@ -431,7 +438,8 @@
+                 {
+                     std::unique_lock<std::mutex> lock(p.mutex.mutex);
+                     p.mutex.state.playback = value;
+-                    p.mutex.clearRequests = true;
++                    p.mutex.waitingForVideoLead = false;
++                    if (!largeSilentVideo) p.mutex.clearRequests = true;
+                 }
+                 {
+                     std::unique_lock<std::mutex> lock(p.audioMutex.mutex);
+@@ -843,6 +851,18 @@
+         // Calculate the current time.
+         const double timelineSpeed = p.timeRange.duration().rate();
+         const auto playback = p.playback->get();
++        // Give large video-only sources a short lead before advancing the clock.
++        // Otherwise every outstanding request can expire before its decoded frame arrives.
++        if (playback == Playback::Forward && std::chrono::steady_clock::now() < p.prerollDeadline)
++        {
++            // Cache statistics are published only twice a second. The decoder
++            // worker signals readiness as soon as it holds the next frames.
++            std::unique_lock<std::mutex> lock(p.mutex.mutex);
++            if (!p.mutex.waitingForVideoLead)
++                p.prerollDeadline = {};
++            else
++                p.playbackReset(p.currentTime->get());
++        }
+         if (playback != Playback::Stop && timelineSpeed > 0.0)
+         {
+             OTIO_NS::RationalTime start = invalidTime;
+@@ -953,6 +973,21 @@
+                 {
+                     std::unique_lock<std::mutex> lock(p.mutex.mutex);
+                     p.mutex.currentVideoFrame = i->second;
++                    if (p.mutex.waitingForVideoLead && p.mutex.state.currentTime == i->first)
++                    {
++                        const auto rate = i->first.rate();
++                        const auto frame = OTIO_NS::RationalTime(1, rate);
++                        const auto end = std::min(p.thread.state.inOutRange.end_time_inclusive(),
++                            i->first + OTIO_NS::RationalTime(std::ceil(rate * .1), rate));
++                        auto next = i;
++                        auto expected = i->first;
++                        while (expected < end && ++next != p.thread.videoCache.end() &&
++                            next->first == expected + frame)
++                        {
++                            expected = next->first;
++                        }
++                        p.mutex.waitingForVideoLead = expected < end;
++                    }
+                 }
+                 else if (p.thread.state.playback != Playback::Stop)
+                 {
+--- a/lib/tlRender/IO/FFmpegReadVideo.cpp
++++ b/lib/tlRender/IO/FFmpegReadVideo.cpp
+@@ -831,6 +831,15 @@
+                     const uint8_t* const data2 = _avFrame->data[2];
+                     const int linesize1 = _avFrame->linesize[1];
+                     const int linesize2 = _avFrame->linesize[2];
++                    // Aligned video commonly has tightly packed planes. Copy a
++                    // whole plane at a time instead of thousands of small rows.
++                    if (!(w % 2 || h % 2) && linesize0 == w && linesize1 == w2 && linesize2 == w2)
++                    {
++                        std::memcpy(data, data0, w * h);
++                        std::memcpy(data + w * h, data1, w2 * h2);
++                        std::memcpy(data + w * h + w2 * h2, data2, w2 * h2);
++                        break;
++                    }
+                     for (std::size_t i = 0; i < h; ++i)
+                     {
+                         std::memcpy(
