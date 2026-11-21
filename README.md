@@ -2,10 +2,10 @@
 
 CGPlay 是面向 VFX、动画和合成审片流程的 Windows 播放器，使用 C++20、Qt 6、tlRender 和 Python 构建。项目开发目录曾使用 RVLite 名称，代码中仍保留部分命名。
 
-当前源码版本为 **1.0.8.02**。Windows x64 用户可在 1.0.8.01 完整版上安装增量更新。
+当前正式版为 **1.0.8.02**。已安装的用户可在应用内检查更新。
 
-- [下载 1.0.8.02 增量包](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.8.02/CGPlay_Update_1.0.8.01_to_1.0.8.02_win64.zip)
-- [首次安装所需的 1.0.8.01 完整版](https://github.com/xty-luoye/CGPlay/releases/tag/v1.0.8.01)
+- [下载 Windows x64 在线安装程序](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.8.02/CGPlay_Setup_1.0.8.02_full.exe)
+- [下载 1.0.8.01 专用增量 ZIP](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.8.02/CGPlay_Update_1.0.8.01_to_1.0.8.02_win64.zip)
 - [本版完整更新说明](docs/RELEASE_NOTES_1.0.8.02.md)
 - [使用说明](docs/CGPlay_使用说明_1.0.7.md)
 - [构建说明与当前限制](docs/OFFICIAL_BUILD.md)

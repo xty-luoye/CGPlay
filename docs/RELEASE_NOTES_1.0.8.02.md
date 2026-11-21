@@ -1,6 +1,8 @@
-# CGPlay 1.0.8.02 · Windows x64 增量更新
+# CGPlay 1.0.8.02 · Windows x64
 
-适用于已安装 **1.0.8.01 完整版**的用户。退出 CGPlay 和 QuickLook，解压 `CGPlay_Update_1.0.8.01_to_1.0.8.02_win64.zip`，将其中的文件覆盖到原安装目录，再启动 CGPlay。首次安装或使用更早版本，请先安装 [1.0.8.01 完整版](https://github.com/xty-luoye/CGPlay/releases/tag/v1.0.8.01)。本次通过发布页手动更新，应用内完整安装包通道仍提供上一版。
+已有播放器可在应用内检查更新。也可直接[下载 Windows x64 在线安装程序](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.8.02/CGPlay_Setup_1.0.8.02_full.exe)。从 1.0.8.01 升级时，下载约 45.3 MiB 即包含所有变更。首次安装或从 1.0.8 升级时，安装程序还会从 GitHub 获取并校验 1.0.8.01 的基础安装包。将官方基础安装包放在在线安装程序旁也可复用。
+
+手动覆盖仍适用于 1.0.8.01 完整版。退出 CGPlay 和 QuickLook，将 [增量 ZIP](https://github.com/xty-luoye/CGPlay/releases/download/v1.0.8.02/CGPlay_Update_1.0.8.01_to_1.0.8.02_win64.zip) 中的三个文件覆盖到原安装目录。
 
 ## 播放与打开速度
 
@@ -36,4 +38,4 @@
 
 下载包大小为 47,346,799 字节（45.2 MiB）。ZIP 的 SHA-256 为 `a919a5cc7f2af9f0a3fc9a6e9f32f3c371a844926da6382d46e26b76d0267d25`。
 
-构建时沿用上一版的依赖源码，用本标签下的 `tools/deps/tlrender_0_27_cgplay_compatibility.patch` 配合原有构建脚本编译正式版引擎。运行组件、测试素材和用户配置均无需重新下载。
+构建时沿用上一版的依赖源码，用本标签下的 `tools/deps/tlrender_0_27_cgplay_compatibility.patch` 配合原有构建脚本编译正式版引擎。从 1.0.8.01 更新时复用本机已有的运行组件。
